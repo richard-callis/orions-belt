@@ -52,3 +52,6 @@ desktop.ini
 
 # sentence-transformers cache
 .cache/
+
+# Project folders (user content, not tracked in git)
+/projects/
