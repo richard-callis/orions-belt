@@ -121,6 +121,20 @@
 
       <!-- Test result -->
       <div id="llm-test-result" class="hidden items-center gap-1.5 text-xs"></div>
+
+      <!-- Debug logging toggle -->
+      <div class="rounded-lg border border-border-subtle bg-bg-card p-4">
+        <div class="flex items-center justify-between gap-4">
+          <div>
+            <div class="text-sm font-medium text-text-primary">LLM Debug Logging</div>
+            <div class="text-xs text-text-muted mt-0.5">Logs full request body (messages, tools, system prompt) and full response lines to the server console. Leave off in production — very verbose.</div>
+          </div>
+          <label class="relative flex-shrink-0 cursor-pointer">
+            <input type="checkbox" id="debug-llm-toggle" class="sr-only peer" />
+            <div class="w-9 h-5 bg-border-visible rounded-full peer peer-checked:bg-accent after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-4"></div>
+          </label>
+        </div>
+      </div>
     </div>
 
     <!-- ── PII Guard ───────────────────────────────────────── -->
@@ -131,6 +145,18 @@
       </div>
 
       <div class="rounded-lg border border-border-subtle bg-bg-card p-5 space-y-4">
+
+        <!-- Global enable/disable toggle -->
+        <div class="flex items-center justify-between gap-4 pb-4 border-b border-border-subtle">
+          <div>
+            <div class="text-sm font-medium text-text-primary">PII Guard Enabled</div>
+            <div class="text-xs text-text-muted mt-0.5">Disable to send raw messages to the LLM (e.g. for debugging). Re-enable before using with real data.</div>
+          </div>
+          <label class="relative flex-shrink-0 cursor-pointer">
+            <input type="checkbox" id="pii-enabled-toggle" class="sr-only peer" checked />
+            <div class="w-9 h-5 bg-border-visible rounded-full peer peer-checked:bg-accent after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-4"></div>
+          </label>
+        </div>
 
         <!-- Detection pipeline -->
         <div>
@@ -783,6 +809,49 @@ const _origShowSection = showSection;
 window.showSection = function(id) {
   _origShowSection(id);
   if (id === 'prompts') loadPrompts();
+  if (id === 'pii')     loadPiiToggle();
+  if (id === 'llm')     loadDebugToggle();
 };
+
+// ── Debug LLM toggle ─────────────────────────────────────────────────────────
+
+async function loadDebugToggle() {
+  try {
+    const r = await fetch('/api/settings/debug.llm');
+    const d = await r.json();
+    document.getElementById('debug-llm-toggle').checked = d.data?.value === true;
+  } catch (_) {}
+}
+
+document.getElementById('debug-llm-toggle').addEventListener('change', async function () {
+  await fetch('/api/settings/debug.llm', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: this.checked }),
+  });
+});
+
+// ── PII Guard enabled toggle ──────────────────────────────────────────────────
+
+async function loadPiiToggle() {
+  try {
+    const r = await fetch('/api/settings/pii.guard.enabled');
+    const d = await r.json();
+    // Default is true (enabled) — only false when explicitly set to false
+    const enabled = d.data?.value !== false;
+    document.getElementById('pii-enabled-toggle').checked = enabled;
+  } catch (_) {}
+}
+
+document.getElementById('pii-enabled-toggle').addEventListener('change', async function () {
+  await fetch('/api/settings/pii.guard.enabled', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: this.checked }),
+  });
+});
+
+// Load both toggles on page load (LLM section is shown first)
+loadDebugToggle();
 </script>
 {% endblock %}

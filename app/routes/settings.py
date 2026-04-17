@@ -177,9 +177,13 @@ def set_setting(key):
     else:
         value = body or ""
 
-    # llm.providers is stored as JSON
-    if key == "llm.providers":
+    # Store certain keys as their proper types
+    _JSON_KEYS = {"llm.providers"}
+    _BOOL_KEYS = {"debug.llm", "pii.guard.enabled"}
+    if key in _JSON_KEYS:
         Setting.set(key, value, value_type="json")
+    elif key in _BOOL_KEYS:
+        Setting.set(key, bool(value) if not isinstance(value, bool) else value, value_type="bool")
     else:
         Setting.set(key, value, value_type="string")
 

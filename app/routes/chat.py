@@ -442,7 +442,8 @@ def stream_messages(session_id):
             )
 
     # ── PII Guard: scan outbound user message ─────────────────────────────────
-    skip_pii = body.get("skip_pii", False)
+    pii_globally_enabled = Setting.get("pii.guard.enabled", True)
+    skip_pii = body.get("skip_pii", False) or not pii_globally_enabled
     if not skip_pii:
         try:
             from app.services.pii_guard import get_pii_guard
@@ -618,6 +619,17 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
             url, model, masked_key, len(messages),
         )
 
+        # Full debug logging — enabled via Settings → LLM → Debug Logging toggle
+        from app.models.settings import Setting as _Setting
+        _debug_llm = bool(_Setting.get("debug.llm", False))
+        if _debug_llm:
+            debug_body = {k: v for k, v in body.items() if k != "stream_options"}
+            # Mask auth in logged copy
+            debug_headers = {k: (f"Bearer {masked_key}" if k == "Authorization" else v)
+                             for k, v in headers.items()}
+            log.info("llm.debug.request  headers=%s", json.dumps(debug_headers))
+            log.info("llm.debug.request  body=%s", json.dumps(debug_body, indent=2, default=str))
+
         llm_log = LLMLog(
             provider=base_url.split("//")[1].split(":")[0] if "://" in base_url else "custom",
             model=model, session_id=session_id, run_id=run_id,
@@ -649,7 +661,7 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
                         line = raw_line.strip()
                         if not line:
                             continue
-                        log.info("llm.raw[%d]: %s", line_count, line[:200])
+                        log.info("llm.raw[%d]: %s", line_count, line if _debug_llm else line[:200])
                         if not line.startswith("data: "):
                             continue
                         payload = line[6:]  # strip "data: "
@@ -723,6 +735,8 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
                             .get("content", "")
                         ) or ""
                         log.info("llm.fallback content_len=%d", len(fallback_content))
+                        if _debug_llm:
+                            log.info("llm.debug.fallback  body=%s", json.dumps(fb_data, indent=2, default=str))
                     else:
                         err = fb_resp.text[:300]
                         log.warning("llm.fallback error: %s", err)
@@ -747,6 +761,8 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
                                 .get("content", "")
                             ) or ""
                             log.info("llm.fallback2 content_len=%d", len(fallback_content))
+                            if _debug_llm:
+                                log.info("llm.debug.fallback2  body=%s", json.dumps(fb2_data, indent=2, default=str))
                         else:
                             err = fb2_resp.text[:300]
                             log.warning("llm.fallback2 error: %s", err)
