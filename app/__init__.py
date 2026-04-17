@@ -46,4 +46,33 @@ def create_app(config_object="config.Config"):
     def index():
         return redirect(url_for("chat.index"))
 
+    # ── Error handlers ─────────────────────────────────────────────────────────
+    # SECURITY NOTE: No CSRF middleware is applied. This is intentional for a
+    # localhost-only application. The server binds exclusively to 127.0.0.1
+    # (see launch.py). All mutating API routes use JSON Content-Type, which
+    # triggers a CORS preflight from cross-origin pages, preventing CSRF.
+    # If this app is ever exposed beyond localhost, add Flask-WTF CSRF protection.
+
+    from flask import jsonify as _jsonify
+    import logging as _logging
+    _err_log = _logging.getLogger("orions-belt.errors")
+
+    @app.errorhandler(400)
+    def bad_request(e):
+        return _jsonify({"error": "Bad request", "detail": str(e)}), 400
+
+    @app.errorhandler(404)
+    def not_found(e):
+        return _jsonify({"error": "Not found"}), 404
+
+    @app.errorhandler(405)
+    def method_not_allowed(e):
+        return _jsonify({"error": "Method not allowed"}), 405
+
+    @app.errorhandler(500)
+    def internal_error(e):
+        # SECURITY: never expose exception details to the client
+        _err_log.exception("Internal server error")
+        return _jsonify({"error": "Internal server error"}), 500
+
     return app

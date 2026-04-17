@@ -202,9 +202,13 @@ def stream_messages(session_id):
         return jsonify({"error": "prompt is required"}), 400
 
     # Load message history
+    # SECURITY: cap history_limit to prevent memory exhaustion
+    MAX_HISTORY_LIMIT = 100
+    history_limit = min(int(body.get("history_limit", 30)), MAX_HISTORY_LIMIT)
+
     raw_history = Message.query.filter_by(session_id=session_id)\
         .order_by(Message.created_at.desc())\
-        .limit(body.get("history_limit", 30))\
+        .limit(history_limit)\
         .all()
     raw_history.reverse()  # chronological order
 
@@ -251,6 +255,30 @@ def stream_messages(session_id):
     tools = MCPTool.query.filter_by(enabled=True).all()
     tool_defs = build_tool_definitions(tools)
 
+    # ── PII Guard: scan outbound user message ─────────────────────────────────
+    try:
+        from app.services.pii_guard import get_pii_guard
+        guard = get_pii_guard()
+        clean_prompt, pii_found, entity_types = guard.scan(
+            prompt, session_id=session_id, direction="outbound"
+        )
+        if pii_found:
+            prompt = clean_prompt  # send sanitized text to LLM
+    except Exception:
+        pass  # PII guard failure is non-fatal — pass original prompt through
+
+    # ── Memory: inject relevant context into system prompt ────────────────────
+    memory_context = ""
+    try:
+        from app.services.memory import get_memory_service
+        mem_svc = get_memory_service()
+        memory_context = mem_svc.inject_context(prompt, session_id=session_id)
+    except Exception:
+        pass  # Memory service failure is non-fatal
+
+    if memory_context:
+        system_prompt = memory_context + "\n\n" + system_prompt
+
     run_id = str(uuid.uuid4())
     agent_log = AgentLog(
         run_id=run_id, step_number=0, event="started",
@@ -262,6 +290,11 @@ def stream_messages(session_id):
     start = time.time()
 
     def generate():
+        # SECURITY: cap max_turns server-side to prevent runaway tool loops.
+        # A client or adversarial LLM response cannot exceed MAX_TOOL_TURNS.
+        from app.services.mcp.tools import MAX_TOOL_TURNS
+        max_turns = min(int(body.get("max_turns", 20)), MAX_TOOL_TURNS)
+
         # Prepend user message
         history.append({"role": "user", "content": prompt})
 
@@ -270,13 +303,13 @@ def stream_messages(session_id):
                 yield from _stream_ollama_gen(
                     base_url, model, system_prompt, history,
                     tool_defs, session_id, run_id,
-                    body.get("max_turns", 20),
+                    max_turns,
                 )
             else:
                 yield from _stream_openai_gen(
                     base_url, llm_api_key, model, system_prompt, history,
                     tool_defs, session_id, run_id,
-                    body.get("max_turns", 20),
+                    max_turns,
                 )
 
             # Completion
@@ -615,6 +648,14 @@ def _save_assistant_message(session_id, content):
     """Save the assistant's response to the database after stream completes."""
     if not content.strip():
         return
+
+    # Restore any PII hash tokens back to original values for storage
+    try:
+        from app.services.pii_guard import get_pii_guard
+        content = get_pii_guard().restore(content)
+    except Exception:
+        pass
+
     msg = Message(
         id=str(uuid.uuid4()),
         session_id=session_id,

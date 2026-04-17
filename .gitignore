@@ -19,6 +19,7 @@ env/
 .env
 *.env
 config.local.py
+.secret_key
 
 # Database
 *.db

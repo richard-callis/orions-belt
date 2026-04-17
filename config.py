@@ -1,4 +1,5 @@
 import os
+import secrets
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent
@@ -10,13 +11,39 @@ os.environ.setdefault("HF_HOME", str(BASE_DIR / "models"))
 os.environ.setdefault("TRANSFORMERS_CACHE", str(BASE_DIR / "models" / "hub"))
 
 
+def _load_or_create_secret_key() -> str:
+    """Load SECRET_KEY from env or a local .secret_key file.
+
+    The key is generated once on first run and persisted across restarts.
+    Priority: SECRET_KEY env var > .secret_key file > generate new.
+    The .secret_key file is listed in .gitignore and has mode 0o600.
+    """
+    env_key = os.environ.get("SECRET_KEY")
+    if env_key:
+        return env_key
+    key_file = BASE_DIR / ".secret_key"
+    if key_file.exists():
+        stored = key_file.read_text().strip()
+        if stored:
+            return stored
+    new_key = secrets.token_hex(32)
+    try:
+        key_file.write_text(new_key)
+        key_file.chmod(0o600)
+    except OSError:
+        pass  # read-only filesystem — key won't persist, that's acceptable
+    return new_key
+
+
 class Config:
     # ── Database ──────────────────────────────────────────────
     SQLALCHEMY_DATABASE_URI = f"sqlite:///{BASE_DIR / 'orions_belt.db'}"
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     # ── Security ──────────────────────────────────────────────
-    SECRET_KEY = os.environ.get("SECRET_KEY", os.urandom(32).hex())
+    # Secret key is persisted to .secret_key (gitignored) so sessions survive
+    # app restarts. Override with SECRET_KEY env var for production deploys.
+    SECRET_KEY = _load_or_create_secret_key()
 
     # ── LLM Provider (set via UI on first run) ────────────────
     LLM_BASE_URL = "https://api.openai.com/v1"

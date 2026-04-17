@@ -23,7 +23,30 @@ def index():
 
 @bp.route("/api/health")
 def health():
-    return jsonify({"status": "ok", "app": "Orion's Belt", "version": "0.1.0"})
+    """Health check — returns component status without exposing secrets."""
+    from app import db
+    from app.models.settings import Setting as SettingModel
+
+    # Check DB connectivity
+    try:
+        db.session.execute(db.text("SELECT 1"))
+        db_status = "connected"
+    except Exception:
+        db_status = "error"
+
+    # Check LLM provider config
+    providers = _get_providers()
+    active = _get_active_provider()
+    llm_status = "configured" if (active and active.get("base_url")) else "not_configured"
+
+    return jsonify({
+        "status": "healthy" if db_status == "connected" else "degraded",
+        "app": "Orion's Belt",
+        "version": "0.1.0",
+        "database": db_status,
+        "llm_provider": llm_status,
+        "provider_count": len(providers),
+    })
 
 
 # ── LLM Provider helpers ──────────────────────────────────────────────────────
@@ -74,12 +97,17 @@ def _get_active_provider():
 
 @bp.route("/api/settings/<key>", methods=["GET"])
 def get_setting(key):
-    """Get a single setting value."""
+    """Get a single setting value. llm.providers API keys are masked."""
     row = Setting.query.get(key)
     value = None
     if row:
         if row.value_type == "json":
-            value = json.loads(row.value) if row.value else None
+            parsed = json.loads(row.value) if row.value else None
+            # SECURITY: mask API keys in provider list
+            if key == "llm.providers" and isinstance(parsed, list):
+                value = _redact_providers(parsed)
+            else:
+                value = parsed
         elif row.value_type == "bool":
             value = row.value == "true"
         elif row.value_type == "int":
@@ -91,12 +119,25 @@ def get_setting(key):
 
 @bp.route("/api/settings", methods=["GET"])
 def list_settings():
-    """List all settings."""
+    """List all settings. llm.providers API keys are masked."""
     rows = Setting.query.all()
-    return jsonify([
-        {"key": r.key, "value": r.value, "value_type": r.value_type}
-        for r in rows
-    ])
+    result = []
+    for r in rows:
+        if r.key == "llm.providers" and r.value:
+            try:
+                parsed = json.loads(r.value)
+                if isinstance(parsed, list):
+                    # SECURITY: mask API keys before returning to browser
+                    result.append({
+                        "key": r.key,
+                        "value": _redact_providers(parsed),
+                        "value_type": r.value_type,
+                    })
+                    continue
+            except Exception:
+                pass
+        result.append({"key": r.key, "value": r.value, "value_type": r.value_type})
+    return jsonify(result)
 
 
 @bp.route("/api/settings/<key>", methods=["PUT"])
@@ -141,32 +182,48 @@ def set_settings_bulk():
 
 # ── LLM Provider endpoints ────────────────────────────────────────────────────
 
+def _redact_providers(providers: list) -> list:
+    """Return a copy of the provider list with API keys masked.
+
+    SECURITY: API keys must never be returned to the browser in plaintext.
+    The backend reads keys directly from DB when making LLM calls.
+    """
+    result = []
+    for p in providers:
+        raw_key = p.get("api_key", "")
+        if raw_key and len(raw_key) > 4:
+            masked = "*" * (len(raw_key) - 4) + raw_key[-4:]
+        elif raw_key:
+            masked = "*" * len(raw_key)
+        else:
+            masked = ""
+        result.append({**p, "api_key": masked})
+    return result
+
+
 @bp.route("/api/llm/debug", methods=["GET"])
 def debug_providers():
-    """Debug: show raw and parsed provider data."""
-    raw = Setting.get("llm.providers")
+    """Debug: show raw and parsed provider data. API keys are redacted."""
     providers = _get_providers()
     active_id = _get_active_provider_id()
-    # Also try direct query
     row = Setting.query.get("llm.providers")
-    row_value = row.value if row else None
     row_type = row.value_type if row else None
     return jsonify({
-        "raw": raw,
-        "providers": providers,
+        "providers": _redact_providers(providers),
         "active_id": active_id,
-        "row_value": row_value,
         "row_value_type": row_type,
     })
 
 
 @bp.route("/api/llm/providers", methods=["GET"])
 def get_llm_providers():
-    """Get list of LLM providers with active indicator."""
+    """Get list of LLM providers with active indicator. API keys are masked."""
     providers = _get_providers()
     active_id = _get_active_provider_id()
+    # SECURITY: mask API keys — the frontend only needs to know a key is set,
+    # not the key itself. The backend reads the raw key from DB at call time.
     return jsonify({
-        "providers": providers,
+        "providers": _redact_providers(providers),
         "active_id": active_id,
     })
 
@@ -232,14 +289,17 @@ def activate_llm_provider(provider_id):
 
 @bp.route("/api/llm/config", methods=["GET"])
 def get_llm_config():
-    """Get the config for the active LLM provider."""
+    """Get the config for the active LLM provider. API key is masked."""
     provider = _get_active_provider()
     if not provider:
         return jsonify({"error": "No active provider configured"}), 404
 
+    # SECURITY: never return plaintext API key to the browser
+    raw_key = provider.get("api_key", "")
+    masked = ("*" * (len(raw_key) - 4) + raw_key[-4:]) if len(raw_key) > 4 else ("*" * len(raw_key))
     return jsonify({
         "base_url": provider.get("base_url", ""),
-        "api_key": provider.get("api_key", ""),
+        "api_key": masked,
         "model": provider.get("model", ""),
         "type": provider.get("type", "genai"),
         "id": provider.get("id", ""),

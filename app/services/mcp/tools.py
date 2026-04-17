@@ -5,8 +5,8 @@ Executes tools with tier-based authorization and path safety checks.
 import glob as glob_mod
 import json
 import os
+import re
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -50,21 +50,49 @@ def _is_blocked_path(path: str) -> bool:
     return False
 
 
+def _sanitize_path_input(path: str) -> str | None:
+    """Return None if path contains dangerous characters, else the path string.
+
+    Security: null bytes can truncate paths at the C layer, allowing attackers
+    to bypass extension or suffix checks (e.g. 'safe.txt\\x00.sh').
+    """
+    if not isinstance(path, str):
+        return None
+    if "\x00" in path:
+        return None
+    return path
+
+
 def _authorize_path(path: str) -> bool:
-    """Check if path is within an authorized directory."""
-    real_path = str(Path(path).resolve())
+    """Check if path is within an authorized directory.
+
+    Security hardening applied:
+    - os.path.realpath() resolves ALL symlinks (not just the final component).
+      This prevents symlink-escape attacks where an authorized dir contains a
+      symlink pointing outside the authorized tree.
+    - os.sep appended to the prefix prevents /data/safe from matching
+      /data/safe-evil (prefix collision attack).
+    - The stored dir.path is also realpath'd in case it was set via a symlink.
+    """
+    real_path = os.path.realpath(path)
     authorized = AuthorizedDirectory.query.filter_by(enabled=True).all()
     if not authorized:
         # No directories configured — allow nothing
         return False
-    return any(real_path.startswith(dir.path) for dir in authorized)
+    for dir_entry in authorized:
+        auth_real = os.path.realpath(dir_entry.path)
+        if real_path == auth_real or real_path.startswith(auth_real + os.sep):
+            return True
+    return False
 
 
 def _get_effective_tier(path: str, tool_tier: int) -> int:
     """Calculate effective tier based on path settings."""
-    real_path = str(Path(path).resolve())
+    real_path = os.path.realpath(path)
     for dir_entry in AuthorizedDirectory.query.filter_by(enabled=True).all():
-        if real_path.startswith(dir_entry.path):
+        auth_real = os.path.realpath(dir_entry.path)
+        # SECURITY: use realpath + os.sep to prevent prefix-collision attacks
+        if real_path == auth_real or real_path.startswith(auth_real + os.sep):
             if dir_entry.read_only:
                 return min(tool_tier, TIER_READ)
             if dir_entry.max_tier is not None:
@@ -137,14 +165,18 @@ def _log_audit(tool_name: str, tier: int, caller: str, session_id: str | None,
 
 # ── Tier 0: Read Operations ──────────────────────────────────────────────────
 
+MAX_READ_BYTES = 1 * 1024 * 1024   # 1 MB hard cap on file reads
+MAX_TOOL_TURNS = 20                # hard cap on per-session tool loop turns
+
+
 async def _handle_read_file(tool_name: str, args: dict) -> str:
     """Read a file from an authorized directory."""
-    path = args.get("path", "")
+    path = _sanitize_path_input(args.get("path", ""))
     if not path:
-        return "Error: path is required"
+        return "Error: path is required (or contains invalid characters)"
 
     # Normalize path
-    real_path = str(Path(path).resolve())
+    real_path = os.path.realpath(path)
     if _is_blocked_path(real_path):
         return f"Error: access denied — system path blocked: {path}"
     if not _authorize_path(real_path):
@@ -152,7 +184,8 @@ async def _handle_read_file(tool_name: str, args: dict) -> str:
 
     try:
         content = Path(real_path).read_text(encoding="utf-8")
-        max_bytes = args.get("max_bytes", 65536)
+        # SECURITY: cap file read size to prevent memory exhaustion
+        max_bytes = min(int(args.get("max_bytes", 65536)), MAX_READ_BYTES)
         if len(content) > max_bytes:
             content = content[:max_bytes] + "\n[…truncated, file too large]"
         return content
@@ -166,8 +199,8 @@ async def _handle_read_file(tool_name: str, args: dict) -> str:
 
 async def _handle_list_directory(tool_name: str, args: dict) -> str:
     """List files in an authorized directory."""
-    path = args.get("path", ".")
-    real_path = str(Path(path).resolve())
+    path = _sanitize_path_input(args.get("path", ".")) or "."
+    real_path = os.path.realpath(path)
     if _is_blocked_path(real_path):
         return f"Error: access denied — system path blocked: {path}"
     if not _authorize_path(real_path):
@@ -189,9 +222,9 @@ async def _handle_list_directory(tool_name: str, args: dict) -> str:
 
 async def _handle_search_files(tool_name: str, args: dict) -> str:
     """Search for files matching a pattern."""
-    path = args.get("path", ".")
+    path = _sanitize_path_input(args.get("path", ".")) or "."
     pattern = args.get("pattern", "*")
-    real_path = str(Path(path).resolve())
+    real_path = os.path.realpath(path)
     if not _authorize_path(real_path):
         return f"Error: directory not authorized: {path}"
 
@@ -207,12 +240,31 @@ async def _handle_search_files(tool_name: str, args: dict) -> str:
         return f"Error searching files: {e}"
 
 
+def _assert_select_only(query: str) -> str | None:
+    """Return None if query is safe (SELECT-only), or an error string.
+
+    SECURITY: Strips SQL comments before checking to prevent bypass patterns
+    like /* DROP */ SELECT. Only SELECT statements are permitted.
+    """
+    stripped = re.sub(r"/\*.*?\*/", "", query, flags=re.DOTALL)
+    stripped = re.sub(r"--[^\n]*", "", stripped)
+    stripped = stripped.strip()
+    if not re.match(r"^SELECT\b", stripped, re.IGNORECASE):
+        return "Error: only SELECT queries are permitted via MCP tools"
+    return None
+
+
 async def _handle_run_sql_query(tool_name: str, args: dict) -> str:
     """Run a SELECT query via a SQL connector."""
     connector_name = args.get("connector", "")
     query = args.get("query", "")
     if not connector_name or not query:
         return "Error: connector and query are required"
+
+    # SECURITY: enforce read-only access — prevent DROP, INSERT, UPDATE, etc.
+    err = _assert_select_only(query)
+    if err:
+        return err
 
     connector = _get_connector(connector_name)
     if not connector:
@@ -256,12 +308,12 @@ async def _handle_search_emails(tool_name: str, args: dict) -> str:
 
 async def _handle_create_file(tool_name: str, args: dict) -> str:
     """Create a new file (fails if exists)."""
-    path = args.get("path", "")
+    path = _sanitize_path_input(args.get("path", ""))
     content = args.get("content", "")
     if not path:
-        return "Error: path is required"
+        return "Error: path is required (or contains invalid characters)"
 
-    real_path = str(Path(path).resolve())
+    real_path = os.path.realpath(path)
     if _is_blocked_path(real_path):
         return f"Error: access denied — system path blocked: {path}"
     if not _authorize_path(real_path):
@@ -279,12 +331,12 @@ async def _handle_create_file(tool_name: str, args: dict) -> str:
 
 async def _handle_append_to_file(tool_name: str, args: dict) -> str:
     """Append content to an existing file."""
-    path = args.get("path", "")
+    path = _sanitize_path_input(args.get("path", ""))
     content = args.get("content", "")
     if not path:
-        return "Error: path is required"
+        return "Error: path is required (or contains invalid characters)"
 
-    real_path = str(Path(path).resolve())
+    real_path = os.path.realpath(path)
     if _is_blocked_path(real_path):
         return f"Error: access denied — system path blocked: {path}"
     if not _authorize_path(real_path):
@@ -307,12 +359,12 @@ async def _handle_append_to_file(tool_name: str, args: dict) -> str:
 
 async def _handle_modify_file(tool_name: str, args: dict) -> str:
     """Overwrite an existing file."""
-    path = args.get("path", "")
+    path = _sanitize_path_input(args.get("path", ""))
     content = args.get("content", "")
     if not path:
-        return "Error: path is required"
+        return "Error: path is required (or contains invalid characters)"
 
-    real_path = str(Path(path).resolve())
+    real_path = os.path.realpath(path)
     if _is_blocked_path(real_path):
         return f"Error: access denied — system path blocked: {path}"
     if not _authorize_path(real_path):
@@ -329,13 +381,17 @@ async def _handle_modify_file(tool_name: str, args: dict) -> str:
 
 async def _handle_create_directory(tool_name: str, args: dict) -> str:
     """Create a new directory."""
-    path = args.get("path", "")
+    path = _sanitize_path_input(args.get("path", ""))
     if not path:
-        return "Error: path is required"
+        return "Error: path is required (or contains invalid characters)"
 
-    real_path = str(Path(path).resolve())
+    real_path = os.path.realpath(path)
     if _is_blocked_path(real_path):
         return f"Error: access denied — system path blocked: {path}"
+    # SECURITY FIX: authorization check was missing — added to prevent
+    # arbitrary directory creation outside of authorized paths.
+    if not _authorize_path(real_path):
+        return f"Error: directory not authorized: {path}"
 
     try:
         Path(real_path).mkdir(parents=True, exist_ok=True)
@@ -348,11 +404,11 @@ async def _handle_create_directory(tool_name: str, args: dict) -> str:
 
 async def _handle_delete_file(tool_name: str, args: dict) -> str:
     """Delete a file."""
-    path = args.get("path", "")
+    path = _sanitize_path_input(args.get("path", ""))
     if not path:
-        return "Error: path is required"
+        return "Error: path is required (or contains invalid characters)"
 
-    real_path = str(Path(path).resolve())
+    real_path = os.path.realpath(path)
     if _is_blocked_path(real_path):
         return f"Error: access denied — system path blocked: {path}"
     if not _authorize_path(real_path):
@@ -369,15 +425,20 @@ async def _handle_delete_file(tool_name: str, args: dict) -> str:
 
 async def _handle_move_file(tool_name: str, args: dict) -> str:
     """Move or rename a file."""
-    src = args.get("source", "")
-    dst = args.get("destination", "")
+    src = _sanitize_path_input(args.get("source", ""))
+    dst = _sanitize_path_input(args.get("destination", ""))
     if not src or not dst:
-        return "Error: source and destination are required"
+        return "Error: source and destination are required (or contain invalid characters)"
 
-    real_src = str(Path(src).resolve())
-    real_dst = str(Path(dst).resolve())
+    real_src = os.path.realpath(src)
+    real_dst = os.path.realpath(dst)
     if _is_blocked_path(real_src) or _is_blocked_path(real_dst):
         return "Error: access denied — system path blocked"
+    # SECURITY FIX: auth checks were missing on both source and destination.
+    if not _authorize_path(real_src):
+        return f"Error: source directory not authorized: {src}"
+    if not _authorize_path(real_dst):
+        return f"Error: destination directory not authorized: {dst}"
 
     try:
         Path(real_src).rename(real_dst)
@@ -432,7 +493,22 @@ async def _handle_call_connector(tool_name: str, args: dict) -> str:
             import pyodbc
             conn = pyodbc.connect(config.get("connection_string", ""))
             cursor = conn.cursor()
-            cursor.execute(action if action.startswith("SELECT") else f"SELECT * FROM {action}")
+            # SECURITY: action is either a SELECT query or a table name.
+            # If it looks like a query, enforce SELECT-only. If it's a table
+            # name, validate it as a safe identifier before embedding in SQL.
+            stripped = re.sub(r"/\*.*?\*/", "", action, flags=re.DOTALL)
+            stripped = re.sub(r"--[^\n]*", "", stripped).strip()
+            if re.match(r"^SELECT\b", stripped, re.IGNORECASE):
+                err = _assert_select_only(action)
+                if err:
+                    return err
+                cursor.execute(action)
+            else:
+                # Treat as table name — only allow simple identifiers
+                if not re.match(r"^[A-Za-z_][A-Za-z0-9_\.]*$", action):
+                    return "Error: invalid table name (use simple identifier or SELECT query)"
+                safe_table = action.replace("]", "")
+                cursor.execute(f"SELECT * FROM [{safe_table}]")
             columns = [desc[0] for desc in cursor.description]
             rows = cursor.fetchmany(50)
             conn.close()
