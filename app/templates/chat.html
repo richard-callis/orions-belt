@@ -63,6 +63,12 @@
           Compact
         </button>
 
+        <select id="llm-provider-select"
+                class="px-2 py-1 text-xs rounded border border-border-visible bg-bg-raised text-text-muted focus:outline-none focus:border-accent"
+                title="LLM Provider">
+          <option value="">Loading providers...</option>
+        </select>
+
         <select id="context-strategy"
                 class="px-2 py-1 text-xs rounded border border-border-visible bg-bg-raised text-text-muted focus:outline-none focus:border-accent">
           <option value="full">Full context</option>
@@ -133,10 +139,13 @@
 let currentSessionId = null;
 let abortController = null;
 let isStreaming = false;
+let llmProviders = [];
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   loadSessions();
+  loadLlmProviders();
+
   if (currentSessionId) {
     loadMessages(currentSessionId);
   } else {
@@ -298,6 +307,48 @@ async function sendMessage() {
   await streamResponse(text);
 }
 
+async function loadLlmProviders() {
+  try {
+    const res = await fetch('/api/llm/providers');
+    const data = await res.json();
+    llmProviders = data.providers || [];
+    const select = document.getElementById('llm-provider-select');
+    select.innerHTML = '';
+    llmProviders.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = `${p.name} (${p.model})`;
+      if (p.id === data.active_id) opt.selected = true;
+      select.appendChild(opt);
+    });
+    if (llmProviders.length === 0) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'No providers — configure in Settings';
+      select.appendChild(opt);
+    }
+  } catch (e) {
+    console.error('Failed to load LLM providers:', e);
+  }
+}
+
+async function getActiveProviderConfig() {
+  const select = document.getElementById('llm-provider-select');
+  const providerId = select.value;
+  const provider = llmProviders.find(p => p.id === providerId);
+  if (provider) {
+    return {
+      base_url: provider.base_url,
+      api_key: provider.api_key || '',
+      model: provider.model,
+      type: provider.type || 'genai',
+      ollama: false,
+    };
+  }
+  // Fallback to defaults
+  return { base_url: '', api_key: '', model: '', type: 'genai', ollama: false };
+}
+
 async function streamResponse(userPrompt) {
   isStreaming = true;
   abortController = new AbortController();
@@ -335,20 +386,16 @@ async function streamResponse(userPrompt) {
 
   try {
     const strategy = document.getElementById('context-strategy').value;
-
-    // Load current LLM settings from the backend
-    const settingsRes = await fetch('/api/settings');
-    const allSettings = await settingsRes.json();
-    const settingsMap = {};
-    allSettings.forEach(s => settingsMap[s.key] = s.value);
+    const cfg = await getActiveProviderConfig();
 
     const streamBody = {
       prompt: userPrompt,
       context_strategy: strategy,
     };
-    if (settingsMap['llm.base_url']) streamBody.base_url = settingsMap['llm.base_url'];
-    if (settingsMap['llm.model']) streamBody.model = settingsMap['llm.model'];
-    if (settingsMap['llm.provider'] === 'ollama') streamBody.ollama_model = settingsMap['llm.model'];
+    if (cfg.base_url) streamBody.base_url = cfg.base_url;
+    if (cfg.model) streamBody.model = cfg.model;
+    if (cfg.type === 'ollama') streamBody.ollama_model = cfg.model;
+    else if (cfg.ollama) streamBody.ollama_model = cfg.model;
 
     const res = await fetch(`/chat/api/sessions/${currentSessionId}/stream`, {
       method: 'POST',

@@ -33,11 +33,13 @@ class Setting(db.Model):
     @classmethod
     def set(cls, key: str, value, value_type: str = "string", description: str = None):
         if value_type == "json":
-            value = json.dumps(value)
+            value = json.dumps(value) if value is not None else None
         elif value_type == "bool":
             value = "true" if value else "false"
+        elif value_type == "int":
+            value = str(value) if value is not None and value != "" else None
         else:
-            value = str(value) if value is not None else None
+            value = value if value is None else str(value)
 
         row = cls.query.get(key)
         if row:

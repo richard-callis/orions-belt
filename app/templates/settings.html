@@ -33,18 +33,30 @@
     <div id="section-llm" class="space-y-5">
       <div>
         <h2 class="text-base font-semibold text-text-primary mb-0.5">LLM Provider</h2>
-        <p class="text-xs text-text-muted">Configure the external LLM used for chat and agents. All data passes through the PII guard before leaving this machine.</p>
+        <p class="text-xs text-text-muted">Configure LLM providers. Select one in the chat page to use for conversations.</p>
       </div>
 
-      <div class="rounded-lg border border-border-subtle bg-bg-card p-5 space-y-4">
+      <!-- Provider list -->
+      <div id="provider-list" class="space-y-3"></div>
+
+      <!-- Add provider form -->
+      <div id="add-provider-form" class="hidden rounded-lg border border-border-subtle bg-bg-card p-5 space-y-4">
+        <h3 class="text-sm font-semibold text-text-primary" id="form-title">Add Provider</h3>
+
+        <div>
+          <label class="text-xs text-text-muted block mb-1.5">Provider Name</label>
+          <input id="prov-name" type="text" placeholder="e.g. Local llama.cpp"
+                 class="w-full px-3 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent font-mono" />
+        </div>
+
         <div>
           <label class="text-xs text-text-muted block mb-1.5">Provider Type</label>
-          <div class="flex gap-2 flex-wrap" id="provider-buttons">
-            <button type="button" data-provider="genai"
+          <div class="flex gap-2 flex-wrap" id="prov-type-buttons">
+            <button type="button" data-type="genai"
                     class="px-3 py-1.5 rounded text-xs font-medium border transition-colors bg-accent/15 text-accent border-accent/40">
               GenAI
             </button>
-            <button type="button" data-provider="custom"
+            <button type="button" data-type="custom"
                     class="px-3 py-1.5 rounded text-xs font-medium border transition-colors bg-bg-raised border-border-subtle text-text-muted hover:border-accent/40 hover:text-accent">
               Custom endpoint
             </button>
@@ -53,37 +65,45 @@
 
         <div>
           <label class="text-xs text-text-muted block mb-1.5">Base URL</label>
-          <input id="llm-base-url" type="url" placeholder="https://api.openai.com/v1"
+          <input id="prov-base-url" type="url" placeholder="https://api.openai.com/v1"
                  class="w-full px-3 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent font-mono" />
-          <p class="text-[10px] text-text-muted mt-1">e.g. <code class="text-accent/60">http://10.2.2.9:8080</code> for a local OpenAI-compatible server, <code class="text-accent/60">https://api.openai.com/v1</code> for cloud APIs</p>
+          <p class="text-[10px] text-text-muted mt-1">e.g. <code class="text-accent/60">http://10.2.2.9:8080</code> for local OpenAI-compatible server</p>
         </div>
 
-        <div id="llm-key-row">
+        <div id="prov-key-row">
           <label class="text-xs text-text-muted block mb-1.5">API Key <span class="text-text-muted/50">(optional for local models)</span></label>
           <div class="flex gap-2">
-            <input id="llm-api-key" type="password" placeholder="sk-... or leave blank for local"
+            <input id="prov-api-key" type="password" placeholder="sk-... or leave blank for local"
                    class="flex-1 px-3 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent font-mono" />
-            <button type="button" id="llm-toggle-key" class="px-3 py-2 rounded border border-border-subtle text-xs text-text-muted hover:text-accent hover:border-accent/40 transition-colors">Show</button>
+            <button type="button" id="prov-toggle-key" class="px-3 py-2 rounded border border-border-subtle text-xs text-text-muted hover:text-accent hover:border-accent/40 transition-colors">Show</button>
           </div>
         </div>
 
         <div>
           <label class="text-xs text-text-muted block mb-1.5">Model ID</label>
-          <input id="llm-model" type="text" placeholder="gpt-4o"
+          <input id="prov-model" type="text" placeholder="gpt-4o"
                  class="w-full px-3 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent font-mono" />
           <p class="text-[10px] text-text-muted mt-1">e.g. <code class="text-accent/60">gpt-4o</code>, <code class="text-accent/60">llama3</code></p>
         </div>
 
         <div class="flex items-center gap-3 pt-2">
-          <button id="llm-save-btn" class="px-4 py-2 rounded text-sm bg-accent/15 text-accent hover:bg-accent/30 transition-colors font-medium">
-            Save
+          <button id="prov-save-btn" class="px-4 py-2 rounded text-sm bg-accent/15 text-accent hover:bg-accent/30 transition-colors font-medium">
+            Save Provider
           </button>
-          <button id="llm-test-btn" class="px-4 py-2 rounded text-sm bg-bg-raised border border-border-subtle text-text-muted hover:text-accent hover:border-accent/40 transition-colors">
-            Test
+          <button id="prov-cancel-btn" class="px-4 py-2 rounded text-sm bg-bg-raised border border-border-subtle text-text-muted hover:text-accent hover:border-accent/40 transition-colors">
+            Cancel
           </button>
-          <div id="llm-test-result" class="hidden items-center gap-1.5 text-xs"></div>
         </div>
       </div>
+
+      <!-- Add button -->
+      <button id="add-provider-trigger" class="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-border-subtle border-dashed text-sm text-text-muted hover:text-accent hover:border-accent/40 transition-colors w-full justify-center">
+        <i data-lucide="plus" class="w-4 h-4"></i>
+        Add Provider
+      </button>
+
+      <!-- Test result -->
+      <div id="llm-test-result" class="hidden items-center gap-1.5 text-xs"></div>
     </div>
 
     <!-- ── PII Guard ───────────────────────────────────────── -->
@@ -179,7 +199,7 @@
       </div>
     </div>
 
-    <!-- Other sections (dirs, connectors-cfg, memory-cfg) would go here -->
+    <!-- Other sections -->
     <div id="section-dirs" class="hidden">
       <p class="text-sm text-text-muted">Directory settings — see MCP Tools page.</p>
     </div>
@@ -196,9 +216,14 @@
 
 {% block scripts %}
 <script>
-// ── Settings loading ──────────────────────────────────────────────────────────
+// ── State ─────────────────────────────────────────────────────────────────────
+let providers = [];
+let activeProviderId = null;
+let editingProviderId = null; // null = adding, uuid = editing
+
+// ── Init ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  loadLlmSettings();
+  loadProviders();
 });
 
 function showSection(id) {
@@ -214,13 +239,14 @@ function showSection(id) {
   });
 }
 
-// ── LLM Settings ──────────────────────────────────────────────────────────────
+// ── Provider type selector ────────────────────────────────────────────────────
 
-const baseInputs = ['llm-base-url', 'llm-api-key', 'llm-model'];
+let currentType = 'genai';
 
-function selectProvider(provider) {
-  document.querySelectorAll('#provider-buttons button').forEach(btn => {
-    const isActive = btn.dataset.provider === provider;
+function selectProvType(type) {
+  currentType = type;
+  document.querySelectorAll('#prov-type-buttons button').forEach(btn => {
+    const isActive = btn.dataset.type === type;
     btn.classList.toggle('bg-accent/15', isActive);
     btn.classList.toggle('text-accent', isActive);
     btn.classList.toggle('border-accent/40', isActive);
@@ -229,12 +255,11 @@ function selectProvider(provider) {
     btn.classList.toggle('text-text-muted', !isActive);
   });
 
-  // Update base URL placeholder hints based on provider
-  const baseInput = document.getElementById('llm-base-url');
-  const modelInput = document.getElementById('llm-model');
-  const keyRow = document.getElementById('llm-key-row');
+  const baseInput = document.getElementById('prov-base-url');
+  const modelInput = document.getElementById('prov-model');
+  const keyRow = document.getElementById('prov-key-row');
 
-  switch (provider) {
+  switch (type) {
     case 'genai':
       baseInput.placeholder = 'https://api.openai.com/v1';
       modelInput.placeholder = 'gpt-4o';
@@ -251,102 +276,248 @@ function selectProvider(provider) {
   }
 }
 
-// Provider button click handlers
-document.querySelectorAll('#provider-buttons button').forEach(btn => {
-  btn.addEventListener('click', () => selectProvider(btn.dataset.provider));
+document.querySelectorAll('#prov-type-buttons button').forEach(btn => {
+  btn.addEventListener('click', () => selectProvType(btn.dataset.type));
 });
 
 // Show/hide API key
-document.getElementById('llm-toggle-key').addEventListener('click', function() {
-  const input = document.getElementById('llm-api-key');
+document.getElementById('prov-toggle-key').addEventListener('click', function() {
+  const input = document.getElementById('prov-api-key');
   const isPassword = input.type === 'password';
   input.type = isPassword ? 'text' : 'password';
   this.textContent = isPassword ? 'Hide' : 'Show';
 });
 
-async function loadLlmSettings() {
-  try {
-    const [baseRes, keyRes, modelRes, providerRes] = await Promise.all([
-      fetch('/api/settings/llm.base_url'),
-      fetch('/api/settings/llm.api_key'),
-      fetch('/api/settings/llm.model'),
-      fetch('/api/settings/llm.provider'),
-    ]);
+// ── Provider list rendering ──────────────────────────────────────────────────
 
-    const baseUrl = await baseRes.json();
-    const apiKey = await keyRes.json();
-    const model = await modelRes.json();
-    const provider = await providerRes.json();
+function renderProviders() {
+  const list = document.getElementById('provider-list');
+  list.innerHTML = '';
 
-    if (baseUrl.data?.value) {
-      document.getElementById('llm-base-url').value = baseUrl.data.value;
-    }
-    if (apiKey.data?.value) {
-      document.getElementById('llm-api-key').value = apiKey.data.value;
-    }
-    if (model.data?.value) {
-      document.getElementById('llm-model').value = model.data.value;
-    }
-    if (provider.data?.value) {
-      selectProvider(provider.data.value);
-    } else {
-      selectProvider('genai');
-    }
-  } catch (e) {
-    console.warn('Failed to load LLM settings:', e);
-    selectProvider('genai');
-  }
-}
-
-async function saveLlmSettings() {
-  const baseUrl = document.getElementById('llm-base-url').value.trim();
-  const apiKey = document.getElementById('llm-api-key').value.trim();
-  const model = document.getElementById('llm-model').value.trim();
-  const provider = document.querySelector('#provider-buttons button.bg-accent/15')?.dataset.provider || 'genai';
-
-  if (!baseUrl || !model) {
-    showTestResult('error', 'Base URL and Model ID are required', true);
+  if (providers.length === 0) {
+    list.innerHTML = '<p class="text-xs text-text-muted text-center py-4">No providers configured. Add one below.</p>';
     return;
   }
 
-  const settings = [
-    { key: 'llm.base_url', value: baseUrl },
-    { key: 'llm.api_key', value: apiKey },
-    { key: 'llm.model', value: model },
-    { key: 'llm.provider', value: provider },
-  ];
+  providers.forEach(p => {
+    const isActive = p.id === activeProviderId;
+    const typeLabel = p.type === 'genai' ? 'GenAI' : 'Custom';
+    const typeColor = isActive ? 'text-accent' : 'text-text-muted';
 
-  for (const s of settings) {
-    const res = await fetch('/api/settings/' + s.key, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ value: s.value || '' }),
-    });
-    if (!res.ok) {
-      console.error(`Failed to save ${s.key}`);
-      showTestResult('error', 'Failed to save settings', true);
-      return;
-    }
-  }
+    const card = document.createElement('div');
+    card.className = `rounded-lg border transition-colors ${
+      isActive
+        ? 'border-accent/40 bg-accent/5'
+        : 'border-border-subtle bg-bg-card hover:border-border-visible'
+    }`;
+    card.innerHTML = `
+      <div class="flex items-center justify-between px-4 py-3">
+        <div class="flex items-center gap-3 flex-1 min-w-0">
+          <div class="w-2 h-2 rounded-full flex-shrink-0 ${isActive ? 'bg-accent' : 'bg-border-visible'}"></div>
+          <div class="min-w-0">
+            <div class="text-sm font-medium truncate ${isActive ? 'text-accent' : 'text-text-primary'}">${escHtml(p.name)}</div>
+            <div class="text-[10px] text-text-muted font-mono truncate">${escHtml(p.base_url)} · ${escHtml(p.model)}</div>
+          </div>
+        </div>
+        <div class="flex items-center gap-1.5 flex-shrink-0 ml-2">
+          <span class="text-[10px] px-1.5 py-0.5 rounded border ${typeColor} border-current">${typeLabel}</span>
+          ${isActive
+            ? '<span class="text-[10px] text-accent px-2 py-0.5 bg-accent/10 rounded">Active</span>'
+            : `<button onclick="activateProvider('${p.id}')" class="text-[10px] text-text-muted hover:text-accent px-2 py-0.5 transition-colors">Use</button>`
+          }
+          <button onclick="editProvider('${p.id}')" class="p-1 text-text-muted hover:text-accent transition-colors" title="Edit">
+            <i data-lucide="pencil" class="w-3 h-3"></i>
+          </button>
+          <button onclick="deleteProvider('${p.id}')" class="p-1 text-text-muted hover:text-status-error transition-colors" title="Delete">
+            <i data-lucide="trash-2" class="w-3 h-3"></i>
+          </button>
+        </div>
+      </div>
+    `;
+    list.appendChild(card);
+  });
 
-  showTestResult('success', 'Settings saved');
+  lucide.createIcons();
 }
 
-async function testLlmConnection() {
-  const btn = document.getElementById('llm-test-btn');
+// ── Load providers ───────────────────────────────────────────────────────────
+
+async function loadProviders() {
+  try {
+    const res = await fetch('/api/llm/providers');
+    const data = await res.json();
+    providers = data.providers || [];
+    activeProviderId = data.active_id || (providers[0] ? providers[0].id : null);
+    renderProviders();
+  } catch (e) {
+    console.error('Failed to load providers:', e);
+  }
+}
+
+// ── Add / Edit provider ───────────────────────────────────────────────────────
+
+function openAddForm() {
+  editingProviderId = null;
+  document.getElementById('form-title').textContent = 'Add Provider';
+  document.getElementById('prov-name').value = '';
+  document.getElementById('prov-base-url').value = '';
+  document.getElementById('prov-api-key').value = '';
+  document.getElementById('prov-model').value = '';
+  selectProvType('genai');
+  document.getElementById('add-provider-form').classList.remove('hidden');
+  document.getElementById('add-provider-trigger').classList.add('hidden');
+  document.getElementById('prov-name').focus();
+}
+
+function openEditForm(providerId) {
+  const p = providers.find(x => x.id === providerId);
+  if (!p) return;
+
+  editingProviderId = providerId;
+  document.getElementById('form-title').textContent = 'Edit Provider';
+  document.getElementById('prov-name').value = p.name || '';
+  document.getElementById('prov-base-url').value = p.base_url || '';
+  document.getElementById('prov-api-key').value = p.api_key || '';
+  document.getElementById('prov-model').value = p.model || '';
+  selectProvType(p.type || 'genai');
+  document.getElementById('add-provider-form').classList.remove('hidden');
+  document.getElementById('add-provider-trigger').classList.add('hidden');
+}
+
+function closeForm() {
+  editingProviderId = null;
+  document.getElementById('add-provider-form').classList.add('hidden');
+  document.getElementById('add-provider-trigger').classList.remove('hidden');
+}
+
+async function saveProvider() {
+  const name = document.getElementById('prov-name').value.trim();
+  const baseUrl = document.getElementById('prov-base-url').value.trim();
+  const apiKey = document.getElementById('prov-api-key').value;
+  const model = document.getElementById('prov-model').value.trim();
+
+  if (!name || !baseUrl || !model) {
+    showTestResult('error', 'Name, Base URL, and Model are required', true);
+    return;
+  }
+
+  const payload = {
+    name,
+    type: currentType,
+    base_url: baseUrl,
+    api_key: apiKey,
+    model,
+  };
+
+  try {
+    let res;
+    if (editingProviderId) {
+      // Replace the provider in the list and save
+      const idx = providers.findIndex(p => p.id === editingProviderId);
+      if (idx === -1) return;
+      payload.id = editingProviderId;
+      providers[idx] = payload;
+    } else {
+      payload.id = 'prov_' + Date.now();
+      providers.push(payload);
+    }
+
+    // Save the full list as JSON
+    res = await fetch('/api/settings/llm.providers', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(providers),
+    });
+
+    if (!res.ok) {
+      throw new Error('Failed to save');
+    }
+
+    // If this was the first provider or the active one was deleted, set active
+    if (providers.length > 0 && !activeProviderId) {
+      await setProviderActive(providers[0].id);
+    }
+
+    closeForm();
+    document.getElementById('add-provider-trigger').classList.remove('hidden');
+    await loadProviders();
+    showTestResult('success', editingProviderId ? 'Provider updated' : 'Provider added');
+  } catch (e) {
+    console.error('Failed to save provider:', e);
+    showTestResult('error', 'Failed to save provider', true);
+  }
+}
+
+// ── Activate provider ────────────────────────────────────────────────────────
+
+async function activateProvider(providerId) {
+  try {
+    const res = await fetch(`/api/llm/providers/${providerId}/activate`, {
+      method: 'PUT',
+    });
+    if (!res.ok) throw new Error('Failed to activate');
+    activeProviderId = providerId;
+    renderProviders();
+  } catch (e) {
+    console.error('Failed to activate:', e);
+  }
+}
+
+async function setProviderActive(providerId) {
+  try {
+    const res = await fetch(`/api/llm/providers/${providerId}/activate`, {
+      method: 'PUT',
+    });
+    if (!res.ok) throw new Error('Failed to activate');
+    activeProviderId = providerId;
+    renderProviders();
+  } catch (e) {
+    console.error('Failed to activate:', e);
+  }
+}
+
+// ── Edit / Delete ─────────────────────────────────────────────────────────────
+
+function editProvider(providerId) {
+  openEditForm(providerId);
+}
+
+async function deleteProvider(providerId) {
+  const p = providers.find(x => x.id === providerId);
+  if (!p) return;
+  if (!confirm(`Delete provider "${p.name}"?`)) return;
+
+  try {
+    const res = await fetch(`/api/llm/providers/${providerId}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error('Failed to delete');
+    if (activeProviderId === providerId) {
+      activeProviderId = providers.length > 1 ? (providers.find(x => x.id !== providerId) || {}).id : null;
+    }
+    await loadProviders();
+  } catch (e) {
+    console.error('Failed to delete:', e);
+  }
+}
+
+// ── Test connection ───────────────────────────────────────────────────────────
+
+async function testProvider() {
+  const btn = document.getElementById('prov-save-btn');
+  const origText = btn.textContent;
   btn.disabled = true;
   btn.textContent = 'Testing...';
 
+  const baseUrl = document.getElementById('prov-base-url').value.trim();
+  const model = document.getElementById('prov-model').value.trim();
+
+  if (!baseUrl || !model) {
+    showTestResult('error', 'Set Base URL and Model first', true);
+    return;
+  }
+
   try {
-    const baseUrl = document.getElementById('llm-base-url').value.trim();
-    const model = document.getElementById('llm-model').value.trim();
-
-    if (!baseUrl || !model) {
-      showTestResult('error', 'Set Base URL and Model first', true);
-      return;
-    }
-
-    // Test connection with a minimal chat completion
     const res = await fetch('/api/llm/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -357,13 +528,13 @@ async function testLlmConnection() {
     if (res.ok) {
       showTestResult('success', `Connected · ${data.model || model} · ${data.latency_ms}ms`);
     } else {
-      showTestResult('error', `Connection failed: ${data.error || 'unknown error'}`);
+      showTestResult('error', `Failed: ${data.error || 'unknown error'}`);
     }
   } catch (e) {
-    showTestResult('error', `Connection failed: ${e.message}`);
+    showTestResult('error', `Failed: ${e.message}`);
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Test';
+    btn.textContent = origText;
   }
 }
 
@@ -382,7 +553,10 @@ function showTestResult(type, message, persist = false) {
   }
 }
 
-document.getElementById('llm-save-btn').addEventListener('click', saveLlmSettings);
-document.getElementById('llm-test-btn').addEventListener('click', testLlmConnection);
+// ── Event bindings ────────────────────────────────────────────────────────────
+
+document.getElementById('add-provider-trigger').addEventListener('click', openAddForm);
+document.getElementById('prov-save-btn').addEventListener('click', saveProvider);
+document.getElementById('prov-cancel-btn').addEventListener('click', closeForm);
 </script>
 {% endblock %}

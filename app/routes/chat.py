@@ -212,20 +212,37 @@ def stream_messages(session_id):
     strategy = session.context_strategy or "sliding"
     history = build_context(raw_history, strategy=strategy)
 
-    # LLM configuration
-    llm_base_url = Setting.get("llm.base_url", Config.LLM_BASE_URL)
-    llm_api_key = Setting.get("llm.api_key", Config.LLM_API_KEY)
-    llm_model = Setting.get("llm.model", Config.LLM_MODEL)
-    llm_provider = Setting.get("llm.provider", "genai")
+    # LLM configuration — read from active provider, fallback to URL overrides
+    import json
+    llm_providers_raw = Setting.get("llm.providers")
+    llm_active_id = Setting.get("llm.active_provider")
+
+    # Parse providers
+    if isinstance(llm_providers_raw, str):
+        try:
+            llm_providers = json.loads(llm_providers_raw)
+        except (json.JSONDecodeError, TypeError):
+            llm_providers = []
+    else:
+        llm_providers = llm_providers_raw or []
+
+    # Find active provider (default to first)
+    active_provider = None
+    if llm_active_id:
+        active_provider = next((p for p in llm_providers if p.get("id") == llm_active_id), None)
+    if not active_provider and llm_providers:
+        active_provider = llm_providers[0]
+
+    llm_base_url = (active_provider or {}).get("base_url", Config.LLM_BASE_URL)
+    llm_api_key = (active_provider or {}).get("api_key", Config.LLM_API_KEY)
+    llm_model = (active_provider or {}).get("model", Config.LLM_MODEL)
 
     explicit_model = body.get("model")
     explicit_base_url = body.get("base_url")
     ollama_model = body.get("ollama_model")
 
-    # Detect provider — use DB setting, fall back to URL heuristics
-    use_ollama = (llm_provider == "ollama") or bool(ollama_model)
-    if not use_ollama and llm_base_url:
-        use_ollama = "/api" in llm_base_url or "11434" in llm_base_url
+    # Detect provider — URL heuristics for Ollama
+    use_ollama = bool(ollama_model) or (llm_base_url and ("/api" in llm_base_url or "11434" in llm_base_url))
     model = explicit_model or (ollama_model or llm_model)
     base_url = explicit_base_url or llm_base_url
     system_prompt = body.get("system_prompt", _get_default_system_prompt())
