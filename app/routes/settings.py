@@ -100,12 +100,14 @@ def list_settings():
 @bp.route("/api/settings/<key>", methods=["PUT"])
 def set_setting(key):
     """Set a single setting value."""
-    body = request.get_json() or {}
+    body = request.get_json()
     # Support both { "value": ... } and direct value
     if isinstance(body, dict):
         value = body.get("value", "")
-    else:
+    elif isinstance(body, list):
         value = body
+    else:
+        value = body or ""
 
     # llm.providers is stored as JSON
     if key == "llm.providers":
