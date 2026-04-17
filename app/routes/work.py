@@ -2,19 +2,88 @@
 Orion's Belt — Work Hierarchy Routes
 REST API for Projects → Epics → Features → Tasks.
 """
+import logging
+import re
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 from flask import Blueprint, jsonify, render_template, request
 
 from app import db
 from app.models.work import Epic, Feature, Project, Task
+from config import Config
+
+log = logging.getLogger("orions-belt")
 
 bp = Blueprint("work", __name__, url_prefix="/work")
 
 
 def _now():
     return datetime.now(timezone.utc)
+
+
+# ── Project folder helpers ────────────────────────────────────────────────────
+
+def _safe_folder_name(name: str) -> str:
+    """Convert a project name to a safe directory name."""
+    safe = re.sub(r"[^\w\s-]", "", name.lower())
+    safe = re.sub(r"[\s_-]+", "-", safe).strip("-")
+    return safe or "project"
+
+
+def _provision_project_folder(project: Project) -> None:
+    """Create the project subfolder and register it as an authorized MCP directory.
+
+    Called after the project is added to the session but before commit.
+    """
+    from app.models.connector import AuthorizedDirectory
+
+    folder_name = _safe_folder_name(project.name)
+    projects_root = Config.PROJECTS_DIR
+    folder_path = projects_root / folder_name
+
+    # Avoid collisions with existing project folders by appending a short ID
+    if folder_path.exists() and not (folder_path / ".project_id").exists():
+        folder_path = projects_root / f"{folder_name}-{project.id[:8]}"
+
+    try:
+        folder_path.mkdir(parents=True, exist_ok=True)
+        (folder_path / ".project_id").write_text(project.id, encoding="utf-8")
+    except OSError as e:
+        log.error("Failed to create project folder %s: %s", folder_path, e)
+        return
+
+    project.folder_path = str(folder_path)
+    log.info("project.folder created: %s", folder_path)
+
+    # Register as an authorized directory (upsert by path)
+    existing = AuthorizedDirectory.query.filter_by(path=str(folder_path)).first()
+    if existing:
+        existing.enabled = True
+        existing.alias = project.name
+    else:
+        db.session.add(AuthorizedDirectory(
+            path=str(folder_path),
+            alias=project.name,
+            recursive=True,
+            read_only=False,
+            max_tier=3,
+            enabled=True,
+        ))
+    log.info("project.mcp_dir registered: alias=%r path=%s", project.name, folder_path)
+
+
+def _deprovision_project_folder(project: Project) -> None:
+    """Disable the MCP directory entry for a deleted project (folder is kept on disk)."""
+    from app.models.connector import AuthorizedDirectory
+
+    if not project.folder_path:
+        return
+    entry = AuthorizedDirectory.query.filter_by(path=project.folder_path).first()
+    if entry:
+        entry.enabled = False
+        log.info("project.mcp_dir disabled: %s", project.folder_path)
 
 
 # ── Page ──────────────────────────────────────────────────────────────────────
@@ -47,7 +116,9 @@ def create_project():
         status=body.get("status", "active"),
     )
     db.session.add(project)
+    _provision_project_folder(project)
     db.session.commit()
+    log.info("project.created name=%r id=%s folder=%s", name, project.id, project.folder_path)
     return jsonify(project.to_dict()), 201
 
 
@@ -81,6 +152,7 @@ def delete_project(project_id):
     project = Project.query.get(project_id)
     if not project:
         return jsonify({"error": "Project not found"}), 404
+    _deprovision_project_folder(project)
     db.session.delete(project)
     db.session.commit()
     return "", 204

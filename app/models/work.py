@@ -22,6 +22,7 @@ class Project(db.Model):
     name = db.Column(db.String(256), nullable=False)
     description = db.Column(db.Text, nullable=True)
     status = db.Column(db.String(32), default="active")  # active|paused|completed|archived
+    folder_path = db.Column(db.String(1024), nullable=True)  # absolute path to project folder
     created_at = db.Column(db.DateTime, default=_now)
     updated_at = db.Column(db.DateTime, default=_now, onupdate=_now)
 
@@ -34,6 +35,7 @@ class Project(db.Model):
             "name": self.name,
             "description": self.description,
             "status": self.status,
+            "folder_path": self.folder_path,
             "created_at": self.created_at.isoformat(),
             "epic_count": len(self.epics),
         }

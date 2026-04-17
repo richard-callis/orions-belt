@@ -67,6 +67,11 @@ class Config:
     CONTEXT_TOKEN_COMPACT = 0.90     # auto-compact at 90%
     CONTEXT_SLIDING_WINDOW = 20      # messages kept in sliding mode
 
+    # ── Projects root directory ───────────────────────────────
+    # Each project gets a subfolder here when created.
+    # Override with PROJECTS_DIR env var to point at a different location.
+    PROJECTS_DIR = Path(os.environ.get("PROJECTS_DIR", str(BASE_DIR / "projects")))
+
     # ── MCP / File operations ─────────────────────────────────
     # Tier 2 countdown before auto-proceeding (seconds)
     MCP_WARN_COUNTDOWN = 10

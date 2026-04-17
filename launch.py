@@ -45,6 +45,7 @@ def run_flask():
         _migrate_llm_settings(app)
         _migrate_schema(app)
         _seed_builtin_tools(app)
+        _ensure_projects_dir(app)
     app.run(host="127.0.0.1", port=PORT, debug=False, use_reloader=False, threaded=True)
 
 
@@ -86,6 +87,9 @@ def _migrate_schema(app):
         "authorized_directories": [
             ("enabled", "BOOLEAN NOT NULL DEFAULT 1"),
         ],
+        "projects": [
+            ("folder_path", "VARCHAR(1024)"),
+        ],
     }
     with db.engine.connect() as conn:
         for table, additions in cols.items():
@@ -101,6 +105,17 @@ def _migrate_schema(app):
                     ))
                     print(f"[migrate] added {table}.{col_name}")
         conn.commit()
+
+
+def _ensure_projects_dir(app):
+    """Create the root projects directory and register it as an authorized directory."""
+    from config import Config
+    from app.models.connector import AuthorizedDirectory
+    from app import db
+
+    projects_root = Config.PROJECTS_DIR
+    projects_root.mkdir(parents=True, exist_ok=True)
+    print(f"[startup] projects root: {projects_root}")
 
 
 def _migrate_llm_settings(app):
