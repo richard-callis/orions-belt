@@ -28,8 +28,44 @@ from typing import Optional
 
 log = logging.getLogger("orions-belt.pii_guard")
 
+_TORCH_DLL_FIX = (
+    "Fix: reinstall PyTorch CPU-only build — "
+    "pip install torch --index-url https://download.pytorch.org/whl/cpu"
+)
+
 _instance: Optional["PIIGuard"] = None
 _lock = threading.Lock()
+
+# Cached torch availability — checked once so stages 2 & 3 don't each
+# spend ~3 seconds waiting for the DLL failure to propagate.
+_torch_ok: Optional[bool] = None
+_torch_lock = threading.Lock()
+
+
+def _is_torch_available() -> bool:
+    """Import torch once and cache the result."""
+    global _torch_ok
+    if _torch_ok is not None:
+        return _torch_ok
+    with _torch_lock:
+        if _torch_ok is not None:
+            return _torch_ok
+        try:
+            import torch  # noqa: F401
+            _torch_ok = True
+        except OSError as e:
+            if "1114" in str(e) or "c10.dll" in str(e) or "DLL" in str(e):
+                log.warning(
+                    f"PII Guard: PyTorch DLL failed to load — stages 2 & 3 disabled. "
+                    f"{_TORCH_DLL_FIX}"
+                )
+            else:
+                log.warning(f"PII Guard: torch import failed ({e}) — stages 2 & 3 disabled")
+            _torch_ok = False
+        except Exception as e:
+            log.warning(f"PII Guard: torch import failed ({e}) — stages 2 & 3 disabled")
+            _torch_ok = False
+    return _torch_ok
 
 
 def get_pii_guard() -> "PIIGuard":
@@ -41,11 +77,6 @@ def get_pii_guard() -> "PIIGuard":
                 _instance = PIIGuard()
     return _instance
 
-
-_TORCH_DLL_FIX = (
-    "Fix: reinstall PyTorch CPU-only build — "
-    "pip install torch --index-url https://download.pytorch.org/whl/cpu"
-)
 
 # ── Pure-regex fallback patterns (no torch, no spaCy) ────────────────────────
 # Used when Presidio/spaCy can't load, giving basic coverage for the most
@@ -128,9 +159,10 @@ class PIIGuard:
             log.info("PII Guard: Regex fallback scanner active (Stage 1 degraded — common PII patterns only)")
 
     def _init_ner(self):
+        if not _is_torch_available():
+            log.info("PII Guard: Stage 2 (NER) skipped — torch unavailable")
+            return
         try:
-            # Pre-check: import torch first so the DLL error is caught cleanly
-            import torch  # noqa: F401
             from transformers import pipeline as hf_pipeline
             from config import Config
             model_name = getattr(Config, "PII_NER_MODEL", "dslim/bert-base-NER")
@@ -142,20 +174,14 @@ class PIIGuard:
             )
             self._ner_ready = True
             log.info(f"PII Guard: NER pipeline loaded ({model_name})")
-        except OSError as e:
-            if "1114" in str(e) or "c10.dll" in str(e) or "DLL" in str(e):
-                log.warning(
-                    f"PII Guard: NER model unavailable — torch DLL failed. "
-                    f"{_TORCH_DLL_FIX} — Stage 2 disabled"
-                )
-            else:
-                log.warning(f"PII Guard: NER model unavailable ({e}) — Stage 2 disabled")
         except Exception as e:
             log.warning(f"PII Guard: NER model unavailable ({e}) — Stage 2 disabled")
 
     def _init_judge(self):
+        if not _is_torch_available():
+            log.info("PII Guard: Stage 3 (judge) skipped — torch unavailable")
+            return
         try:
-            import torch  # noqa: F401
             from transformers import pipeline as hf_pipeline
             from config import Config
             model_name = getattr(Config, "PII_JUDGE_MODEL", "cross-encoder/nli-deberta-v3-small")
@@ -166,14 +192,6 @@ class PIIGuard:
             )
             self._judge_ready = True
             log.info(f"PII Guard: Judge pipeline loaded ({model_name})")
-        except OSError as e:
-            if "1114" in str(e) or "c10.dll" in str(e) or "DLL" in str(e):
-                log.warning(
-                    f"PII Guard: Judge model unavailable — torch DLL failed. "
-                    f"{_TORCH_DLL_FIX} — Stage 3 disabled"
-                )
-            else:
-                log.warning(f"PII Guard: Judge model unavailable ({e}) — Stage 3 disabled")
         except Exception as e:
             log.warning(f"PII Guard: Judge model unavailable ({e}) — Stage 3 disabled")
 
