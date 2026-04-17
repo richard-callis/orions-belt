@@ -59,11 +59,22 @@
           Compact
         </button>
 
-        <select id="llm-provider-select"
-                class="px-2 py-1 text-xs rounded border border-border-visible bg-bg-raised text-text-muted focus:outline-none focus:border-accent"
-                title="LLM Provider">
-          <option value="">Loading providers...</option>
-        </select>
+        <!-- Provider pill + dropdown -->
+        <div class="relative" id="provider-pill-wrap">
+          <button id="provider-pill"
+                  onclick="toggleProviderDropdown()"
+                  class="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs border border-border-visible bg-bg-raised text-text-muted hover:border-accent/50 hover:text-accent transition-colors whitespace-nowrap">
+            <span class="w-1.5 h-1.5 rounded-full bg-accent inline-block flex-shrink-0"></span>
+            <span id="provider-pill-label">Loading…</span>
+            <i data-lucide="chevron-down" class="w-3 h-3 flex-shrink-0"></i>
+          </button>
+          <div id="provider-dropdown"
+               class="hidden absolute right-0 top-full mt-1 w-56 rounded-lg border border-border-subtle bg-bg-card shadow-lg z-50 py-1 text-xs">
+            <!-- populated by loadLlmProviders() -->
+          </div>
+        </div>
+        <!-- Hidden select kept for getActiveProviderConfig() compatibility -->
+        <select id="llm-provider-select" class="hidden"></select>
 
         <select id="context-strategy"
                 class="px-2 py-1 text-xs rounded border border-border-visible bg-bg-raised text-text-muted focus:outline-none focus:border-accent">
@@ -275,29 +286,57 @@ async function newSession() {
   await createNewSession();
 }
 
-async function renameSession(id, triggerEl) {
-  // Find the name text from the sibling div inside the same session row
-  const row = triggerEl.closest('[data-session-id]') ||
-               triggerEl.closest('.mx-1');
+function renameSession(id, triggerEl) {
+  const row = triggerEl.closest('.mx-1');
   const nameEl = row ? row.querySelector('.text-sm.font-medium') : null;
-  const current = nameEl ? nameEl.textContent.trim() : '';
+  if (!nameEl) return;
 
-  const newName = prompt('Rename session:', current);
-  if (!newName || !newName.trim()) return;
-  try {
-    await fetch(`/chat/api/sessions/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: newName.trim() }),
-    });
-    // Keep hidden span in sync (used by sendMessage auto-name logic)
-    if (id === currentSessionId) {
-      document.getElementById('session-name').textContent = newName.trim();
+  const current = nameEl.textContent.trim();
+
+  // Swap the name span for an input, right there in the row
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = current;
+  input.className = 'w-full bg-bg-raised border border-accent/50 rounded px-1.5 py-0.5 text-sm text-text-primary focus:outline-none focus:border-accent';
+
+  nameEl.replaceWith(input);
+  input.focus();
+  input.select();
+
+  // Prevent row click (switchSession) while editing
+  row._savedOnclick = row.onclick;
+  row.onclick = null;
+
+  async function commit() {
+    const newName = input.value.trim();
+    // Restore row click handler regardless of outcome
+    row.onclick = row._savedOnclick;
+
+    if (!newName || newName === current) {
+      // Revert without saving
+      input.replaceWith(nameEl);
+      return;
+    }
+    try {
+      await fetch(`/chat/api/sessions/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName }),
+      });
+      if (id === currentSessionId) {
+        document.getElementById('session-name').textContent = newName;
+      }
+    } catch (e) {
+      console.error('Failed to rename:', e);
     }
     await loadSessions();
-  } catch (e) {
-    console.error('Failed to rename:', e);
   }
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); commit(); }
+    if (e.key === 'Escape') { row.onclick = row._savedOnclick; input.replaceWith(nameEl); }
+  });
+  input.addEventListener('blur', commit);
 }
 
 async function deleteSession(id) {
@@ -368,25 +407,106 @@ async function loadLlmProviders() {
     const res = await fetch('/api/llm/providers');
     const data = await res.json();
     llmProviders = data.providers || [];
+
+    // Keep hidden select in sync for getActiveProviderConfig()
     const select = document.getElementById('llm-provider-select');
     select.innerHTML = '';
     llmProviders.forEach(p => {
       const opt = document.createElement('option');
       opt.value = p.id;
-      opt.textContent = `${p.name} (${p.model})`;
       if (p.id === data.active_id) opt.selected = true;
       select.appendChild(opt);
     });
+
+    // Build pill dropdown
+    const dropdown = document.getElementById('provider-dropdown');
+    const pill = document.getElementById('provider-pill-label');
+    dropdown.innerHTML = '';
+
     if (llmProviders.length === 0) {
-      const opt = document.createElement('option');
-      opt.value = '';
-      opt.textContent = 'No providers — configure in Settings';
-      select.appendChild(opt);
+      pill.textContent = 'No providers';
+      dropdown.innerHTML = `<div class="px-3 py-2 text-text-muted italic">No providers configured —
+        <a href="/settings" class="text-accent hover:underline">Settings</a></div>`;
+      return;
     }
+
+    llmProviders.forEach(p => {
+      const isActive = p.id === (select.value || data.active_id);
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-bg-raised transition-colors ' +
+                       (isActive ? 'text-accent' : 'text-text-primary');
+      item.dataset.providerId = p.id;
+      item.innerHTML = `
+        <span class="w-1.5 h-1.5 rounded-full flex-shrink-0 ${isActive ? 'bg-accent' : 'bg-border-visible'}"></span>
+        <span class="flex-1 min-w-0">
+          <span class="block font-medium truncate">${escHtml(p.name)}</span>
+          <span class="block text-[10px] text-text-muted font-mono truncate">${escHtml(p.model)}</span>
+        </span>
+        ${isActive ? '<i data-lucide="check" class="w-3 h-3 flex-shrink-0"></i>' : ''}`;
+      item.onclick = () => selectProvider(p.id);
+      dropdown.appendChild(item);
+    });
+    lucide.createIcons();
+
+    // Update pill label to active provider
+    const active = llmProviders.find(p => p.id === data.active_id) || llmProviders[0];
+    if (active) pill.textContent = active.model;
+
   } catch (e) {
     console.error('Failed to load LLM providers:', e);
   }
 }
+
+function toggleProviderDropdown() {
+  const dropdown = document.getElementById('provider-dropdown');
+  dropdown.classList.toggle('hidden');
+}
+
+function selectProvider(id) {
+  // Update hidden select
+  const select = document.getElementById('llm-provider-select');
+  select.value = id;
+
+  // Update pill label
+  const p = llmProviders.find(p => p.id === id);
+  if (p) document.getElementById('provider-pill-label').textContent = p.model;
+
+  // Rebuild dropdown to show new checkmark
+  const dropdown = document.getElementById('provider-dropdown');
+  dropdown.querySelectorAll('button[data-provider-id]').forEach(btn => {
+    const isActive = btn.dataset.providerId === id;
+    btn.className = 'w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-bg-raised transition-colors ' +
+                    (isActive ? 'text-accent' : 'text-text-primary');
+    const dot = btn.querySelector('span.rounded-full');
+    if (dot) dot.className = `w-1.5 h-1.5 rounded-full flex-shrink-0 ${isActive ? 'bg-accent' : 'bg-border-visible'}`;
+    // Toggle check icon
+    const check = btn.querySelector('[data-lucide="check"]');
+    if (isActive && !check) {
+      const icon = document.createElement('i');
+      icon.setAttribute('data-lucide', 'check');
+      icon.className = 'w-3 h-3 flex-shrink-0';
+      btn.appendChild(icon);
+      lucide.createIcons();
+    } else if (!isActive && check) {
+      check.remove();
+    }
+  });
+
+  dropdown.classList.add('hidden');
+
+  // Persist active provider to backend
+  fetch(`/api/llm/providers/${id}/activate`, { method: 'PUT' })
+    .catch(e => console.error('Failed to activate provider:', e));
+}
+
+// Close provider dropdown when clicking outside
+document.addEventListener('click', e => {
+  const wrap = document.getElementById('provider-pill-wrap');
+  if (wrap && !wrap.contains(e.target)) {
+    document.getElementById('provider-dropdown')?.classList.add('hidden');
+  }
+});
 
 async function getActiveProviderConfig() {
   const select = document.getElementById('llm-provider-select');
@@ -401,7 +521,11 @@ async function getActiveProviderConfig() {
       ollama: false,
     };
   }
-  // Fallback to defaults
+  // Fallback to first provider
+  if (llmProviders.length > 0) {
+    const p = llmProviders[0];
+    return { base_url: p.base_url, api_key: p.api_key || '', model: p.model, type: p.type || 'genai', ollama: false };
+  }
   return { base_url: '', api_key: '', model: '', type: 'genai', ollama: false };
 }
 
