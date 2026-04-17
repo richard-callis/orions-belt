@@ -3,7 +3,7 @@
 {% block page_title %}Projects{% endblock %}
 
 {% block header_actions %}
-<button onclick="openNewProjectModal()"
+<button onclick="openProjectModal()"
         class="flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium bg-accent/15 text-accent hover:bg-accent/30 transition-colors">
   <i data-lucide="plus" class="w-3 h-3"></i>
   New Project
@@ -16,185 +16,70 @@
   <!-- ── Left: Project list ──────────────────────────────── -->
   <aside class="flex flex-col w-64 border-r border-border-subtle bg-bg-sidebar flex-shrink-0">
     <div class="px-3 py-2.5 border-b border-border-subtle">
-      <input type="text" placeholder="Filter projects..."
+      <input id="project-filter" type="text" placeholder="Filter projects..."
+             oninput="filterProjects(this.value)"
              class="w-full px-2 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent" />
     </div>
 
     <div class="flex-1 overflow-y-auto py-1" id="project-list">
-      <!-- Placeholder projects -->
-      {% set statuses = [('active','status-healthy'), ('active','status-healthy'), ('paused','border-visible'), ('completed','status-info')] %}
-      {% set names = ['Website Redesign', 'Data Pipeline', 'Mobile App', 'API Integration'] %}
-      {% for name in names %}
-      {% set i = loop.index0 %}
-      <div class="mx-1 my-0.5 px-3 py-2.5 rounded-lg cursor-pointer hover:bg-bg-raised transition-colors group
-                  {% if i == 0 %}bg-accent/10 border border-accent/20{% endif %}">
-        <div class="flex items-center gap-2 mb-1">
-          <span class="w-1.5 h-1.5 rounded-full bg-{{ statuses[i][1] }}"></span>
-          <span class="text-sm font-medium truncate {% if i == 0 %}text-accent{% else %}text-text-secondary group-hover:text-text-primary{% endif %}">
-            {{ name }}
-          </span>
-        </div>
-        <div class="flex items-center gap-3 text-[10px] text-text-muted font-mono pl-3.5">
-          <span>{{ [3,1,5,2][i] }} epics</span>
-          <span>{{ [12,4,18,7][i] }} tasks</span>
-        </div>
-      </div>
-      {% endfor %}
+      <div class="flex items-center justify-center h-16 text-text-muted text-xs">Loading…</div>
     </div>
   </aside>
 
   <!-- ── Center: Epic → Feature → Task tree ─────────────── -->
-  <div class="flex flex-col flex-1 min-w-0">
+  <div class="flex flex-col flex-1 min-w-0" id="center-panel">
 
-    <!-- Project header -->
-    <div class="px-5 py-3.5 border-b border-border-subtle bg-bg-sidebar flex items-center gap-3 flex-shrink-0">
-      <div>
-        <h1 class="text-base font-semibold text-text-primary">Website Redesign</h1>
-        <p class="text-xs text-text-muted mt-0.5">Modernize the company website with new branding and improved UX</p>
-      </div>
-      <div class="ml-auto flex items-center gap-2">
-        <button class="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs border border-border-subtle text-text-secondary hover:text-accent hover:border-accent/40 transition-colors">
-          <i data-lucide="message-square" class="w-3 h-3"></i>
-          Discuss
-        </button>
-        <button onclick="openNewEpicModal()"
-                class="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs bg-accent/15 text-accent hover:bg-accent/30 transition-colors">
-          <i data-lucide="plus" class="w-3 h-3"></i>
-          Add Epic
-        </button>
-      </div>
+    <!-- Empty state -->
+    <div id="no-project" class="flex flex-col items-center justify-center flex-1 text-text-muted gap-3">
+      <i data-lucide="folder-kanban" class="w-10 h-10 opacity-30"></i>
+      <p class="text-sm">Select a project or create one to get started</p>
     </div>
 
-    <!-- Stats bar -->
-    <div class="flex items-center gap-6 px-5 py-2 border-b border-border-subtle bg-bg-card/50 flex-shrink-0">
-      {% set stats = [('3','Epics','status-info'),('8','Features','accent'),('12','Tasks','text-text-secondary'),('5','Done','status-healthy'),('2','In Progress','status-warning')] %}
-      {% for val, label, color in stats %}
-      <div class="flex items-center gap-1.5">
-        <span class="text-sm font-bold font-mono text-{{ color }}">{{ val }}</span>
-        <span class="text-[10px] text-text-muted">{{ label }}</span>
-      </div>
-      {% if not loop.last %}<span class="text-border-visible">|</span>{% endif %}
-      {% endfor %}
-    </div>
+    <!-- Project view (hidden until a project is selected) -->
+    <div id="project-view" class="hidden flex flex-col flex-1 min-h-0">
 
-    <!-- Epic/Feature/Task tree -->
-    <div class="flex-1 overflow-y-auto p-5 space-y-3">
-
-      {% set epics = [
-        ('Design System', 'Establish visual language and component library', 'in_progress'),
-        ('Content Migration', 'Move and restructure all existing content', 'backlog'),
-        ('Performance Optimization', 'Achieve 90+ Lighthouse scores', 'backlog'),
-      ] %}
-
-      {% for epic_title, epic_desc, epic_status in epics %}
-      <div class="rounded-lg border border-border-subtle bg-bg-card overflow-hidden">
-
-        <!-- Epic header -->
-        <div class="flex items-center gap-3 px-4 py-3 bg-bg-raised/50 cursor-pointer hover:bg-bg-raised transition-colors"
-             onclick="toggleEpic(this)">
-          <i data-lucide="chevron-down" class="w-3.5 h-3.5 text-text-muted flex-shrink-0 epic-chevron transition-transform"></i>
-          <div class="flex-1 min-w-0">
-            <div class="flex items-center gap-2">
-              <span class="text-sm font-semibold text-text-primary">{{ epic_title }}</span>
-              <span class="px-1.5 py-0.5 rounded text-[10px] font-medium border
-                {% if epic_status == 'in_progress' %}bg-accent/10 text-accent border-accent/30
-                {% elif epic_status == 'done' %}bg-status-healthy/10 text-status-healthy border-status-healthy/30
-                {% else %}bg-bg-raised text-text-muted border-border-subtle{% endif %}">
-                {{ epic_status.replace('_',' ').title() }}
-              </span>
-            </div>
-            <p class="text-xs text-text-muted mt-0.5 truncate">{{ epic_desc }}</p>
+      <!-- Project header -->
+      <div class="px-5 py-3.5 border-b border-border-subtle bg-bg-sidebar flex items-center gap-3 flex-shrink-0">
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2">
+            <h1 id="proj-name" class="text-base font-semibold text-text-primary truncate"></h1>
+            <span id="proj-status-badge" class="px-1.5 py-0.5 rounded text-[10px] font-medium border"></span>
           </div>
-          <button class="flex items-center gap-1 px-2 py-1 rounded text-[10px] text-text-muted hover:text-accent hover:bg-accent/10 transition-colors flex-shrink-0"
-                  onclick="event.stopPropagation(); openNewFeatureModal()">
+          <p id="proj-desc" class="text-xs text-text-muted mt-0.5 truncate"></p>
+        </div>
+        <div class="ml-auto flex items-center gap-2 flex-shrink-0">
+          <button onclick="editProject()"
+                  class="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs border border-border-subtle text-text-secondary hover:text-accent hover:border-accent/40 transition-colors">
+            <i data-lucide="pencil" class="w-3 h-3"></i>
+            Edit
+          </button>
+          <button onclick="deleteProject()"
+                  class="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs border border-border-subtle text-status-warning hover:border-status-warning/40 transition-colors">
+            <i data-lucide="trash-2" class="w-3 h-3"></i>
+          </button>
+          <button onclick="openEpicModal()"
+                  class="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs bg-accent/15 text-accent hover:bg-accent/30 transition-colors">
             <i data-lucide="plus" class="w-3 h-3"></i>
-            Feature
+            Add Epic
           </button>
         </div>
-
-        <!-- Features -->
-        <div class="epic-body divide-y divide-border-subtle/50">
-          {% set features = [('Color Palette & Typography', 'done'), ('Component Library', 'in_progress'), ('Responsive Grid', 'backlog')] if loop.first else [('Content Audit', 'backlog'), ('Copy Rewrite', 'backlog')] %}
-
-          {% for feat_title, feat_status in features %}
-          <div class="pl-8 pr-4">
-
-            <!-- Feature row -->
-            <div class="flex items-center gap-3 py-2.5 cursor-pointer hover:bg-bg-raised/30 -mx-4 px-4 transition-colors"
-                 onclick="toggleFeature(this)">
-              <i data-lucide="chevron-right" class="w-3 h-3 text-text-muted flex-shrink-0 feat-chevron transition-transform"></i>
-              <i data-lucide="layers" class="w-3.5 h-3.5 text-text-muted flex-shrink-0"></i>
-              <span class="text-sm text-text-secondary flex-1 truncate">{{ feat_title }}</span>
-              <span class="px-1.5 py-0.5 rounded text-[10px] border
-                {% if feat_status == 'in_progress' %}bg-accent/10 text-accent border-accent/30
-                {% elif feat_status == 'done' %}bg-status-healthy/10 text-status-healthy border-status-healthy/30
-                {% else %}bg-bg-raised text-text-muted border-border-subtle{% endif %}">
-                {{ feat_status.replace('_',' ').title() }}
-              </span>
-              <button class="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] text-text-muted hover:text-accent hover:bg-accent/10 transition-colors flex-shrink-0"
-                      onclick="event.stopPropagation()">
-                <i data-lucide="plus" class="w-2.5 h-2.5"></i>
-                Task
-              </button>
-            </div>
-
-            <!-- Tasks -->
-            <div class="feat-body pb-2 space-y-1 hidden">
-              {% set tasks = [
-                ('Research color psychology', 'done', null),
-                ('Define primary/secondary palette', 'done', null),
-                ('Document typography scale', 'in_progress', 'Design Agent'),
-                ('Create Figma tokens', 'backlog', null),
-              ] if (feat_title == 'Color Palette & Typography') else [
-                ('Audit existing content', 'backlog', null),
-                ('Map new IA structure', 'backlog', 'Research Agent'),
-              ] %}
-
-              {% for task_title, task_status, agent in tasks %}
-              <div class="flex items-center gap-3 pl-6 pr-2 py-1.5 rounded-lg hover:bg-bg-raised/40 transition-colors group cursor-pointer"
-                   onclick="openTask('{{ task_title }}')">
-                <!-- Status icon -->
-                {% if task_status == 'done' %}
-                <i data-lucide="check-circle-2" class="w-3.5 h-3.5 text-status-healthy flex-shrink-0"></i>
-                {% elif task_status == 'in_progress' %}
-                <i data-lucide="loader" class="w-3.5 h-3.5 text-accent flex-shrink-0 spin-slow"></i>
-                {% else %}
-                <i data-lucide="circle" class="w-3.5 h-3.5 text-text-muted flex-shrink-0"></i>
-                {% endif %}
-
-                <span class="text-xs flex-1 truncate
-                  {% if task_status == 'done' %}text-text-muted line-through{% else %}text-text-secondary group-hover:text-text-primary{% endif %}">
-                  {{ task_title }}
-                </span>
-
-                {% if agent %}
-                <span class="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] border border-accent/30 bg-accent/5 text-accent">
-                  <i data-lucide="bot" class="w-2.5 h-2.5"></i>
-                  {{ agent }}
-                </span>
-                {% endif %}
-
-                <!-- Task actions (hover) -->
-                <div class="hidden group-hover:flex items-center gap-1 flex-shrink-0">
-                  <button class="p-1 rounded hover:bg-accent/10 hover:text-accent text-text-muted transition-colors"
-                          title="Assign agent" onclick="event.stopPropagation()">
-                    <i data-lucide="bot" class="w-3 h-3"></i>
-                  </button>
-                  <button class="p-1 rounded hover:bg-accent/10 hover:text-accent text-text-muted transition-colors"
-                          title="Discuss" onclick="event.stopPropagation()">
-                    <i data-lucide="message-square" class="w-3 h-3"></i>
-                  </button>
-                </div>
-              </div>
-              {% endfor %}
-            </div>
-
-          </div>
-          {% endfor %}
-        </div>
-
       </div>
-      {% endfor %}
+
+      <!-- Stats bar -->
+      <div class="flex items-center gap-5 px-5 py-2 border-b border-border-subtle bg-bg-card/50 flex-shrink-0 text-xs font-mono">
+        <span><span id="stat-epics" class="font-bold text-status-info">0</span> <span class="text-text-muted">Epics</span></span>
+        <span class="text-border-visible">|</span>
+        <span><span id="stat-features" class="font-bold text-accent">0</span> <span class="text-text-muted">Features</span></span>
+        <span class="text-border-visible">|</span>
+        <span><span id="stat-tasks" class="font-bold text-text-secondary">0</span> <span class="text-text-muted">Tasks</span></span>
+        <span class="text-border-visible">|</span>
+        <span id="proj-folder" class="text-text-muted truncate max-w-xs hidden"></span>
+      </div>
+
+      <!-- Epic tree -->
+      <div class="flex-1 overflow-y-auto p-4 space-y-2" id="epic-list">
+        <div class="flex items-center justify-center h-16 text-text-muted text-xs">Loading epics…</div>
+      </div>
 
     </div>
   </div>
@@ -207,80 +92,687 @@
         <i data-lucide="x" class="w-3.5 h-3.5"></i>
       </button>
     </div>
-    <div id="task-panel-body" class="flex-1 overflow-y-auto p-4 flex flex-col items-center justify-center">
-      <p class="text-text-muted text-sm">Select a task to view details</p>
+    <div id="task-panel-body" class="flex-1 overflow-y-auto p-4">
+      <p class="text-text-muted text-xs text-center mt-8">Select a task to view details</p>
     </div>
   </aside>
 
 </div>
+
+<!-- ── Modal ─────────────────────────────────────────────────────── -->
+<div id="modal-overlay" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+  <div class="bg-bg-card border border-border-visible rounded-xl shadow-2xl w-full max-w-md mx-4">
+    <div class="flex items-center justify-between px-5 py-3.5 border-b border-border-subtle">
+      <h2 id="modal-title" class="text-sm font-semibold text-text-primary"></h2>
+      <button onclick="closeModal()" class="p-1 rounded hover:bg-bg-raised text-text-muted">
+        <i data-lucide="x" class="w-4 h-4"></i>
+      </button>
+    </div>
+    <div id="modal-body" class="px-5 py-4 space-y-3"></div>
+    <div class="flex justify-end gap-2 px-5 pb-4">
+      <button onclick="closeModal()" class="px-4 py-1.5 rounded text-sm text-text-muted hover:text-text-primary hover:bg-bg-raised transition-colors">Cancel</button>
+      <button id="modal-save" class="px-4 py-1.5 rounded text-sm bg-accent/15 text-accent hover:bg-accent/30 transition-colors font-medium">Save</button>
+    </div>
+  </div>
+</div>
+
 {% endblock %}
 
 {% block scripts %}
 <script>
-  function toggleEpic(header) {
-    const body = header.nextElementSibling;
-    const chevron = header.querySelector('.epic-chevron');
-    body.classList.toggle('hidden');
-    chevron.style.transform = body.classList.contains('hidden') ? 'rotate(-90deg)' : '';
+// ── State ─────────────────────────────────────────────────────────
+const S = {
+  projects: [],
+  project: null,     // selected project object
+  epics: [],
+  features: {},      // epic_id -> []
+  tasks: {},         // feature_id -> []
+  taskDetail: null,  // currently open task
+};
+
+// ── Helpers ───────────────────────────────────────────────────────
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+const STATUS_CLASSES = {
+  active:      'bg-status-healthy/10 text-status-healthy border-status-healthy/30',
+  completed:   'bg-status-healthy/10 text-status-healthy border-status-healthy/30',
+  done:        'bg-status-healthy/10 text-status-healthy border-status-healthy/30',
+  in_progress: 'bg-accent/10 text-accent border-accent/30',
+  review:      'bg-accent/10 text-accent border-accent/30',
+  paused:      'bg-bg-raised text-text-muted border-border-subtle',
+  backlog:     'bg-bg-raised text-text-muted border-border-subtle',
+  blocked:     'bg-status-warning/10 text-status-warning border-status-warning/30',
+  archived:    'bg-bg-raised text-text-muted border-border-subtle',
+};
+
+function statusBadge(status) {
+  const cls = STATUS_CLASSES[status] || 'bg-bg-raised text-text-muted border-border-subtle';
+  const label = status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  return `<span class="px-1.5 py-0.5 rounded text-[10px] font-medium border ${cls}">${esc(label)}</span>`;
+}
+
+async function api(method, path, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(path, opts);
+  if (!res.ok && res.status !== 204) throw new Error(await res.text());
+  if (res.status === 204) return null;
+  return res.json();
+}
+
+// ── Projects ─────────────────────────────────────────────────────
+async function loadProjects() {
+  const data = await api('GET', '/work/api/projects');
+  S.projects = data;
+  renderProjectList();
+  if (S.project) {
+    const still = S.projects.find(p => p.id === S.project.id);
+    if (still) selectProject(still.id);
+  }
+}
+
+function filterProjects(q) {
+  renderProjectList(q.toLowerCase());
+}
+
+function renderProjectList(filter = '') {
+  const el = document.getElementById('project-list');
+  const filtered = S.projects.filter(p => !filter || p.name.toLowerCase().includes(filter));
+  if (!filtered.length) {
+    el.innerHTML = '<div class="text-center text-text-muted text-xs py-6">No projects</div>';
+    return;
+  }
+  el.innerHTML = filtered.map(p => {
+    const active = S.project && S.project.id === p.id;
+    const dot = STATUS_CLASSES[p.status]?.match(/text-(\S+)/)?.[1] || 'text-text-muted';
+    return `
+      <div onclick="selectProject('${esc(p.id)}')"
+           class="mx-1 my-0.5 px-3 py-2.5 rounded-lg cursor-pointer hover:bg-bg-raised transition-colors group
+                  ${active ? 'bg-accent/10 border border-accent/20' : ''}">
+        <div class="flex items-center gap-2 mb-0.5">
+          <span class="w-1.5 h-1.5 rounded-full flex-shrink-0 ${dot.replace('text-','bg-')}"></span>
+          <span class="text-sm font-medium truncate flex-1 ${active ? 'text-accent' : 'text-text-secondary group-hover:text-text-primary'}">
+            ${esc(p.name)}
+          </span>
+        </div>
+        <div class="flex items-center gap-3 text-[10px] text-text-muted font-mono pl-3.5">
+          <span>${p.epic_count ?? 0} epics</span>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+async function selectProject(id) {
+  S.project = S.projects.find(p => p.id === id);
+  if (!S.project) return;
+
+  // Update UI header
+  document.getElementById('no-project').classList.add('hidden');
+  document.getElementById('project-view').classList.remove('hidden');
+  document.getElementById('proj-name').textContent = S.project.name;
+  document.getElementById('proj-desc').textContent = S.project.description || '';
+  const badge = document.getElementById('proj-status-badge');
+  badge.className = `px-1.5 py-0.5 rounded text-[10px] font-medium border ${STATUS_CLASSES[S.project.status] || ''}`;
+  badge.textContent = (S.project.status || '').replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
+
+  const folderEl = document.getElementById('proj-folder');
+  if (S.project.folder_path) {
+    folderEl.textContent = S.project.folder_path;
+    folderEl.classList.remove('hidden');
+  } else {
+    folderEl.classList.add('hidden');
   }
 
-  function toggleFeature(row) {
-    const body = row.parentElement.querySelector('.feat-body');
-    const chevron = row.querySelector('.feat-chevron');
-    body.classList.toggle('hidden');
-    chevron.style.transform = body.classList.contains('hidden') ? '' : 'rotate(90deg)';
-  }
+  renderProjectList(); // re-render to highlight active
+  await loadEpics();
+}
 
-  function openTask(name) {
-    const panel = document.getElementById('task-panel');
-    panel.classList.remove('hidden');
-    panel.classList.add('flex');
-    document.getElementById('task-panel-body').innerHTML = `
-      <div class="w-full space-y-4 fade-in">
-        <div>
-          <div class="text-xs text-text-muted mb-1">Title</div>
-          <div class="text-sm font-medium text-text-primary">${name}</div>
+// ── Project modal ────────────────────────────────────────────────
+function openProjectModal(existing) {
+  const isEdit = !!existing;
+  showModal(isEdit ? 'Edit Project' : 'New Project', `
+    <div>
+      <label class="block text-xs text-text-muted mb-1">Name <span class="text-status-warning">*</span></label>
+      <input id="m-name" type="text" value="${esc(existing?.name || '')}"
+             class="w-full px-2.5 py-1.5 text-sm rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent" />
+    </div>
+    <div>
+      <label class="block text-xs text-text-muted mb-1">Description</label>
+      <textarea id="m-desc" rows="3"
+                class="w-full px-2.5 py-1.5 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent resize-none">${esc(existing?.description || '')}</textarea>
+    </div>
+    <div>
+      <label class="block text-xs text-text-muted mb-1">Status</label>
+      <select id="m-status" class="w-full px-2.5 py-1.5 text-sm rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent">
+        ${['active','paused','completed','archived'].map(s =>
+          `<option value="${s}" ${(existing?.status||'active')===s?'selected':''}>${s[0].toUpperCase()+s.slice(1)}</option>`
+        ).join('')}
+      </select>
+    </div>
+  `, async () => {
+    const name = document.getElementById('m-name').value.trim();
+    if (!name) { alert('Name is required'); return; }
+    const body = {
+      name,
+      description: document.getElementById('m-desc').value,
+      status: document.getElementById('m-status').value,
+    };
+    if (isEdit) {
+      await api('PATCH', `/work/api/projects/${existing.id}`, body);
+    } else {
+      await api('POST', '/work/api/projects', body);
+    }
+    closeModal();
+    await loadProjects();
+  });
+}
+
+function editProject() {
+  if (S.project) openProjectModal(S.project);
+}
+
+async function deleteProject() {
+  if (!S.project) return;
+  if (!confirm(`Delete project "${S.project.name}"? This will also delete all epics, features, and tasks.`)) return;
+  await api('DELETE', `/work/api/projects/${S.project.id}`);
+  S.project = null;
+  S.epics = [];
+  document.getElementById('no-project').classList.remove('hidden');
+  document.getElementById('project-view').classList.add('hidden');
+  await loadProjects();
+}
+
+// ── Epics ─────────────────────────────────────────────────────────
+async function loadEpics() {
+  const el = document.getElementById('epic-list');
+  el.innerHTML = '<div class="flex items-center justify-center h-16 text-text-muted text-xs">Loading epics…</div>';
+  const data = await api('GET', `/work/api/projects/${S.project.id}/epics`);
+  S.epics = data;
+  S.features = {};
+  S.tasks = {};
+  updateStats();
+  renderEpics();
+}
+
+function renderEpics() {
+  const el = document.getElementById('epic-list');
+  if (!S.epics.length) {
+    el.innerHTML = '<div class="text-center text-text-muted text-xs py-8">No epics yet — click "Add Epic" to create one.</div>';
+    return;
+  }
+  el.innerHTML = S.epics.map(e => epicHtml(e)).join('');
+  lucide.createIcons();
+}
+
+function epicHtml(e) {
+  return `
+    <div class="rounded-lg border border-border-subtle bg-bg-card overflow-hidden" id="epic-${esc(e.id)}">
+      <div class="flex items-center gap-3 px-4 py-3 bg-bg-raised/50 cursor-pointer hover:bg-bg-raised transition-colors"
+           onclick="toggleEpic('${esc(e.id)}')">
+        <i data-lucide="chevron-right" class="w-3.5 h-3.5 text-text-muted flex-shrink-0 epic-chevron transition-transform"></i>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2">
+            <span class="text-sm font-semibold text-text-primary truncate">${esc(e.title)}</span>
+            ${statusBadge(e.status)}
+          </div>
+          ${e.description ? `<p class="text-xs text-text-muted mt-0.5 truncate">${esc(e.description)}</p>` : ''}
         </div>
-        <div>
-          <div class="text-xs text-text-muted mb-1">Status</div>
-          <select class="px-2 py-1 text-xs rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent w-full">
-            <option>Backlog</option><option>In Progress</option><option>Review</option><option>Done</option><option>Blocked</option>
-          </select>
-        </div>
-        <div>
-          <div class="text-xs text-text-muted mb-1">Acceptance Criteria</div>
-          <textarea rows="4" placeholder="What does done look like?"
-            class="w-full resize-none text-xs rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted px-2 py-1.5 focus:outline-none focus:border-accent"></textarea>
-        </div>
-        <div>
-          <div class="text-xs text-text-muted mb-2">Assign Agent</div>
-          <select class="px-2 py-1 text-xs rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent w-full">
-            <option value="">— none —</option>
-            <option>Design Agent</option>
-            <option>Research Agent</option>
-            <option>Code Agent</option>
-          </select>
-        </div>
-        <div class="pt-2 flex gap-2">
-          <button class="flex-1 py-1.5 rounded text-xs bg-accent/15 text-accent hover:bg-accent/30 transition-colors font-medium">Save</button>
-          <button class="flex items-center gap-1 px-3 py-1.5 rounded text-xs border border-border-subtle text-text-secondary hover:text-accent hover:border-accent/40 transition-colors">
-            <i data-lucide="bot" class="w-3 h-3"></i>
-            Run Agent
+        <div class="flex items-center gap-1 flex-shrink-0" onclick="event.stopPropagation()">
+          <button onclick="openEpicModal(${JSON.stringify(e).replace(/</g,'\\u003c')})"
+                  class="p-1.5 rounded text-text-muted hover:text-accent hover:bg-accent/10 transition-colors" title="Edit">
+            <i data-lucide="pencil" class="w-3 h-3"></i>
+          </button>
+          <button onclick="deleteEpic('${esc(e.id)}')"
+                  class="p-1.5 rounded text-text-muted hover:text-status-warning hover:bg-status-warning/10 transition-colors" title="Delete">
+            <i data-lucide="trash-2" class="w-3 h-3"></i>
+          </button>
+          <button onclick="openFeatureModal(null,'${esc(e.id)}')"
+                  class="flex items-center gap-1 px-2 py-1 rounded text-[10px] text-text-muted hover:text-accent hover:bg-accent/10 transition-colors">
+            <i data-lucide="plus" class="w-3 h-3"></i>
+            Feature
           </button>
         </div>
       </div>
-    `;
-    lucide.createIcons();
-  }
+      <div class="epic-body hidden divide-y divide-border-subtle/50" id="epic-body-${esc(e.id)}">
+        <div class="py-3 text-center text-text-muted text-xs">Loading…</div>
+      </div>
+    </div>`;
+}
 
-  function closeTaskPanel() {
-    const panel = document.getElementById('task-panel');
-    panel.classList.add('hidden');
-    panel.classList.remove('flex');
+async function toggleEpic(epicId) {
+  const body = document.getElementById(`epic-body-${epicId}`);
+  const chevron = document.querySelector(`#epic-${epicId} .epic-chevron`);
+  const isOpen = !body.classList.contains('hidden');
+  if (isOpen) {
+    body.classList.add('hidden');
+    chevron.style.transform = '';
+  } else {
+    body.classList.remove('hidden');
+    chevron.style.transform = 'rotate(90deg)';
+    if (!S.features[epicId]) await loadFeatures(epicId);
   }
+}
 
-  function openNewProjectModal() { /* TODO */ }
-  function openNewEpicModal() { /* TODO */ }
-  function openNewFeatureModal() { /* TODO */ }
+function openEpicModal(existing) {
+  const isEdit = !!existing;
+  showModal(isEdit ? 'Edit Epic' : 'New Epic', `
+    <div>
+      <label class="block text-xs text-text-muted mb-1">Title <span class="text-status-warning">*</span></label>
+      <input id="m-title" type="text" value="${esc(existing?.title || '')}"
+             class="w-full px-2.5 py-1.5 text-sm rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent" />
+    </div>
+    <div>
+      <label class="block text-xs text-text-muted mb-1">Description</label>
+      <textarea id="m-desc" rows="2"
+                class="w-full px-2.5 py-1.5 text-sm rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent resize-none">${esc(existing?.description || '')}</textarea>
+    </div>
+    <div class="grid grid-cols-2 gap-3">
+      <div>
+        <label class="block text-xs text-text-muted mb-1">Status</label>
+        <select id="m-status" class="w-full px-2.5 py-1.5 text-sm rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent">
+          ${['backlog','in_progress','done','blocked'].map(s =>
+            `<option value="${s}" ${(existing?.status||'backlog')===s?'selected':''}>${s.replace('_',' ').replace(/\b\w/g,c=>c.toUpperCase())}</option>`
+          ).join('')}
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs text-text-muted mb-1">Priority</label>
+        <input id="m-priority" type="number" value="${existing?.priority ?? 0}"
+               class="w-full px-2.5 py-1.5 text-sm rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent" />
+      </div>
+    </div>
+  `, async () => {
+    const title = document.getElementById('m-title').value.trim();
+    if (!title) { alert('Title is required'); return; }
+    const body = {
+      title,
+      description: document.getElementById('m-desc').value,
+      status: document.getElementById('m-status').value,
+      priority: parseInt(document.getElementById('m-priority').value) || 0,
+    };
+    if (isEdit) {
+      await api('PATCH', `/work/api/epics/${existing.id}`, body);
+    } else {
+      body.project_id = S.project.id;
+      await api('POST', `/work/api/projects/${S.project.id}/epics`, body);
+    }
+    closeModal();
+    await loadEpics();
+  });
+}
+
+async function deleteEpic(epicId) {
+  const epic = S.epics.find(e => e.id === epicId);
+  if (!confirm(`Delete epic "${epic?.title}"?`)) return;
+  await api('DELETE', `/work/api/epics/${epicId}`);
+  await loadEpics();
+}
+
+// ── Features ──────────────────────────────────────────────────────
+async function loadFeatures(epicId) {
+  const data = await api('GET', `/work/api/epics/${epicId}/features`);
+  S.features[epicId] = data;
+  updateStats();
+  renderFeatures(epicId);
+}
+
+function renderFeatures(epicId) {
+  const body = document.getElementById(`epic-body-${epicId}`);
+  const features = S.features[epicId] || [];
+  if (!features.length) {
+    body.innerHTML = `
+      <div class="py-3 text-center text-text-muted text-xs">
+        No features yet —
+        <button onclick="openFeatureModal(null,'${esc(epicId)}')" class="text-accent hover:underline">add one</button>
+      </div>`;
+    return;
+  }
+  body.innerHTML = features.map(f => featureHtml(f, epicId)).join('');
+  lucide.createIcons();
+}
+
+function featureHtml(f, epicId) {
+  return `
+    <div class="pl-6 pr-4" id="feature-${esc(f.id)}">
+      <div class="flex items-center gap-3 py-2.5 cursor-pointer hover:bg-bg-raised/30 -mx-4 px-4 transition-colors"
+           onclick="toggleFeature('${esc(f.id)}','${esc(epicId)}')">
+        <i data-lucide="chevron-right" class="w-3 h-3 text-text-muted flex-shrink-0 feat-chevron transition-transform"></i>
+        <i data-lucide="layers" class="w-3.5 h-3.5 text-text-muted flex-shrink-0"></i>
+        <span class="text-sm text-text-secondary flex-1 truncate">${esc(f.title)}</span>
+        ${statusBadge(f.status)}
+        <div class="flex items-center gap-1 flex-shrink-0" onclick="event.stopPropagation()">
+          <button onclick="openFeatureModal(${JSON.stringify(f).replace(/</g,'\\u003c')},'${esc(epicId)}')"
+                  class="p-1 rounded text-text-muted hover:text-accent hover:bg-accent/10 transition-colors" title="Edit">
+            <i data-lucide="pencil" class="w-2.5 h-2.5"></i>
+          </button>
+          <button onclick="deleteFeature('${esc(f.id)}','${esc(epicId)}')"
+                  class="p-1 rounded text-text-muted hover:text-status-warning hover:bg-status-warning/10 transition-colors" title="Delete">
+            <i data-lucide="trash-2" class="w-2.5 h-2.5"></i>
+          </button>
+          <button onclick="openTaskModal(null,'${esc(f.id)}')"
+                  class="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] text-text-muted hover:text-accent hover:bg-accent/10 transition-colors">
+            <i data-lucide="plus" class="w-2.5 h-2.5"></i>
+            Task
+          </button>
+        </div>
+      </div>
+      <div class="feat-body hidden pb-2 space-y-0.5" id="feat-body-${esc(f.id)}">
+        <div class="py-2 text-center text-text-muted text-xs">Loading…</div>
+      </div>
+    </div>`;
+}
+
+async function toggleFeature(featureId, epicId) {
+  const body = document.getElementById(`feat-body-${featureId}`);
+  const row = document.querySelector(`#feature-${featureId} > div`);
+  const chevron = row?.querySelector('.feat-chevron');
+  const isOpen = !body.classList.contains('hidden');
+  if (isOpen) {
+    body.classList.add('hidden');
+    if (chevron) chevron.style.transform = '';
+  } else {
+    body.classList.remove('hidden');
+    if (chevron) chevron.style.transform = 'rotate(90deg)';
+    if (!S.tasks[featureId]) await loadTasks(featureId);
+  }
+}
+
+function openFeatureModal(existing, epicId) {
+  const isEdit = !!existing;
+  showModal(isEdit ? 'Edit Feature' : 'New Feature', `
+    <div>
+      <label class="block text-xs text-text-muted mb-1">Title <span class="text-status-warning">*</span></label>
+      <input id="m-title" type="text" value="${esc(existing?.title || '')}"
+             class="w-full px-2.5 py-1.5 text-sm rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent" />
+    </div>
+    <div>
+      <label class="block text-xs text-text-muted mb-1">Description</label>
+      <textarea id="m-desc" rows="2"
+                class="w-full px-2.5 py-1.5 text-sm rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent resize-none">${esc(existing?.description || '')}</textarea>
+    </div>
+    <div class="grid grid-cols-2 gap-3">
+      <div>
+        <label class="block text-xs text-text-muted mb-1">Status</label>
+        <select id="m-status" class="w-full px-2.5 py-1.5 text-sm rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent">
+          ${['backlog','in_progress','done','blocked'].map(s =>
+            `<option value="${s}" ${(existing?.status||'backlog')===s?'selected':''}>${s.replace('_',' ').replace(/\b\w/g,c=>c.toUpperCase())}</option>`
+          ).join('')}
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs text-text-muted mb-1">Priority</label>
+        <input id="m-priority" type="number" value="${existing?.priority ?? 0}"
+               class="w-full px-2.5 py-1.5 text-sm rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent" />
+      </div>
+    </div>
+  `, async () => {
+    const title = document.getElementById('m-title').value.trim();
+    if (!title) { alert('Title is required'); return; }
+    const body = {
+      title,
+      description: document.getElementById('m-desc').value,
+      status: document.getElementById('m-status').value,
+      priority: parseInt(document.getElementById('m-priority').value) || 0,
+    };
+    if (isEdit) {
+      await api('PATCH', `/work/api/features/${existing.id}`, body);
+      const eid = existing.epic_id || epicId;
+      delete S.features[eid];
+      await loadFeatures(eid);
+    } else {
+      await api('POST', `/work/api/epics/${epicId}/features`, body);
+      delete S.features[epicId];
+      // Open the epic if not already open
+      const epicBody = document.getElementById(`epic-body-${epicId}`);
+      if (epicBody && epicBody.classList.contains('hidden')) {
+        await toggleEpic(epicId);
+      } else {
+        await loadFeatures(epicId);
+      }
+    }
+    closeModal();
+  });
+}
+
+async function deleteFeature(featureId, epicId) {
+  const feat = (S.features[epicId] || []).find(f => f.id === featureId);
+  if (!confirm(`Delete feature "${feat?.title}"?`)) return;
+  await api('DELETE', `/work/api/features/${featureId}`);
+  delete S.features[epicId];
+  await loadFeatures(epicId);
+}
+
+// ── Tasks ─────────────────────────────────────────────────────────
+async function loadTasks(featureId) {
+  const data = await api('GET', `/work/api/features/${featureId}/tasks`);
+  S.tasks[featureId] = data;
+  updateStats();
+  renderTasks(featureId);
+}
+
+function renderTasks(featureId) {
+  const body = document.getElementById(`feat-body-${featureId}`);
+  const tasks = S.tasks[featureId] || [];
+  if (!tasks.length) {
+    body.innerHTML = `
+      <div class="py-2 text-center text-text-muted text-xs">
+        No tasks yet —
+        <button onclick="openTaskModal(null,'${esc(featureId)}')" class="text-accent hover:underline">add one</button>
+      </div>`;
+    return;
+  }
+  body.innerHTML = tasks.map(t => taskRowHtml(t, featureId)).join('');
+  lucide.createIcons();
+}
+
+function taskRowHtml(t, featureId) {
+  const icon = t.status === 'done'
+    ? `<i data-lucide="check-circle-2" class="w-3.5 h-3.5 text-status-healthy flex-shrink-0"></i>`
+    : t.status === 'in_progress'
+    ? `<i data-lucide="loader" class="w-3.5 h-3.5 text-accent flex-shrink-0 spin-slow"></i>`
+    : t.status === 'blocked'
+    ? `<i data-lucide="alert-circle" class="w-3.5 h-3.5 text-status-warning flex-shrink-0"></i>`
+    : `<i data-lucide="circle" class="w-3.5 h-3.5 text-text-muted flex-shrink-0"></i>`;
+
+  return `
+    <div class="flex items-center gap-3 pl-6 pr-2 py-1.5 rounded-lg hover:bg-bg-raised/40 transition-colors group cursor-pointer"
+         onclick="openTaskPanel('${esc(t.id)}','${esc(featureId)}')">
+      ${icon}
+      <span class="text-xs flex-1 truncate ${t.status==='done' ? 'text-text-muted line-through' : 'text-text-secondary group-hover:text-text-primary'}">${esc(t.title)}</span>
+      <div class="hidden group-hover:flex items-center gap-1 flex-shrink-0">
+        <button onclick="event.stopPropagation(); openTaskModal(${JSON.stringify(t).replace(/</g,'\\u003c')},'${esc(featureId)}')"
+                class="p-1 rounded hover:bg-accent/10 hover:text-accent text-text-muted transition-colors" title="Edit">
+          <i data-lucide="pencil" class="w-3 h-3"></i>
+        </button>
+        <button onclick="event.stopPropagation(); deleteTask('${esc(t.id)}','${esc(featureId)}')"
+                class="p-1 rounded hover:bg-status-warning/10 hover:text-status-warning text-text-muted transition-colors" title="Delete">
+          <i data-lucide="trash-2" class="w-3 h-3"></i>
+        </button>
+      </div>
+    </div>`;
+}
+
+function openTaskModal(existing, featureId) {
+  const isEdit = !!existing;
+  showModal(isEdit ? 'Edit Task' : 'New Task', `
+    <div>
+      <label class="block text-xs text-text-muted mb-1">Title <span class="text-status-warning">*</span></label>
+      <input id="m-title" type="text" value="${esc(existing?.title || '')}"
+             class="w-full px-2.5 py-1.5 text-sm rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent" />
+    </div>
+    <div>
+      <label class="block text-xs text-text-muted mb-1">Description</label>
+      <textarea id="m-desc" rows="2"
+                class="w-full px-2.5 py-1.5 text-sm rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent resize-none">${esc(existing?.description || '')}</textarea>
+    </div>
+    <div>
+      <label class="block text-xs text-text-muted mb-1">Acceptance Criteria</label>
+      <textarea id="m-ac" rows="2"
+                class="w-full px-2.5 py-1.5 text-sm rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent resize-none">${esc(existing?.acceptance_criteria || '')}</textarea>
+    </div>
+    <div class="grid grid-cols-2 gap-3">
+      <div>
+        <label class="block text-xs text-text-muted mb-1">Status</label>
+        <select id="m-status" class="w-full px-2.5 py-1.5 text-sm rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent">
+          ${['backlog','in_progress','review','done','blocked'].map(s =>
+            `<option value="${s}" ${(existing?.status||'backlog')===s?'selected':''}>${s.replace('_',' ').replace(/\b\w/g,c=>c.toUpperCase())}</option>`
+          ).join('')}
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs text-text-muted mb-1">Priority</label>
+        <input id="m-priority" type="number" value="${existing?.priority ?? 0}"
+               class="w-full px-2.5 py-1.5 text-sm rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent" />
+      </div>
+    </div>
+  `, async () => {
+    const title = document.getElementById('m-title').value.trim();
+    if (!title) { alert('Title is required'); return; }
+    const body = {
+      title,
+      description: document.getElementById('m-desc').value,
+      acceptance_criteria: document.getElementById('m-ac').value,
+      status: document.getElementById('m-status').value,
+      priority: parseInt(document.getElementById('m-priority').value) || 0,
+    };
+    const fid = existing?.feature_id || featureId;
+    if (isEdit) {
+      await api('PATCH', `/work/api/tasks/${existing.id}`, body);
+    } else {
+      await api('POST', `/work/api/features/${fid}/tasks`, body);
+    }
+    closeModal();
+    delete S.tasks[fid];
+    await loadTasks(fid);
+    if (S.taskDetail && S.taskDetail.id === existing?.id) {
+      // Refresh the panel with updated data
+      const updated = await api('GET', `/work/api/tasks/${existing.id}`);
+      renderTaskPanel(updated, fid);
+    }
+  });
+}
+
+async function deleteTask(taskId, featureId) {
+  const task = (S.tasks[featureId] || []).find(t => t.id === taskId);
+  if (!confirm(`Delete task "${task?.title}"?`)) return;
+  await api('DELETE', `/work/api/tasks/${taskId}`);
+  delete S.tasks[featureId];
+  await loadTasks(featureId);
+  // Close panel if this task was open
+  if (S.taskDetail && S.taskDetail.id === taskId) closeTaskPanel();
+}
+
+// ── Task panel ────────────────────────────────────────────────────
+async function openTaskPanel(taskId, featureId) {
+  const task = await api('GET', `/work/api/tasks/${taskId}`);
+  S.taskDetail = task;
+  renderTaskPanel(task, featureId);
+  const panel = document.getElementById('task-panel');
+  panel.classList.remove('hidden');
+  panel.classList.add('flex');
+  lucide.createIcons();
+}
+
+function renderTaskPanel(t, featureId) {
+  document.getElementById('task-panel-body').innerHTML = `
+    <div class="space-y-4 fade-in">
+      <div>
+        <label class="block text-xs text-text-muted mb-1">Title</label>
+        <input id="tp-title" type="text" value="${esc(t.title)}"
+               class="w-full px-2 py-1.5 text-sm rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent" />
+      </div>
+      <div>
+        <label class="block text-xs text-text-muted mb-1">Status</label>
+        <select id="tp-status" class="w-full px-2 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent">
+          ${['backlog','in_progress','review','done','blocked'].map(s =>
+            `<option value="${s}" ${t.status===s?'selected':''}>${s.replace('_',' ').replace(/\b\w/g,c=>c.toUpperCase())}</option>`
+          ).join('')}
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs text-text-muted mb-1">Description</label>
+        <textarea id="tp-desc" rows="3"
+                  class="w-full resize-none px-2 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent">${esc(t.description || '')}</textarea>
+      </div>
+      <div>
+        <label class="block text-xs text-text-muted mb-1">Acceptance Criteria</label>
+        <textarea id="tp-ac" rows="4"
+                  class="w-full resize-none px-2 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent" placeholder="What does done look like?">${esc(t.acceptance_criteria || '')}</textarea>
+      </div>
+      <div class="pt-1 flex gap-2">
+        <button onclick="saveTaskPanel('${esc(t.id)}','${esc(featureId)}')"
+                class="flex-1 py-1.5 rounded text-xs bg-accent/15 text-accent hover:bg-accent/30 transition-colors font-medium">
+          Save
+        </button>
+        <button onclick="deleteTask('${esc(t.id)}','${esc(featureId)}')"
+                class="px-3 py-1.5 rounded text-xs border border-border-subtle text-status-warning hover:border-status-warning/40 transition-colors">
+          <i data-lucide="trash-2" class="w-3 h-3"></i>
+        </button>
+      </div>
+    </div>`;
+  lucide.createIcons();
+}
+
+async function saveTaskPanel(taskId, featureId) {
+  const body = {
+    title: document.getElementById('tp-title').value.trim(),
+    status: document.getElementById('tp-status').value,
+    description: document.getElementById('tp-desc').value,
+    acceptance_criteria: document.getElementById('tp-ac').value,
+  };
+  await api('PATCH', `/work/api/tasks/${taskId}`, body);
+  delete S.tasks[featureId];
+  await loadTasks(featureId);
+}
+
+function closeTaskPanel() {
+  S.taskDetail = null;
+  const panel = document.getElementById('task-panel');
+  panel.classList.add('hidden');
+  panel.classList.remove('flex');
+}
+
+// ── Stats ─────────────────────────────────────────────────────────
+function updateStats() {
+  document.getElementById('stat-epics').textContent = S.epics.length;
+  const allFeatures = Object.values(S.features).flat();
+  document.getElementById('stat-features').textContent = allFeatures.length;
+  const allTasks = Object.values(S.tasks).flat();
+  document.getElementById('stat-tasks').textContent = allTasks.length;
+}
+
+// ── Modal ─────────────────────────────────────────────────────────
+let _modalSave = null;
+
+function showModal(title, bodyHtml, onSave) {
+  document.getElementById('modal-title').textContent = title;
+  document.getElementById('modal-body').innerHTML = bodyHtml;
+  _modalSave = onSave;
+  document.getElementById('modal-save').onclick = async () => {
+    try { await onSave(); } catch(e) { alert(e.message); }
+  };
+  document.getElementById('modal-overlay').classList.remove('hidden');
+  lucide.createIcons();
+  // Focus first input
+  setTimeout(() => {
+    const first = document.querySelector('#modal-body input, #modal-body textarea');
+    if (first) first.focus();
+  }, 50);
+}
+
+function closeModal() {
+  document.getElementById('modal-overlay').classList.add('hidden');
+  _modalSave = null;
+}
+
+// Close modal on overlay click
+document.getElementById('modal-overlay').addEventListener('click', e => {
+  if (e.target === document.getElementById('modal-overlay')) closeModal();
+});
+
+// ── Init ──────────────────────────────────────────────────────────
+loadProjects();
 </script>
 {% endblock %}
