@@ -105,7 +105,7 @@ def set_setting(key):
 
     # llm.providers is stored as JSON
     if key == "llm.providers":
-        Setting.set(key, json.dumps(value), value_type="json")
+        Setting.set(key, value, value_type="json")
     else:
         Setting.set(key, value, value_type="string")
 
@@ -120,7 +120,7 @@ def set_settings_bulk():
 
     for key, value in body.items():
         if key == "llm.providers":
-            Setting.set(key, json.dumps(value), value_type="json")
+            Setting.set(key, value, value_type="json")
         else:
             Setting.set(key, value, value_type="string")
         results.append({"key": key, "value": value})
@@ -164,7 +164,7 @@ def add_llm_provider():
         "model": model,
     }
     providers.append(new_provider)
-    Setting.set("llm.providers", json.dumps(providers), value_type="json")
+    Setting.set("llm.providers", providers, value_type="json")
 
     # Auto-select as active if it's the first provider
     if len(providers) == 1:
@@ -185,7 +185,7 @@ def delete_llm_provider(provider_id):
         new_active = providers[0]["id"] if providers else None
         Setting.set("llm.active_provider", new_active)
 
-    Setting.set("llm.providers", json.dumps(providers), value_type="json")
+    Setting.set("llm.providers", providers, value_type="json")
     return jsonify({"success": True})
 
 
