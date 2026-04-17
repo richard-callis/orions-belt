@@ -4,10 +4,12 @@ Executes tools with tier-based authorization and path safety checks.
 """
 import glob as glob_mod
 import json
+import logging
 import os
 import re
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +18,8 @@ from app.models.connector import AuthorizedDirectory
 from app.models.mcp_tool import MCPTool
 from app.models.logs import AuditLog
 from app.models.pii import PIIHashEntry
+
+log = logging.getLogger("orions-belt")
 
 
 # ── Tier system ───────────────────────────────────────────────────────────────
@@ -108,6 +112,7 @@ async def execute_tool(tool_name: str, args: dict) -> str:
     """
     tool = MCPTool.query.filter_by(name=tool_name, enabled=True).first()
     if not tool:
+        log.warning("mcp.execute: unknown or disabled tool=%r", tool_name)
         return f"Error: unknown tool '{tool_name}'"
 
     # Route to the appropriate handler
@@ -132,15 +137,33 @@ async def execute_tool(tool_name: str, args: dict) -> str:
 
     handler = handlers.get(tool_name)
     if not handler:
+        log.warning("mcp.execute: no handler for tool=%r", tool_name)
         return f"Error: tool '{tool_name}' has no handler"
+
+    # Sanitise args for logging — truncate large values
+    args_preview = json.dumps(
+        {k: (v[:120] + "…" if isinstance(v, str) and len(v) > 120 else v)
+         for k, v in args.items()},
+        default=str,
+    )
+    log.info("mcp.call  tool=%s tier=%d args=%s", tool_name, tool.tier, args_preview)
+    t0 = time.time()
 
     try:
         result = await handler(tool_name, args)
-        # Log audit
+        elapsed_ms = int((time.time() - t0) * 1000)
+        is_error = isinstance(result, str) and result.startswith("Error:")
+        if is_error:
+            log.warning("mcp.result tool=%s elapsed=%dms result=%s", tool_name, elapsed_ms, result[:300])
+        else:
+            preview = result[:200].replace("\n", "\\n") if isinstance(result, str) else str(result)[:200]
+            log.info("mcp.result tool=%s elapsed=%dms preview=%s", tool_name, elapsed_ms, preview)
         _log_audit(tool_name, TIER_READ if tool.tier <= TIER_READ else tool.tier, "auto", None, None, result)
         return result
     except Exception as e:
+        elapsed_ms = int((time.time() - t0) * 1000)
         err_msg = str(e)
+        log.error("mcp.error  tool=%s elapsed=%dms error=%s", tool_name, elapsed_ms, err_msg, exc_info=True)
         _log_audit(tool_name, tool.tier, "auto", None, None, f"Error: {err_msg}", error=err_msg)
         return f"Error: {err_msg}"
 
