@@ -216,6 +216,12 @@
 
 {% block scripts %}
 <script>
+// ── Utilities ─────────────────────────────────────────────────────────────────
+function escHtml(s) {
+  if (typeof s !== 'string') return String(s ?? '');
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 // ── State ─────────────────────────────────────────────────────────────────────
 let providers = [];
 let activeProviderId = null;
@@ -377,7 +383,9 @@ function openEditForm(providerId) {
   document.getElementById('form-title').textContent = 'Edit Provider';
   document.getElementById('prov-name').value = p.name || '';
   document.getElementById('prov-base-url').value = p.base_url || '';
-  document.getElementById('prov-api-key').value = p.api_key || '';
+  // Leave API key blank — backend preserves existing key if this field is empty
+  document.getElementById('prov-api-key').value = '';
+  document.getElementById('prov-api-key').placeholder = p.api_key ? '(key set — leave blank to keep)' : 'sk-... or leave blank for local';
   document.getElementById('prov-model').value = p.model || '';
   selectProvType(p.type || 'genai');
   document.getElementById('add-provider-form').classList.remove('hidden');
@@ -401,41 +409,29 @@ async function saveProvider() {
     return;
   }
 
-  const payload = {
-    name,
-    type: currentType,
-    base_url: baseUrl,
-    api_key: apiKey,
-    model,
-  };
+  const payload = { name, type: currentType, base_url: baseUrl, api_key: apiKey, model };
 
   try {
     let res;
     if (editingProviderId) {
-      // Replace the provider in the list and save
-      const idx = providers.findIndex(p => p.id === editingProviderId);
-      if (idx === -1) return;
-      payload.id = editingProviderId;
-      providers[idx] = payload;
+      // PATCH: backend preserves existing key if submitted value is blank or masked
+      res = await fetch(`/api/llm/providers/${editingProviderId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
     } else {
-      payload.id = 'prov_' + Date.now();
-      providers.push(payload);
+      // POST: create new provider
+      res = await fetch('/api/llm/providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
     }
-
-    // Save the full list as JSON
-    res = await fetch('/api/settings/llm.providers', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(providers),
-    });
 
     if (!res.ok) {
-      throw new Error('Failed to save');
-    }
-
-    // If this was the first provider or the active one was deleted, set active
-    if (providers.length > 0 && !activeProviderId) {
-      await setProviderActive(providers[0].id);
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Failed to save');
     }
 
     closeForm();
@@ -444,7 +440,7 @@ async function saveProvider() {
     showTestResult('success', editingProviderId ? 'Provider updated' : 'Provider added');
   } catch (e) {
     console.error('Failed to save provider:', e);
-    showTestResult('error', 'Failed to save provider', true);
+    showTestResult('error', e.message || 'Failed to save provider', true);
   }
 }
 

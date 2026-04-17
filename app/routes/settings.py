@@ -260,6 +260,30 @@ def add_llm_provider():
     return jsonify({"success": True, "provider": new_provider}), 201
 
 
+@bp.route("/api/llm/providers/<provider_id>", methods=["PATCH"])
+def update_llm_provider(provider_id):
+    """Update an existing LLM provider. Preserves api_key if the submitted
+    value is blank or a masked placeholder (starts with '*')."""
+    body = request.get_json() or {}
+    providers = _get_providers()
+    idx = next((i for i, p in enumerate(providers) if p.get("id") == provider_id), None)
+    if idx is None:
+        return jsonify({"error": "Provider not found"}), 404
+
+    for field in ("name", "type", "base_url", "model"):
+        if field in body:
+            providers[idx][field] = body[field]
+
+    # Only overwrite the key if the user typed an actual new one.
+    # Masked values (from the GET endpoint redaction) are ignored.
+    new_key = body.get("api_key", "")
+    if new_key and not new_key.startswith("*"):
+        providers[idx]["api_key"] = new_key
+
+    Setting.set("llm.providers", providers, value_type="json")
+    return jsonify({"success": True, "provider": _redact_providers([providers[idx]])[0]})
+
+
 @bp.route("/api/llm/providers/<provider_id>", methods=["DELETE"])
 def delete_llm_provider(provider_id):
     """Delete an LLM provider."""

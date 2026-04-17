@@ -436,8 +436,9 @@ async function streamResponse(userPrompt) {
           if (line.startsWith('data: ')) dataStr = line.slice(6);
         }
 
+            let data = {};
         try {
-          const data = dataStr ? JSON.parse(dataStr) : {};
+          data = dataStr ? JSON.parse(dataStr) : {};
         } catch {}
 
         switch (eventType) {
