@@ -17,25 +17,17 @@
   <aside class="hidden lg:flex flex-col w-60 border-r border-border-subtle bg-bg-sidebar flex-shrink-0">
     <div class="px-3 py-2.5 border-b border-border-subtle flex items-center justify-between">
       <span class="text-xs font-semibold text-text-muted uppercase tracking-wider">Sessions</span>
+      <button onclick="loadSessions()" title="Refresh" class="text-text-muted hover:text-accent">
+        <i data-lucide="refresh-cw" class="w-3 h-3"></i>
+      </button>
     </div>
 
     <div class="flex-1 overflow-y-auto py-1" id="session-list">
-      <!-- Active session -->
-      <div class="mx-1 my-0.5 px-3 py-2.5 rounded-lg cursor-pointer bg-accent/10 border border-accent/20 text-accent">
-        <div class="text-sm font-medium truncate">New conversation</div>
-        <div class="text-[10px] text-accent/60 mt-0.5 font-mono">just now · 0 tokens</div>
-      </div>
-
-      <!-- Past sessions (placeholder) -->
-      {% for i in range(5) %}
       <div class="mx-1 my-0.5 px-3 py-2.5 rounded-lg cursor-pointer hover:bg-bg-raised transition-colors group">
-        <div class="text-sm text-text-secondary truncate group-hover:text-text-primary">Session {{ loop.index }}</div>
-        <div class="text-[10px] text-text-muted mt-0.5 font-mono">2h ago · 1.2k tokens</div>
+        <div class="text-sm text-text-muted">No sessions yet</div>
       </div>
-      {% endfor %}
     </div>
 
-    <!-- Context link -->
     <div class="px-3 py-2 border-t border-border-subtle">
       <div class="text-[10px] text-text-muted mb-1">Linked to</div>
       <button class="w-full flex items-center gap-2 px-2 py-1.5 rounded border border-border-subtle hover:border-accent/40 transition-colors text-xs text-text-muted hover:text-accent">
@@ -52,43 +44,36 @@
     <div class="flex items-center justify-between px-4 py-2.5 border-b border-border-subtle bg-bg-sidebar flex-shrink-0">
       <div class="flex items-center gap-2">
         <span class="text-sm font-medium text-text-primary" id="session-name">New conversation</span>
-        <button class="p-1 rounded hover:bg-bg-raised transition-colors text-text-muted hover:text-text-secondary">
+        <button id="rename-btn" class="p-1 rounded hover:bg-bg-raised transition-colors text-text-muted hover:text-text-secondary" onclick="startRename()">
           <i data-lucide="pencil" class="w-3 h-3"></i>
         </button>
       </div>
 
       <div class="flex items-center gap-2">
-        <!-- Token meter -->
         <div class="hidden sm:flex items-center gap-2">
           <div class="text-[10px] font-mono text-text-muted">
-            <span id="tokens-used">0</span> / <span id="tokens-max">128k</span>
-          </div>
-          <div class="w-24 h-1 rounded-full bg-bg-raised overflow-hidden">
-            <div id="token-meter" class="token-meter-bar h-full rounded-full bg-status-healthy" style="width:0%"></div>
+            <span id="tokens-used">0</span> tokens
           </div>
         </div>
 
-        <!-- Compact button -->
         <button onclick="compactContext()"
                 title="Compact context"
-                class="flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-medium border border-border-subtle text-text-muted hover:text-accent hover:border-accent/40 transition-colors">
+                class="hidden flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-medium border border-border-subtle text-text-muted hover:text-accent hover:border-accent/40 transition-colors">
           <i data-lucide="minimize-2" class="w-3 h-3"></i>
           Compact
         </button>
 
-        <!-- Context strategy -->
         <select id="context-strategy"
                 class="px-2 py-1 text-xs rounded border border-border-visible bg-bg-raised text-text-muted focus:outline-none focus:border-accent">
           <option value="full">Full context</option>
-          <option value="sliding">Sliding window</option>
+          <option value="sliding" selected>Sliding window</option>
           <option value="summarize">Auto-summarize</option>
         </select>
       </div>
     </div>
 
     <!-- Messages -->
-    <div class="flex-1 overflow-y-auto px-4 py-4 space-y-4" id="messages">
-
+    <div class="flex-1 overflow-y-auto px-4 py-4 space-y-3" id="messages">
       <!-- Empty state -->
       <div id="empty-state" class="flex flex-col items-center justify-center h-full text-center py-16">
         <div class="flex items-center gap-[4px] mb-4 opacity-30">
@@ -97,75 +82,12 @@
           <span class="w-3 h-3 rounded-full bg-accent"></span>
         </div>
         <p class="text-text-muted text-sm mb-1">Start a conversation</p>
-        <p class="text-text-muted text-xs opacity-60">Messages are screened for PII before leaving this machine</p>
+        <p class="text-text-muted text-xs opacity-60">PII guard active — your data never leaves this machine unencrypted</p>
       </div>
-
-      <!-- Example assistant message (hidden by default, shown when messages exist) -->
-      <!--
-      <div class="flex justify-start fade-in">
-        <div class="max-w-[85%] space-y-2 items-start flex flex-col">
-          <div class="rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-bg-card border border-border-subtle text-text-primary prose-dark">
-            Hello! How can I help you today?
-          </div>
-          <div class="flex items-center gap-2 text-[10px] text-text-muted px-1">
-            <span class="font-mono">GPT-4o</span>
-            <span>·</span>
-            <span>just now</span>
-            <span>·</span>
-            <span>12 tokens</span>
-            <button class="hover:text-accent transition-colors"><i data-lucide="copy" class="w-3 h-3"></i></button>
-          </div>
-        </div>
-      </div>
-
-      <div class="flex justify-end fade-in">
-        <div class="max-w-[85%] space-y-2 items-end flex flex-col">
-          <div class="rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-accent text-white">
-            What is Orion's Belt?
-          </div>
-          <div class="flex items-center gap-2 text-[10px] text-text-muted px-1">
-            <span>just now</span>
-            <span>·</span>
-            <span>8 tokens</span>
-          </div>
-        </div>
-      </div>
-      -->
-
-      <!-- Tool call example:
-      <div class="flex justify-start fade-in">
-        <div class="max-w-[85%] space-y-2 items-start flex flex-col">
-          <div class="w-full rounded-lg border border-status-info/30 bg-status-info/5 text-xs overflow-hidden">
-            <div class="flex items-center gap-2 px-3 py-1.5 border-b border-status-info/20 bg-status-info/10">
-              <i data-lucide="terminal" class="w-3 h-3 text-status-info"></i>
-              <span class="font-mono text-status-info">read_file</span>
-              <span class="ml-auto px-1.5 py-0.5 rounded text-[10px] border tier-0">Tier 0</span>
-            </div>
-            <div class="px-3 py-2 font-mono text-text-secondary">/projects/data.csv</div>
-            <div class="px-3 py-2 border-t border-status-info/20 font-mono text-text-muted whitespace-pre-wrap max-h-32 overflow-y-auto">
-              id,name,value\n1,Alice,100\n2,Bob,200
-            </div>
-          </div>
-        </div>
-      </div>
-      -->
-    </div>
-
-    <!-- PII warning banner (shown when PII detected) -->
-    <div id="pii-banner" class="hidden items-center justify-between px-4 py-2 border-t border-status-warning/20 bg-status-warning/5 flex-shrink-0">
-      <div class="flex items-center gap-2 text-xs text-status-warning">
-        <i data-lucide="shield-alert" class="w-3.5 h-3.5"></i>
-        <span>PII detected in your message — <strong id="pii-types"></strong> hashed before sending</span>
-      </div>
-      <button onclick="document.getElementById('pii-banner').classList.add('hidden')"
-              class="text-text-muted hover:text-text-secondary transition-colors">
-        <i data-lucide="x" class="w-3.5 h-3.5"></i>
-      </button>
     </div>
 
     <!-- Input area -->
     <div class="flex-shrink-0 px-4 py-3 border-t border-border-subtle bg-bg-sidebar">
-      <!-- Linked context chip (if linked to a task) -->
       <div id="context-chip" class="hidden mb-2">
         <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] border border-accent/30 bg-accent/5 text-accent">
           <i data-lucide="link" class="w-2.5 h-2.5"></i>
@@ -182,14 +104,13 @@
                   rows="1"
                   class="flex-1 resize-none rounded-lg border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted text-sm px-3 py-2.5 focus:outline-none focus:border-accent transition-colors min-h-[40px] max-h-48 overflow-y-auto"></textarea>
 
-        <!-- Stop button (shown while streaming) -->
         <button id="stop-btn"
                 class="hidden p-2.5 rounded-lg bg-status-error/15 text-status-error hover:bg-status-error/30 transition-colors flex-shrink-0"
-                onclick="stopGeneration()">
+                onclick="stopGeneration()"
+                title="Stop generation">
           <i data-lucide="square" class="w-[18px] h-[18px]"></i>
         </button>
 
-        <!-- Send button -->
         <button id="send-btn"
                 onclick="sendMessage()"
                 class="p-2.5 rounded-lg bg-accent text-white hover:bg-accent/80 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0">
@@ -197,8 +118,8 @@
         </button>
       </div>
       <div class="flex items-center justify-between mt-1.5 px-0.5">
-        <span class="text-[10px] text-text-muted">PII guard active · <span id="pii-model-status">local model loading...</span></span>
         <span class="text-[10px] text-text-muted font-mono" id="char-count">0 chars</span>
+        <span class="text-[10px] text-text-muted" id="stream-status"></span>
       </div>
     </div>
   </div>
@@ -208,85 +129,447 @@
 
 {% block scripts %}
 <script>
-  const input = document.getElementById('chat-input');
-  const charCount = document.getElementById('char-count');
+// ── State ─────────────────────────────────────────────────────────────────────
+let currentSessionId = null;
+let abortController = null;
+let isStreaming = false;
 
-  // Auto-resize textarea
+// ── Init ──────────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  loadSessions();
+  if (currentSessionId) {
+    loadMessages(currentSessionId);
+  } else {
+    createNewSession();
+  }
+
+  const input = document.getElementById('chat-input');
   input.addEventListener('input', () => {
     input.style.height = 'auto';
     input.style.height = Math.min(input.scrollHeight, 192) + 'px';
-    charCount.textContent = input.value.length + ' chars';
+    document.getElementById('char-count').textContent = input.value.length + ' chars';
   });
 
-  // Send on Enter (not Shift+Enter)
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
     }
   });
+});
 
-  function sendMessage() {
-    const text = input.value.trim();
-    if (!text) return;
+// ── Session management ────────────────────────────────────────────────────────
 
-    // Hide empty state
+async function loadSessions() {
+  try {
+    const res = await fetch('/chat/api/sessions');
+    const sessions = await res.json();
+    const list = document.getElementById('session-list');
+    list.innerHTML = '';
+    if (sessions.length === 0) {
+      list.innerHTML = '<div class="mx-1 my-0.5 px-3 py-2.5 rounded-lg text-xs text-text-muted">No sessions yet</div>';
+      return;
+    }
+    sessions.forEach(s => {
+      const div = document.createElement('div');
+      div.className = 'mx-1 my-0.5 px-3 py-2.5 rounded-lg cursor-pointer transition-colors group ' +
+        (s.id === currentSessionId ? 'bg-accent/10 border border-accent/20 text-accent' : 'hover:bg-bg-raised');
+      div.onclick = () => switchSession(s.id);
+      div.innerHTML = `
+        <div class="text-sm font-medium truncate">${escHtml(s.name)}</div>
+        <div class="text-[10px] text-text-muted mt-0.5 font-mono">${s.message_count || 0} msgs · ${timeAgo(s.updated_at)}</div>`;
+      list.appendChild(div);
+    });
+  } catch (e) {
+    console.error('Failed to load sessions:', e);
+  }
+}
+
+async function switchSession(id) {
+  if (isStreaming) stopGeneration();
+  currentSessionId = id;
+  document.getElementById('empty-state').style.display = 'none';
+  document.getElementById('messages').innerHTML = '';
+  await loadMessages(id);
+  await loadSessions();
+}
+
+async function loadMessages(sessionId) {
+  try {
+    const res = await fetch(`/chat/api/sessions/${sessionId}/messages`);
+    const messages = await res.json();
+    const msgs = document.getElementById('messages');
+    msgs.innerHTML = '';
+
+    if (messages.length === 0) {
+      document.getElementById('empty-state').style.display = '';
+      return;
+    }
     document.getElementById('empty-state').style.display = 'none';
 
-    // Append user bubble
-    appendMessage('user', text);
-    input.value = '';
-    input.style.height = 'auto';
-    charCount.textContent = '0 chars';
+    messages.forEach(m => appendMessage(m.role, m.content, m.tool_name, m.tool_call_id));
 
-    // TODO: POST to /api/chat/send
+    // Restore token count
+    const totalTokens = messages.reduce((sum, m) => sum + (m.token_count || 0), 0);
+    document.getElementById('tokens-used').textContent = totalTokens;
+  } catch (e) {
+    console.error('Failed to load messages:', e);
+  }
+}
+
+async function createNewSession(name) {
+  try {
+    const body = { name: name || 'New conversation' };
+    const res = await fetch('/chat/api/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const session = await res.json();
+    currentSessionId = session.id;
+    document.getElementById('session-name').textContent = session.name;
+    document.getElementById('empty-state').style.display = 'none';
+    document.getElementById('messages').innerHTML = '';
+    await loadSessions();
+    return session.id;
+  } catch (e) {
+    console.error('Failed to create session:', e);
+    return null;
+  }
+}
+
+async function newSession() {
+  if (isStreaming) stopGeneration();
+  await createNewSession();
+}
+
+async function startRename() {
+  const name = document.getElementById('session-name').textContent;
+  const newName = prompt('Rename session:', name);
+  if (newName && newName.trim() && currentSessionId) {
+    try {
+      await fetch(`/chat/api/sessions/${currentSessionId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName.trim() }),
+      });
+      document.getElementById('session-name').textContent = newName.trim();
+      await loadSessions();
+    } catch (e) {
+      console.error('Failed to rename:', e);
+    }
+  }
+}
+
+async function compactContext() {
+  // Placeholder — would compress old messages
+  console.log('compact context');
+}
+
+// ── Sending messages ──────────────────────────────────────────────────────────
+
+async function sendMessage() {
+  const input = document.getElementById('chat-input');
+  const text = input.value.trim();
+  if (!text || isStreaming) return;
+
+  // Ensure we have a session
+  if (!currentSessionId) {
+    currentSessionId = await createNewSession();
+    if (!currentSessionId) return;
   }
 
-  function appendMessage(role, content) {
-    const msgs = document.getElementById('messages');
-    const div = document.createElement('div');
-    div.className = 'flex ' + (role === 'user' ? 'justify-end' : 'justify-start') + ' fade-in';
-    if (role === 'user') {
-      div.innerHTML = `
-        <div class="max-w-[85%] space-y-2 items-end flex flex-col">
-          <div class="rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-accent text-white">${escHtml(content)}</div>
-          <div class="flex items-center gap-2 text-[10px] text-text-muted px-1">
-            <span>just now</span>
-          </div>
-        </div>`;
-    } else {
-      div.innerHTML = `
-        <div class="max-w-[85%] space-y-2 items-start flex flex-col">
-          <div class="rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-bg-card border border-border-subtle text-text-primary prose-dark">${escHtml(content)}</div>
-          <div class="flex items-center gap-2 text-[10px] text-text-muted px-1">
-            <span class="font-mono">Assistant</span>
-            <span>·</span>
-            <span>just now</span>
-          </div>
-        </div>`;
+  // Show empty state gone
+  document.getElementById('empty-state').style.display = 'none';
+
+  // Show user bubble immediately
+  appendMessage('user', text);
+  input.value = '';
+  input.style.height = 'auto';
+  document.getElementById('char-count').textContent = '0 chars';
+
+  // Update session name if it's still "New conversation"
+  const sessionNameEl = document.getElementById('session-name');
+  if (sessionNameEl.textContent === 'New conversation') {
+    sessionNameEl.textContent = text.substring(0, 50) + (text.length > 50 ? '...' : '');
+  }
+
+  // Start streaming
+  await streamResponse(text);
+}
+
+async function streamResponse(userPrompt) {
+  isStreaming = true;
+  abortController = new AbortController();
+
+  // UI state
+  document.getElementById('send-btn').classList.add('hidden');
+  document.getElementById('stop-btn').classList.remove('hidden');
+  document.getElementById('stream-status').textContent = 'Thinking...';
+  document.getElementById('stream-status').className = 'text-[10px] text-accent';
+
+  // Create assistant message container for streaming text
+  const msgs = document.getElementById('messages');
+  const assistantDiv = document.createElement('div');
+  assistantDiv.className = 'flex justify-start fade-in';
+  assistantDiv.innerHTML = `
+    <div class="max-w-[85%] space-y-2 items-start flex flex-col">
+      <div class="rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-bg-card border border-border-subtle text-text-primary min-h-[1.5em]" id="assistant-text"></div>
+      <div id="assistant-tool-calls"></div>
+      <div class="flex items-center gap-2 text-[10px] text-text-muted px-1">
+        <span class="font-mono">Assistant</span>
+        <span>·</span>
+        <span>just now</span>
+        <span>·</span>
+        <span id="assistant-tokens">0 tokens</span>
+      </div>
+    </div>`;
+  msgs.appendChild(assistantDiv);
+  msgs.scrollTop = msgs.scrollHeight;
+
+  const assistantText = document.getElementById('assistant-text');
+  const toolCallsContainer = document.getElementById('assistant-tool-calls');
+  let toolCallCount = 0;
+  let totalText = '';
+  let lastToolCallDiv = null;
+
+  try {
+    const strategy = document.getElementById('context-strategy').value;
+    const res = await fetch(`/chat/api/sessions/${currentSessionId}/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: userPrompt, context_strategy: strategy }),
+      signal: abortController.signal,
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || `HTTP ${res.status}`);
     }
-    msgs.appendChild(div);
-    msgs.scrollTop = msgs.scrollHeight;
+
+    // SSE reader
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // Process complete SSE events
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop() || '';
+
+      for (const part of parts) {
+        if (!part.trim()) continue;
+
+        // Parse event and data
+        let eventType = '';
+        let dataStr = '';
+        const lines = part.split('\n');
+        for (const line of lines) {
+          if (line.startsWith('event: ')) eventType = line.slice(7).trim();
+          if (line.startsWith('data: ')) dataStr = line.slice(6);
+        }
+
+        try {
+          const data = dataStr ? JSON.parse(dataStr) : {};
+        } catch {}
+
+        switch (eventType) {
+          case 'text':
+            if (data.content) {
+              totalText += data.content;
+              assistantText.innerHTML = formatText(totalText);
+              msgs.scrollTop = msgs.scrollHeight;
+            }
+            break;
+
+          case 'tool_call':
+            toolCallCount++;
+            const tcDiv = document.createElement('div');
+            tcDiv.className = 'w-full rounded-lg border border-status-info/30 bg-status-info/5 text-xs overflow-hidden';
+            tcDiv.id = `tool-call-${toolCallCount}`;
+            tcDiv.innerHTML = `
+              <div class="flex items-center gap-2 px-3 py-1.5 border-b border-status-info/20 bg-status-info/10">
+                <i data-lucide="terminal" class="w-3 h-3 text-status-info"></i>
+                <span class="font-mono text-status-info">${escHtml(data.tool || 'tool')}</span>
+                <span class="ml-auto px-1.5 py-0.5 rounded text-[10px] border tier-1">Tier 1</span>
+              </div>
+              <div class="px-3 py-2 font-mono text-text-secondary break-all">${escHtml(data.input || '{}')}</div>`;
+            toolCallsContainer.appendChild(tcDiv);
+            lastToolCallDiv = tcDiv;
+            msgs.scrollTop = msgs.scrollHeight;
+            lucide.createIcons();
+            break;
+
+          case 'tool_result':
+            if (lastToolCallDiv) {
+              const body = lastToolCallDiv.querySelector('.px-3.py-2.font-mono.text-text-secondary');
+              const outputEl = document.createElement('div');
+              outputEl.className = 'px-3 py-2 border-t border-status-info/20 font-mono text-text-muted whitespace-pre-wrap max-h-48 overflow-y-auto';
+              const output = data.output || '(no output)';
+              outputEl.textContent = output.length > 2000 ? output.slice(0, 2000) + '\n[…truncated]' : output;
+              lastToolCallDiv.appendChild(outputEl);
+
+              // Add error indicator
+              if (data.error) {
+                outputEl.classList.remove('text-text-muted');
+                outputEl.classList.add('text-status-error');
+              }
+            }
+            msgs.scrollTop = msgs.scrollHeight;
+            lastToolCallDiv = null;
+            lucide.createIcons();
+            break;
+
+          case 'done':
+            // Stream complete
+            if (totalText) {
+              // Save the assistant message to the DB
+              saveAssistantMessage(currentSessionId, totalText);
+            }
+            break;
+
+          case 'error':
+            const errorEl = document.createElement('div');
+            errorEl.className = 'w-full rounded-lg border border-status-error/30 bg-status-error/5 text-xs px-3 py-2 text-status-error';
+            errorEl.textContent = `Error: ${data.error || 'Unknown error'}`;
+            toolCallsContainer.appendChild(errorEl);
+            break;
+        }
+      }
+    }
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      document.getElementById('stream-status').textContent = 'Cancelled';
+      document.getElementById('stream-status').className = 'text-[10px] text-text-muted';
+    } else {
+      const errorEl = document.createElement('div');
+      errorEl.className = 'w-full rounded-lg border border-status-error/30 bg-status-error/5 text-xs px-3 py-2 text-status-error';
+      errorEl.textContent = `Error: ${e.message}`;
+      msgs.appendChild(errorEl);
+      msgs.scrollTop = msgs.scrollHeight;
+    }
+  } finally {
+    // Cleanup
+    isStreaming = false;
+    abortController = null;
+    document.getElementById('send-btn').classList.remove('hidden');
+    document.getElementById('stop-btn').classList.add('hidden');
+    document.getElementById('stream-status').textContent = '';
+
+    // Update token count
+    const tokenEst = Math.ceil(totalText.length / 4);
+    const tokenEl = document.getElementById('assistant-tokens');
+    if (tokenEl) tokenEl.textContent = `${tokenEst} tokens`;
+    document.getElementById('tokens-used').textContent = tokenEst;
+  }
+}
+
+async function stopGeneration() {
+  if (abortController) {
+    abortController.abort();
+  }
+}
+
+async function saveAssistantMessage(sessionId, content) {
+  try {
+    await fetch(`/chat/api/sessions/${sessionId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: 'assistant', content: content }),
+    });
+  } catch (e) {
+    console.error('Failed to save message:', e);
+  }
+}
+
+// ── Message rendering ─────────────────────────────────────────────────────────
+
+function appendMessage(role, content, toolName, toolCallId) {
+  const msgs = document.getElementById('messages');
+  const div = document.createElement('div');
+  div.className = 'flex ' + (role === 'user' ? 'justify-end' : 'justify-start') + ' fade-in';
+
+  if (role === 'user') {
+    div.innerHTML = `
+      <div class="max-w-[85%] space-y-2 items-end flex flex-col">
+        <div class="rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-accent text-white">${escHtml(content)}</div>
+        <div class="flex items-center gap-2 text-[10px] text-text-muted px-1">
+          <span>${timeAgo(new Date().toISOString())}</span>
+        </div>
+      </div>`;
+  } else if (role === 'assistant') {
+    div.innerHTML = `
+      <div class="max-w-[85%] space-y-2 items-start flex flex-col">
+        <div class="rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-bg-card border border-border-subtle text-text-primary">${formatText(content)}</div>
+        <div class="flex items-center gap-2 text-[10px] text-text-muted px-1">
+          <span class="font-mono">Assistant</span>
+          <span>·</span>
+          <span>${timeAgo(new Date().toISOString())}</span>
+        </div>
+      </div>`;
+  } else if (role === 'tool') {
+    div.className = 'flex justify-start fade-in w-full';
+    div.innerHTML = `
+      <div class="max-w-[85%] w-full space-y-2 items-start flex flex-col">
+        <div class="w-full rounded-lg border border-status-info/30 bg-status-info/5 text-xs overflow-hidden">
+          <div class="flex items-center gap-2 px-3 py-1.5 border-b border-status-info/20 bg-status-info/10">
+            <i data-lucide="terminal" class="w-3 h-3 text-status-info"></i>
+            <span class="font-mono text-status-info">${escHtml(toolName || 'tool')}</span>
+            <span class="ml-auto px-1.5 py-0.5 rounded text-[10px] border tier-1">Result</span>
+          </div>
+          <div class="px-3 py-2 font-mono text-text-muted whitespace-pre-wrap max-h-48 overflow-y-auto">${escHtml(content)}</div>
+        </div>
+      </div>`;
     lucide.createIcons();
   }
 
-  function escHtml(s) {
-    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  }
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  lucide.createIcons();
+}
 
-  function newSession() {
-    // TODO: POST to /api/chat/sessions
-    document.getElementById('empty-state').style.display = '';
-  }
+// ── Utilities ─────────────────────────────────────────────────────────────────
 
-  function compactContext() {
-    // TODO: POST to /api/chat/sessions/<id>/compact
-    console.log('compact');
-  }
+function escHtml(s) {
+  if (typeof s !== 'string') return String(s);
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
-  function stopGeneration() { /* TODO */ }
-  function unlinkContext() {
-    document.getElementById('context-chip').classList.add('hidden');
-  }
+function formatText(text) {
+  // Simple formatting: convert newlines to <br>, wrap URLs in links
+  if (!text) return '';
+  let escaped = escHtml(text);
+  // Convert newlines to <br>
+  escaped = escaped.replace(/\n/g, '<br>');
+  // Wrap URLs
+  escaped = escaped.replace(
+    /(https?:\/\/[^\s<]+)/g,
+    '<a href="$1" target="_blank" class="text-accent hover:underline">$1</a>'
+  );
+  return escaped;
+}
+
+function timeAgo(dateStr) {
+  if (!dateStr) return 'now';
+  const date = new Date(dateStr);
+  const seconds = Math.floor((Date.now() - date) / 1000);
+  if (seconds < 10) return 'just now';
+  if (seconds < 60) return seconds + 's ago';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return minutes + 'm ago';
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return hours + 'h ago';
+  const days = Math.floor(hours / 24);
+  return days + 'd ago';
+}
+
+function unlinkContext() {
+  document.getElementById('context-chip').classList.add('hidden');
+}
 </script>
 {% endblock %}
