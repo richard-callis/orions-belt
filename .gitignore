@@ -30,8 +30,9 @@ config.local.py
 logs/
 *.log
 
-# Models (large files — download separately)
-models/
+# HuggingFace model cache (large files — download separately)
+# /models/ anchors to root only — does NOT affect app/models/
+/models/
 *.gguf
 *.bin
 *.safetensors
