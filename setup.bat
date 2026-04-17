@@ -91,16 +91,24 @@ REM Create local dirs
 if not exist logs mkdir logs
 if not exist models mkdir models
 
+REM Download HuggingFace models
+echo.
+echo [+] Downloading AI models (~670MB total)...
+echo     dslim/bert-base-NER          ~400MB  PII detection
+echo     nli-deberta-v3-small         ~180MB  PHI judge
+echo     all-MiniLM-L6-v2             ~90MB   Memory embeddings
+echo.
+python download_models.py
+if errorlevel 1 (
+    echo WARNING: Some models failed to download.
+    echo   They will be retried on first launch.
+    echo   Re-run manually: python download_models.py
+)
+
 echo.
 echo  ==========================================
 echo   Setup complete!
 echo  ==========================================
-echo.
-echo  Models will download on first launch:
-echo    dslim/bert-base-NER          ~400MB
-echo    nli-deberta-v3-small         ~180MB
-echo    all-MiniLM-L6-v2             ~90MB
-echo    Stored in: models\
 echo.
 echo  To start:  double-click run.bat
 echo.
