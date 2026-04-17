@@ -366,6 +366,7 @@ def test_llm_connection():
             stored = next((p for p in _get_providers() if p.get("id") == provider_id), None)
             raw_key = (stored or {}).get("api_key", "")
 
+    masked_key = ("*" * (len(raw_key) - 4) + raw_key[-4:]) if len(raw_key) > 4 else ("*" * len(raw_key)) if raw_key else "(none)"
     log.info("LLM test: url=%s model=%s key_set=%s", base_url, model, bool(raw_key))
 
     start = time.time()
@@ -375,6 +376,11 @@ def test_llm_connection():
         headers = {"Content-Type": "application/json"}
         if raw_key:
             headers["Authorization"] = f"Bearer {raw_key}"
+
+        log.info(
+            "llm.test.request  POST %s  model=%s  auth=Bearer %s",
+            url, model, masked_key,
+        )
 
         res = httpx.post(
             url,
@@ -390,6 +396,7 @@ def test_llm_connection():
 
         latency_ms = int((time.time() - start) * 1000)
 
+        log.info("llm.test.response  status=%d url=%s", res.status_code, url)
         if res.status_code == 200:
             data = res.json()
             resp_model = data.get("model", model)

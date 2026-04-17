@@ -11,9 +11,12 @@ Endpoints:
   POST   /api/sessions/<id>/stream  — SSE chat stream
 """
 import json
+import logging
 import time
 import uuid
 from datetime import datetime, timezone
+
+log = logging.getLogger("orions-belt")
 from flask import (
     Blueprint,
     Response,
@@ -389,6 +392,13 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
+        # Log the exact outgoing request for debugging auth issues
+        masked_key = ("*" * (len(api_key) - 4) + api_key[-4:]) if len(api_key) > 4 else ("*" * len(api_key)) if api_key else "(none)"
+        log.info(
+            "llm.request  POST %s  model=%s  auth=Bearer %s  messages=%d  stream=True",
+            url, model, masked_key, len(messages),
+        )
+
         llm_log = LLMLog(
             provider=base_url.split("//")[1].split(":")[0] if "://" in base_url else "custom",
             model=model, session_id=session_id, run_id=run_id,
@@ -403,8 +413,10 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
             with httpx.Client(timeout=180.0) as client:
                 # Use streaming so tokens arrive in real time
                 with client.stream("POST", url, json=body, headers=headers) as resp:
+                    log.info("llm.response status=%d url=%s", resp.status_code, url)
                     if resp.status_code != 200:
                         err = resp.read().decode()[:500]
+                        log.warning("llm.error status=%d body=%s", resp.status_code, err)
                         yield _sse_format("error", {"error": f"API {resp.status_code}: {err}"})
                         llm_log.success = False
                         llm_log.error = err
