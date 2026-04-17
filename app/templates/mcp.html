@@ -6,165 +6,396 @@
 <div class="flex h-full">
 
   <!-- ── Tool list ───────────────────────────────────────── -->
-  <div class="flex flex-col flex-1 min-w-0">
+  <div class="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
 
     <!-- Toolbar -->
     <div class="px-5 py-3 border-b border-border-subtle bg-bg-sidebar flex items-center gap-3 flex-shrink-0">
-      <div class="flex items-center gap-2">
-        {% for tier, label in [('All',''),('0','Auto'),('1','Audit'),('2','Warn'),('3','Stop')] %}
-        <button class="px-2.5 py-1 rounded text-xs font-medium transition-colors
-                       {% if loop.first %}bg-accent/15 text-accent{% else %}text-text-muted hover:text-text-secondary hover:bg-bg-raised{% endif %}">
-          {% if not loop.first %}
+      <div class="flex items-center gap-2" id="tier-filters">
+        <button data-tier="all"
+                onclick="filterTier('all', this)"
+                class="px-2.5 py-1 rounded text-xs font-medium transition-colors bg-accent/15 text-accent">
+          All
+        </button>
+        {% for tier, label in [('0','Auto'),('1','Audit'),('2','Warn'),('3','Stop')] %}
+        <button data-tier="{{ tier }}"
+                onclick="filterTier('{{ tier }}', this)"
+                class="px-2.5 py-1 rounded text-xs font-medium transition-colors text-text-muted hover:text-text-secondary hover:bg-bg-raised">
           <span class="tier-{{ tier }} px-1.5 py-0.5 rounded border text-[10px] mr-1">{{ tier }}</span>
-          {% endif %}
-          {{ label or 'All' }}
+          {{ label }}
         </button>
         {% endfor %}
       </div>
       <div class="flex items-center gap-2 ml-auto">
-        <input type="text" placeholder="Filter tools..."
+        <input type="text" id="tool-filter" placeholder="Filter tools..."
+               oninput="filterByName(this.value)"
                class="px-2.5 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent w-48" />
-        <button class="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs bg-accent/15 text-accent hover:bg-accent/30 transition-colors">
-          <i data-lucide="sparkles" class="w-3 h-3"></i>
-          Propose Tool
-        </button>
       </div>
     </div>
 
     <div class="flex-1 overflow-y-auto p-5">
 
-      <!-- Section: Built-in tools -->
+      <!-- Tool grid populated from API -->
       <div class="mb-1 flex items-center gap-2">
-        <span class="text-xs font-semibold text-text-muted uppercase tracking-wider">Built-in</span>
-        <span class="px-1.5 py-0.5 rounded-full bg-bg-raised text-text-muted text-[10px]">12</span>
+        <span class="text-xs font-semibold text-text-muted uppercase tracking-wider">Built-in Tools</span>
+        <span class="px-1.5 py-0.5 rounded-full bg-bg-raised text-text-muted text-[10px]" id="tool-count">…</span>
       </div>
 
-      <div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-2 mb-6">
-        {% set tools = [
-          ('read_file',        0, 'file-text',     'Read a file from an authorized directory'),
-          ('list_directory',   0, 'folder-open',   'List files in an authorized directory'),
-          ('search_files',     0, 'search',        'Search for files by pattern'),
-          ('search_emails',    0, 'mail',          'Search Outlook emails (read-only)'),
-          ('create_file',      1, 'file-plus',     'Create a new file — fails if exists'),
-          ('append_to_file',   1, 'file-plus-2',   'Append content to an existing file'),
-          ('call_connector',   1, 'plug',          'Call a configured connector'),
-          ('run_sql_query',    1, 'database',      'Run a SELECT query via SQL connector'),
-          ('modify_file',      2, 'file-edit',     'Overwrite an existing file'),
-          ('create_directory', 2, 'folder-plus',   'Create a new directory'),
-          ('delete_file',      3, 'trash-2',       'Delete a file — hard stop'),
-          ('move_file',        3, 'file-symlink',  'Move or rename a file — hard stop'),
-        ] %}
-        {% for name, tier, icon, desc in tools %}
-        <div class="rounded-lg border border-border-subtle bg-bg-card p-3.5 hover:border-border-visible transition-colors cursor-pointer group">
-          <div class="flex items-start gap-3">
-            <div class="w-8 h-8 rounded-lg bg-bg-raised border border-border-subtle flex items-center justify-center flex-shrink-0">
-              <i data-lucide="{{ icon }}" class="w-4 h-4 text-text-muted group-hover:text-accent transition-colors"></i>
-            </div>
-            <div class="flex-1 min-w-0">
-              <div class="flex items-center gap-2 mb-1">
-                <span class="text-sm font-mono font-medium text-text-primary">{{ name }}</span>
-                <span class="px-1.5 py-0.5 rounded border text-[10px] tier-{{ tier }}">Tier {{ tier }}</span>
-              </div>
-              <p class="text-[11px] text-text-muted leading-relaxed">{{ desc }}</p>
-            </div>
-          </div>
-        </div>
-        {% endfor %}
-      </div>
-
-      <!-- Section: Proposed tools (pending approval) -->
-      <div class="mb-3 flex items-center gap-2">
-        <span class="text-xs font-semibold text-text-muted uppercase tracking-wider">Pending Review</span>
-        <span class="px-1.5 py-0.5 rounded-full bg-status-warning/20 text-status-warning text-[10px] font-bold">1</span>
-      </div>
-
-      <!-- Proposal card -->
-      <div class="rounded-lg border border-status-warning/30 bg-status-warning/5 p-4 mb-6">
-        <div class="flex items-start justify-between gap-4">
-          <div class="flex-1 min-w-0">
-            <div class="flex items-center gap-2 mb-2">
-              <span class="text-sm font-mono font-medium text-text-primary">analyze_csv</span>
-              <span class="px-1.5 py-0.5 rounded border tier-1 text-[10px]">Tier 1</span>
-              <span class="px-1.5 py-0.5 rounded text-[10px] bg-status-warning/15 text-status-warning border border-status-warning/30">Proposed by: Code Agent</span>
-            </div>
-            <p class="text-xs text-text-muted mb-3">Parse and summarize a CSV file from an authorized directory</p>
-
-            <!-- Safety scan results -->
-            <div class="space-y-1.5 text-xs mb-3">
-              <div class="flex items-center gap-2 text-status-healthy">
-                <i data-lucide="check-circle-2" class="w-3.5 h-3.5"></i>
-                AST scan passed — no banned imports or dangerous calls
-              </div>
-              <div class="flex items-center gap-2 text-status-healthy">
-                <i data-lucide="check-circle-2" class="w-3.5 h-3.5"></i>
-                Local LLM review: safe — reads only, no network, no modification
-              </div>
-            </div>
-
-            <!-- Code preview -->
-            <details class="text-xs">
-              <summary class="text-text-muted cursor-pointer hover:text-text-secondary transition-colors mb-1">View proposed code</summary>
-              <pre class="bg-bg-sidebar border border-border-subtle rounded p-3 font-mono text-text-secondary overflow-x-auto text-[11px]">def analyze_csv(path: str, max_rows: int = 100) -> dict:
-    import csv, pathlib
-    p = pathlib.Path(path)
-    rows = []
-    with open(p, newline='') as f:
-        reader = csv.DictReader(f)
-        for i, row in enumerate(reader):
-            if i >= max_rows: break
-            rows.append(dict(row))
-    return {"rows": rows, "count": len(rows),
-            "columns": list(rows[0].keys()) if rows else []}</pre>
-            </details>
-          </div>
-        </div>
-
-        <div class="flex items-center gap-2 mt-3 pt-3 border-t border-status-warning/20">
-          <input type="text" placeholder="Approval notes (optional)"
-                 class="flex-1 px-2.5 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent" />
-          <button class="px-3 py-1.5 rounded text-xs bg-status-healthy/15 text-status-healthy hover:bg-status-healthy/30 transition-colors font-medium">
-            Approve
-          </button>
-          <button class="px-3 py-1.5 rounded text-xs bg-status-error/15 text-status-error hover:bg-status-error/30 transition-colors font-medium">
-            Reject
-          </button>
-        </div>
+      <div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-2 mb-6" id="tool-grid">
+        <!-- populated by loadTools() -->
       </div>
 
       <!-- Authorized Directories -->
       <div class="mb-3 flex items-center justify-between">
         <span class="text-xs font-semibold text-text-muted uppercase tracking-wider">Authorized Directories</span>
-        <button class="flex items-center gap-1 px-2.5 py-1 rounded text-[10px] bg-accent/15 text-accent hover:bg-accent/30 transition-colors">
+        <button onclick="showAddDir()"
+                class="flex items-center gap-1 px-2.5 py-1 rounded text-[10px] bg-accent/15 text-accent hover:bg-accent/30 transition-colors">
           <i data-lucide="plus" class="w-3 h-3"></i>
           Add Directory
         </button>
       </div>
 
-      <div class="space-y-2">
-        {% set dirs = [
-          ('C:\\Users\\user\\projects', 'Projects', True, False, 3),
-          ('C:\\Users\\user\\documents\\reports', 'Reports', True, True, 1),
-        ] %}
-        {% for path, alias, recursive, readonly, max_tier in dirs %}
-        <div class="rounded-lg border border-border-subtle bg-bg-card p-3 flex items-center gap-4">
-          <i data-lucide="folder-open" class="w-4 h-4 text-accent flex-shrink-0"></i>
-          <div class="flex-1 min-w-0">
-            <div class="flex items-center gap-2 mb-0.5">
-              <span class="text-sm font-medium text-text-primary">{{ alias }}</span>
-              {% if readonly %}<span class="px-1.5 py-0.5 rounded text-[10px] bg-status-info/10 text-status-info border border-status-info/20">read-only</span>{% endif %}
-              <span class="px-1.5 py-0.5 rounded text-[10px] border tier-{{ max_tier }}">max tier {{ max_tier }}</span>
-            </div>
-            <div class="text-[11px] font-mono text-text-muted">{{ path }}</div>
-          </div>
-          <button class="p-1.5 rounded text-text-muted hover:text-status-error hover:bg-status-error/10 transition-colors">
-            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
-          </button>
+      <!-- Add directory form (hidden by default) -->
+      <div id="add-dir-form" class="hidden rounded-lg border border-border-visible bg-bg-card p-3 mb-3 space-y-2">
+        <div class="flex items-center gap-2">
+          <input type="text" id="dir-path" placeholder="C:\Users\user\projects"
+                 class="flex-1 px-2.5 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent" />
+          <input type="text" id="dir-alias" placeholder="Alias (optional)"
+                 class="w-32 px-2.5 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent" />
         </div>
-        {% endfor %}
+        <div class="flex items-center gap-4 text-xs text-text-muted">
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" id="dir-readonly" class="accent-accent"> Read-only
+          </label>
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            Max tier:
+            <select id="dir-max-tier" class="ml-1 px-1.5 py-0.5 rounded border border-border-visible bg-bg-raised text-text-primary text-xs focus:outline-none focus:border-accent">
+              <option value="0">0 — Read only</option>
+              <option value="1">1 — Create</option>
+              <option value="2">2 — Modify</option>
+              <option value="3" selected>3 — All</option>
+            </select>
+          </label>
+        </div>
+        <div class="flex gap-2">
+          <button onclick="addDirectory()" class="px-3 py-1.5 rounded text-xs bg-accent/15 text-accent hover:bg-accent/30 transition-colors">Add</button>
+          <button onclick="document.getElementById('add-dir-form').classList.add('hidden')" class="px-3 py-1.5 rounded text-xs text-text-muted hover:bg-bg-raised transition-colors">Cancel</button>
+        </div>
+      </div>
+
+      <div class="space-y-2" id="dir-list">
+        <!-- populated by loadDirectories() -->
       </div>
 
     </div>
   </div>
 
+  <!-- ── Tool Runner panel ───────────────────────────────── -->
+  <div class="flex flex-col w-80 border-l border-border-subtle bg-bg-sidebar flex-shrink-0 min-h-0">
+    <div class="px-4 py-3 border-b border-border-subtle flex items-center gap-2 flex-shrink-0">
+      <i data-lucide="play-circle" class="w-4 h-4 text-accent"></i>
+      <span class="text-sm font-semibold text-text-primary">Tool Runner</span>
+    </div>
+
+    <div class="flex-1 flex flex-col gap-3 p-4 min-h-0 overflow-y-auto">
+      <div>
+        <label class="block text-[10px] font-semibold text-text-muted uppercase tracking-wider mb-1">Tool</label>
+        <select id="runner-tool"
+                onchange="onToolSelect()"
+                class="w-full px-2.5 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent">
+          <option value="">Select a tool…</option>
+        </select>
+      </div>
+
+      <div>
+        <div class="flex items-center justify-between mb-1">
+          <label class="block text-[10px] font-semibold text-text-muted uppercase tracking-wider">Arguments (JSON)</label>
+          <button onclick="formatArgs()" class="text-[10px] text-accent hover:underline">Format</button>
+        </div>
+        <textarea id="runner-args" rows="8"
+                  placeholder='{"path": "C:\\Users\\user\\projects"}'
+                  class="w-full resize-none rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted text-xs px-2.5 py-2 font-mono focus:outline-none focus:border-accent"></textarea>
+      </div>
+
+      <button onclick="runTool()"
+              class="flex items-center justify-center gap-2 w-full py-2 rounded text-xs font-medium bg-accent/15 text-accent hover:bg-accent/30 transition-colors">
+        <i data-lucide="play" class="w-3.5 h-3.5"></i>
+        Run Tool
+      </button>
+
+      <!-- Result -->
+      <div id="runner-result" class="hidden flex-1 flex flex-col">
+        <div class="flex items-center justify-between mb-1">
+          <label class="block text-[10px] font-semibold text-text-muted uppercase tracking-wider">Result</label>
+          <span id="runner-status" class="text-[10px] text-text-muted"></span>
+        </div>
+        <pre id="runner-output"
+             class="flex-1 rounded border border-border-subtle bg-bg-card text-xs font-mono text-text-secondary p-3 whitespace-pre-wrap overflow-y-auto max-h-64"></pre>
+      </div>
+    </div>
+  </div>
+
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── Tier icons / descriptions for tool runner hints ───────────────────────────
+const TOOL_HINTS = {
+  read_file:        { args: { path: '' }, hint: 'Read a file from an authorized directory.' },
+  list_directory:   { args: { path: '.' }, hint: 'List files in an authorized directory.' },
+  search_files:     { args: { path: '.', pattern: '*.txt' }, hint: 'Search for files by pattern.' },
+  search_emails:    { args: { query: '', count: 20 }, hint: 'Search Outlook inbox (read-only).' },
+  create_file:      { args: { path: '', content: '' }, hint: 'Create a new file (fails if exists).' },
+  append_to_file:   { args: { path: '', content: '' }, hint: 'Append content to a file.' },
+  call_connector:   { args: { connector: '', action: 'list', params: {} }, hint: 'Call a configured connector.' },
+  run_sql_query:    { args: { connector: '', query: 'SELECT ...' }, hint: 'SELECT query via SQL connector.' },
+  modify_file:      { args: { path: '', content: '' }, hint: 'Overwrite an existing file (tier 2).' },
+  create_directory: { args: { path: '' }, hint: 'Create a new directory (tier 2).' },
+  delete_file:      { args: { path: '' }, hint: 'Delete a file — hard stop (tier 3).' },
+  move_file:        { args: { source: '', destination: '' }, hint: 'Move/rename a file (tier 3).' },
+};
+
+// Icon map (Lucide)
+const TOOL_ICONS = {
+  read_file: 'file-text', list_directory: 'folder-open', search_files: 'search',
+  search_emails: 'mail', create_file: 'file-plus', append_to_file: 'file-plus-2',
+  call_connector: 'plug', run_sql_query: 'database', modify_file: 'file-edit',
+  create_directory: 'folder-plus', delete_file: 'trash-2', move_file: 'file-symlink',
+};
+
+let allTools = [];
+let activeTierFilter = 'all';
+
+// ── Load tools from API ───────────────────────────────────────────────────────
+async function loadTools() {
+  try {
+    const res = await fetch('/mcp/api/tools');
+    allTools = await res.json();
+    renderTools(allTools);
+    populateRunnerSelect(allTools);
+  } catch (e) {
+    console.error('Failed to load tools:', e);
+    document.getElementById('tool-grid').innerHTML =
+      '<div class="col-span-3 text-xs text-text-muted">Failed to load tools</div>';
+  }
+}
+
+function renderTools(tools) {
+  const grid = document.getElementById('tool-grid');
+  const nameFilter = document.getElementById('tool-filter').value.toLowerCase();
+  const filtered = tools.filter(t => {
+    if (activeTierFilter !== 'all' && String(t.tier) !== activeTierFilter) return false;
+    if (nameFilter && !t.name.toLowerCase().includes(nameFilter)) return false;
+    return true;
+  });
+  document.getElementById('tool-count').textContent = filtered.length;
+
+  if (filtered.length === 0) {
+    grid.innerHTML = '<div class="col-span-3 text-xs text-text-muted">No tools match filters</div>';
+    return;
+  }
+
+  grid.innerHTML = filtered.map(t => {
+    const icon = TOOL_ICONS[t.name] || 'wrench';
+    return `
+    <div class="rounded-lg border border-border-subtle bg-bg-card p-3.5 hover:border-border-visible transition-colors cursor-pointer group"
+         onclick="selectTool('${escHtml(t.name)}')">
+      <div class="flex items-start gap-3">
+        <div class="w-8 h-8 rounded-lg bg-bg-raised border border-border-subtle flex items-center justify-center flex-shrink-0">
+          <i data-lucide="${icon}" class="w-4 h-4 text-text-muted group-hover:text-accent transition-colors"></i>
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="text-sm font-mono font-medium text-text-primary">${escHtml(t.name)}</span>
+            <span class="px-1.5 py-0.5 rounded border text-[10px] tier-${t.tier}">Tier ${t.tier}</span>
+            ${t.enabled ? '' : '<span class="px-1.5 py-0.5 rounded border text-[10px] border-border-visible text-text-muted">disabled</span>'}
+          </div>
+          <p class="text-[11px] text-text-muted leading-relaxed">${escHtml(t.description || '')}</p>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+  lucide.createIcons();
+}
+
+function populateRunnerSelect(tools) {
+  const sel = document.getElementById('runner-tool');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">Select a tool…</option>';
+  tools.forEach(t => {
+    const opt = document.createElement('option');
+    opt.value = t.name;
+    opt.textContent = `${t.name} (Tier ${t.tier})`;
+    sel.appendChild(opt);
+  });
+  if (cur) sel.value = cur;
+}
+
+function filterTier(tier, btn) {
+  activeTierFilter = tier;
+  document.querySelectorAll('#tier-filters button').forEach(b => {
+    b.className = 'px-2.5 py-1 rounded text-xs font-medium transition-colors ' +
+      (b === btn ? 'bg-accent/15 text-accent' : 'text-text-muted hover:text-text-secondary hover:bg-bg-raised');
+  });
+  renderTools(allTools);
+}
+
+function filterByName(val) {
+  renderTools(allTools);
+}
+
+function selectTool(name) {
+  document.getElementById('runner-tool').value = name;
+  onToolSelect();
+  document.getElementById('runner-tool').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function onToolSelect() {
+  const name = document.getElementById('runner-tool').value;
+  const hint = TOOL_HINTS[name];
+  if (hint) {
+    document.getElementById('runner-args').value = JSON.stringify(hint.args, null, 2);
+  } else {
+    document.getElementById('runner-args').value = '{}';
+  }
+  document.getElementById('runner-result').classList.add('hidden');
+}
+
+function formatArgs() {
+  const ta = document.getElementById('runner-args');
+  try {
+    ta.value = JSON.stringify(JSON.parse(ta.value), null, 2);
+  } catch {}
+}
+
+async function runTool() {
+  const toolName = document.getElementById('runner-tool').value;
+  if (!toolName) { alert('Select a tool first.'); return; }
+
+  let args = {};
+  try {
+    args = JSON.parse(document.getElementById('runner-args').value || '{}');
+  } catch {
+    document.getElementById('runner-result').classList.remove('hidden');
+    document.getElementById('runner-output').textContent = 'Error: invalid JSON in arguments';
+    document.getElementById('runner-status').textContent = 'Error';
+    return;
+  }
+
+  const resultEl = document.getElementById('runner-result');
+  const outputEl = document.getElementById('runner-output');
+  const statusEl = document.getElementById('runner-status');
+
+  resultEl.classList.remove('hidden');
+  outputEl.textContent = 'Running…';
+  statusEl.textContent = '';
+
+  const t0 = Date.now();
+  try {
+    const res = await fetch('/mcp/api/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tool: toolName, args }),
+    });
+    const data = await res.json();
+    const ms = Date.now() - t0;
+    if (data.error) {
+      outputEl.textContent = `Error: ${data.error}`;
+      statusEl.textContent = `failed · ${ms}ms`;
+      statusEl.className = 'text-[10px] text-status-error';
+    } else {
+      outputEl.textContent = data.result || '(empty result)';
+      statusEl.textContent = `${ms}ms`;
+      statusEl.className = 'text-[10px] text-status-healthy';
+    }
+  } catch (e) {
+    outputEl.textContent = `Error: ${e.message}`;
+    statusEl.textContent = 'failed';
+    statusEl.className = 'text-[10px] text-status-error';
+  }
+}
+
+// ── Authorized Directories ────────────────────────────────────────────────────
+async function loadDirectories() {
+  try {
+    const res = await fetch('/mcp/api/directories');
+    const dirs = await res.json();
+    renderDirectories(dirs);
+  } catch (e) {
+    console.error('Failed to load directories:', e);
+  }
+}
+
+function renderDirectories(dirs) {
+  const list = document.getElementById('dir-list');
+  if (dirs.length === 0) {
+    list.innerHTML = '<div class="text-xs text-text-muted px-1">No authorized directories. Add one to allow file access.</div>';
+    return;
+  }
+  list.innerHTML = dirs.map(d => `
+    <div class="rounded-lg border border-border-subtle bg-bg-card p-3 flex items-center gap-4">
+      <i data-lucide="folder-open" class="w-4 h-4 text-accent flex-shrink-0"></i>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2 mb-0.5">
+          <span class="text-sm font-medium text-text-primary">${escHtml(d.alias || d.path)}</span>
+          ${d.read_only ? '<span class="px-1.5 py-0.5 rounded text-[10px] bg-status-info/10 text-status-info border border-status-info/20">read-only</span>' : ''}
+          <span class="px-1.5 py-0.5 rounded text-[10px] border tier-${d.max_tier ?? 3}">max tier ${d.max_tier ?? 3}</span>
+        </div>
+        <div class="text-[11px] font-mono text-text-muted">${escHtml(d.path)}</div>
+      </div>
+      <button onclick="deleteDirectory('${escHtml(d.id)}')"
+              class="p-1.5 rounded text-text-muted hover:text-status-error hover:bg-status-error/10 transition-colors">
+        <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+      </button>
+    </div>`).join('');
+  lucide.createIcons();
+}
+
+function showAddDir() {
+  document.getElementById('add-dir-form').classList.remove('hidden');
+  document.getElementById('dir-path').focus();
+}
+
+async function addDirectory() {
+  const path = document.getElementById('dir-path').value.trim();
+  if (!path) return;
+  const alias = document.getElementById('dir-alias').value.trim() || path;
+  const readOnly = document.getElementById('dir-readonly').checked;
+  const maxTier = parseInt(document.getElementById('dir-max-tier').value, 10);
+
+  try {
+    await fetch('/mcp/api/directories', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, alias, read_only: readOnly, max_tier: maxTier, recursive: true }),
+    });
+    document.getElementById('add-dir-form').classList.add('hidden');
+    document.getElementById('dir-path').value = '';
+    document.getElementById('dir-alias').value = '';
+    await loadDirectories();
+  } catch (e) {
+    console.error('Failed to add directory:', e);
+  }
+}
+
+async function deleteDirectory(id) {
+  try {
+    await fetch(`/mcp/api/directories/${id}`, { method: 'DELETE' });
+    await loadDirectories();
+  } catch (e) {
+    console.error('Failed to delete directory:', e);
+  }
+}
+
+function escHtml(s) {
+  if (typeof s !== 'string') return String(s ?? '');
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  loadTools();
+  loadDirectories();
+});
+</script>
 {% endblock %}

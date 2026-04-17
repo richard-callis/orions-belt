@@ -302,6 +302,9 @@ def stream_messages(session_id):
         from app.services.mcp.tools import MAX_TOOL_TURNS
         max_turns = min(int(body.get("max_turns", 20)), MAX_TOOL_TURNS)
 
+        # Persist user message before streaming begins
+        _save_user_message(session_id, prompt)
+
         # Prepend user message
         history.append({"role": "user", "content": prompt})
 
@@ -471,12 +474,20 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
                 except json.JSONDecodeError:
                     args = {}
 
+                # Persist tool call invocation
+                _save_tool_message(session_id, "tool_call", tc["args"] or "{}",
+                                   tool_name=tc["name"], tool_call_id=tc["id"])
+
                 yield _sse_format("tool_call", {"tool": tc["name"], "input": tc["args"]})
 
                 try:
                     result = _run_tool(tc["name"], args)
                 except Exception as e:
                     result = f"Error: {e}"
+
+                # Persist tool result
+                _save_tool_message(session_id, "tool", str(result),
+                                   tool_name=tc["name"], tool_call_id=tc["id"])
 
                 yield _sse_format("tool_result", {"tool": tc["name"], "output": str(result)})
                 messages.append({
@@ -595,12 +606,22 @@ def _stream_ollama_gen(base_url, model, system_prompt, history,
                 except json.JSONDecodeError:
                     args = {}
 
+                tc_id = str(uuid.uuid4())[:16]
+
+                # Persist tool call invocation
+                _save_tool_message(session_id, "tool_call", tc["args"] or "{}",
+                                   tool_name=tc["name"], tool_call_id=tc_id)
+
                 yield _sse_format("tool_call", {"tool": tc["name"], "input": tc["args"]})
 
                 try:
                     result = _run_tool(tc["name"], args)
                 except Exception as e:
                     result = f"Error: {e}"
+
+                # Persist tool result
+                _save_tool_message(session_id, "tool", str(result),
+                                   tool_name=tc["name"], tool_call_id=tc_id)
 
                 yield _sse_format("tool_result", {"tool": tc["name"], "output": str(result)})
                 messages.append({"role": "tool", "content": str(result)})
@@ -647,6 +668,38 @@ def _save_assistant_message(session_id, content):
         content=content[:4000],
         created_at=_now(),
         token_count=len(content) // 4,
+    )
+    db.session.add(msg)
+    db.session.commit()
+
+
+def _save_user_message(session_id, content):
+    """Save the user's message to the database before streaming begins."""
+    if not content or not content.strip():
+        return
+    msg = Message(
+        id=str(uuid.uuid4()),
+        session_id=session_id,
+        role="user",
+        content=content[:4000],
+        created_at=_now(),
+        token_count=len(content) // 4,
+    )
+    db.session.add(msg)
+    db.session.commit()
+
+
+def _save_tool_message(session_id, role, content, tool_name=None, tool_call_id=None):
+    """Save a tool_call or tool result message to the database."""
+    msg = Message(
+        id=str(uuid.uuid4()),
+        session_id=session_id,
+        role=role,
+        content=str(content)[:4000],
+        tool_name=tool_name,
+        tool_call_id=tool_call_id,
+        created_at=_now(),
+        token_count=len(str(content)) // 4,
     )
     db.session.add(msg)
     db.session.commit()

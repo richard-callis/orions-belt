@@ -48,8 +48,16 @@ def build_context(
     - full: all messages (small conversations)
     - sliding: last N messages
     - summarize: summary of old + last N recent
+
+    Note: tool_call messages (our display-only role) are filtered out — they
+    can't be sent to the LLM because OpenAI rejects unknown roles. The tool
+    result messages (role="tool") are also excluded since without their
+    paired assistant tool_calls message they'd cause API errors.
     """
-    all_msgs = list(messages)
+    # Roles that are LLM-safe to include in context
+    LLM_ROLES = {"user", "assistant", "system"}
+
+    all_msgs = [m for m in messages if getattr(m, 'role', m.get('role', '')) in LLM_ROLES]
     total = len(all_msgs)
 
     if strategy == "sliding":

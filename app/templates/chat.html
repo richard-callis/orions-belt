@@ -666,11 +666,7 @@ async function streamResponse(userPrompt) {
             break;
 
           case 'done':
-            // Stream complete
-            if (totalText) {
-              // Save the assistant message to the DB
-              saveAssistantMessage(currentSessionId, totalText);
-            }
+            // Stream complete — backend already persists the assistant message
             break;
 
           case 'error':
@@ -737,18 +733,6 @@ async function stopGeneration() {
   }
 }
 
-async function saveAssistantMessage(sessionId, content) {
-  try {
-    await fetch(`/chat/api/sessions/${sessionId}/messages`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ role: 'assistant', content: content }),
-    });
-  } catch (e) {
-    console.error('Failed to save message:', e);
-  }
-}
-
 // ── Message rendering ─────────────────────────────────────────────────────────
 
 function appendMessage(role, content, toolName, toolCallId) {
@@ -764,6 +748,7 @@ function appendMessage(role, content, toolName, toolCallId) {
           <span>${timeAgo(new Date().toISOString())}</span>
         </div>
       </div>`;
+
   } else if (role === 'assistant') {
     div.innerHTML = `
       <div class="max-w-[85%] space-y-2 items-start flex flex-col">
@@ -774,7 +759,44 @@ function appendMessage(role, content, toolName, toolCallId) {
           <span>${timeAgo(new Date().toISOString())}</span>
         </div>
       </div>`;
+
+  } else if (role === 'tool_call') {
+    // LLM tool invocation — shows the call header + args body
+    // Store tool_call_id on the card so the matching 'tool' result can append to it
+    div.className = 'flex justify-start fade-in w-full';
+    div.innerHTML = `
+      <div class="max-w-[85%] w-full space-y-2 items-start flex flex-col">
+        <div class="w-full rounded-lg border border-status-info/30 bg-status-info/5 text-xs overflow-hidden js-tool-card"
+             data-tool-call-id="${escHtml(toolCallId || '')}">
+          <div class="flex items-center gap-2 px-3 py-1.5 border-b border-status-info/20 bg-status-info/10">
+            <i data-lucide="terminal" class="w-3 h-3 text-status-info"></i>
+            <span class="font-mono text-status-info">${escHtml(toolName || 'tool')}</span>
+            <span class="ml-auto px-1.5 py-0.5 rounded text-[10px] border tier-1">Calling…</span>
+          </div>
+          <div class="px-3 py-2 font-mono text-text-secondary break-all">${escHtml(content)}</div>
+        </div>
+      </div>`;
+
   } else if (role === 'tool') {
+    // Tool result — try to merge into the matching tool_call card
+    const existingCard = toolCallId
+      ? [...msgs.querySelectorAll('.js-tool-card')].find(el => el.dataset.toolCallId === toolCallId)
+      : null;
+
+    if (existingCard) {
+      // Append result to the existing call card
+      const badge = existingCard.querySelector('.ml-auto');
+      if (badge) badge.textContent = 'Result';
+      const outputEl = document.createElement('div');
+      outputEl.className = 'px-3 py-2 border-t border-status-info/20 font-mono text-text-muted whitespace-pre-wrap max-h-48 overflow-y-auto';
+      const out = content || '(no output)';
+      outputEl.textContent = out.length > 2000 ? out.slice(0, 2000) + '\n[…truncated]' : out;
+      existingCard.appendChild(outputEl);
+      msgs.scrollTop = msgs.scrollHeight;
+      return; // skip appending a new div
+    }
+
+    // No matching call card — standalone result
     div.className = 'flex justify-start fade-in w-full';
     div.innerHTML = `
       <div class="max-w-[85%] w-full space-y-2 items-start flex flex-col">
@@ -787,7 +809,6 @@ function appendMessage(role, content, toolName, toolCallId) {
           <div class="px-3 py-2 font-mono text-text-muted whitespace-pre-wrap max-h-48 overflow-y-auto">${escHtml(content)}</div>
         </div>
       </div>`;
-    lucide.createIcons();
   }
 
   msgs.appendChild(div);
