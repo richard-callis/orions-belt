@@ -63,11 +63,23 @@
           </div>
         </div>
 
-        <div>
-          <label class="text-xs text-text-muted block mb-1.5">Base URL</label>
-          <input id="prov-base-url" type="url" placeholder="https://api.openai.com/v1"
+        <!-- GenAI: just the domain -->
+        <div id="prov-domain-row">
+          <label class="text-xs text-text-muted block mb-1.5">Domain</label>
+          <input id="prov-domain" type="text" placeholder="openai.com"
+                 oninput="updateDomainPreview()"
                  class="w-full px-3 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent font-mono" />
-          <p class="text-[10px] text-text-muted mt-1">e.g. <code class="text-accent/60">http://10.2.2.9:8080</code> for local OpenAI-compatible server</p>
+          <p class="text-[10px] text-text-muted mt-1">
+            Endpoint: <code id="domain-preview" class="text-accent/70">https://api.openai.com/v1/chat/completions</code>
+          </p>
+        </div>
+
+        <!-- Custom: full URL -->
+        <div id="prov-url-row" class="hidden">
+          <label class="text-xs text-text-muted block mb-1.5">Base URL</label>
+          <input id="prov-base-url" type="text" placeholder="http://10.2.2.9:8080"
+                 class="w-full px-3 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent font-mono" />
+          <p class="text-[10px] text-text-muted mt-1">e.g. <code class="text-accent/60">http://10.2.2.9:8080</code> for a local OpenAI-compatible server</p>
         </div>
 
         <div id="prov-key-row">
@@ -226,6 +238,15 @@ function escHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+function provDisplayUrl(p) {
+  if (p.type === 'genai') {
+    // Show just the domain for cleaner cards
+    const match = (p.base_url || '').match(/https?:\/\/api\.([^/]+)/);
+    return match ? match[1] : p.base_url;
+  }
+  return p.base_url;
+}
+
 // ── State ─────────────────────────────────────────────────────────────────────
 let providers = [];
 let activeProviderId = null;
@@ -269,21 +290,48 @@ function selectProvType(type) {
   const modelInput = document.getElementById('prov-model');
   const keyRow = document.getElementById('prov-key-row');
 
+  const domainRow = document.getElementById('prov-domain-row');
+  const urlRow = document.getElementById('prov-url-row');
+
   switch (type) {
     case 'genai':
-      baseInput.placeholder = 'https://api.openai.com/v1';
+      domainRow.classList.remove('hidden');
+      urlRow.classList.add('hidden');
       modelInput.placeholder = 'gpt-4o';
       keyRow.style.display = '';
       keyRow.querySelector('label').innerHTML = 'API Key';
       keyRow.querySelector('input').placeholder = 'sk-...';
+      updateDomainPreview();
       break;
     case 'custom':
-      baseInput.placeholder = 'http://10.2.2.9:8080';
+      domainRow.classList.add('hidden');
+      urlRow.classList.remove('hidden');
       modelInput.placeholder = 'model-name';
-      keyRow.style.display = 'none';
+      keyRow.style.display = '';
+      keyRow.querySelector('label').innerHTML = 'API Key <span class="text-text-muted/50">(optional)</span>';
       keyRow.querySelector('input').placeholder = '(optional for local models)';
       break;
   }
+}
+
+function updateDomainPreview() {
+  const raw = document.getElementById('prov-domain').value.trim();
+  const domain = _cleanDomain(raw) || 'openai.com';
+  document.getElementById('domain-preview').textContent =
+    `https://api.${domain}/v1/chat/completions`;
+}
+
+function _cleanDomain(raw) {
+  // Strip any protocol or path the user may have accidentally pasted
+  return raw.replace(/^https?:\/\/(api\.)?/, '').replace(/\/.*$/, '').trim();
+}
+
+function _resolveBaseUrl() {
+  if (currentType === 'genai') {
+    const domain = _cleanDomain(document.getElementById('prov-domain').value.trim());
+    return domain ? `https://api.${domain}/v1` : '';
+  }
+  return document.getElementById('prov-base-url').value.trim();
 }
 
 document.querySelectorAll('#prov-type-buttons button').forEach(btn => {
@@ -327,7 +375,7 @@ function renderProviders() {
           <div class="w-2 h-2 rounded-full flex-shrink-0 ${isActive ? 'bg-accent' : 'bg-border-visible'}"></div>
           <div class="min-w-0">
             <div class="text-sm font-medium truncate ${isActive ? 'text-accent' : 'text-text-primary'}">${escHtml(p.name)}</div>
-            <div class="text-[10px] text-text-muted font-mono truncate">${escHtml(p.base_url)} · ${escHtml(p.model)}</div>
+            <div class="text-[10px] text-text-muted font-mono truncate">${escHtml(provDisplayUrl(p))} · ${escHtml(p.model)}</div>
           </div>
         </div>
         <div class="flex items-center gap-1.5 flex-shrink-0 ml-2">
@@ -375,6 +423,7 @@ function openAddForm() {
   editingProviderId = null;
   document.getElementById('form-title').textContent = 'Add Provider';
   document.getElementById('prov-name').value = '';
+  document.getElementById('prov-domain').value = '';
   document.getElementById('prov-base-url').value = '';
   document.getElementById('prov-api-key').value = '';
   document.getElementById('prov-model').value = '';
@@ -391,12 +440,23 @@ function openEditForm(providerId) {
   editingProviderId = providerId;
   document.getElementById('form-title').textContent = 'Edit Provider';
   document.getElementById('prov-name').value = p.name || '';
-  document.getElementById('prov-base-url').value = p.base_url || '';
+
+  const type = p.type || 'genai';
+  if (type === 'genai') {
+    // Extract just the domain from https://api.{domain}/v1
+    const match = (p.base_url || '').match(/https?:\/\/api\.([^/]+)/);
+    document.getElementById('prov-domain').value = match ? match[1] : _cleanDomain(p.base_url || '');
+    document.getElementById('prov-base-url').value = '';
+  } else {
+    document.getElementById('prov-domain').value = '';
+    document.getElementById('prov-base-url').value = p.base_url || '';
+  }
+
   // Leave API key blank — backend preserves existing key if this field is empty
   document.getElementById('prov-api-key').value = '';
-  document.getElementById('prov-api-key').placeholder = p.api_key ? '(key set — leave blank to keep)' : 'sk-... or leave blank for local';
+  document.getElementById('prov-api-key').placeholder = p.api_key ? '(key set — leave blank to keep)' : 'sk-...';
   document.getElementById('prov-model').value = p.model || '';
-  selectProvType(p.type || 'genai');
+  selectProvType(type);
   document.getElementById('add-provider-form').classList.remove('hidden');
   document.getElementById('add-provider-trigger').classList.add('hidden');
 }
@@ -409,12 +469,12 @@ function closeForm() {
 
 async function saveProvider() {
   const name = document.getElementById('prov-name').value.trim();
-  const baseUrl = document.getElementById('prov-base-url').value.trim();
+  const baseUrl = _resolveBaseUrl();
   const apiKey = document.getElementById('prov-api-key').value;
   const model = document.getElementById('prov-model').value.trim();
 
   if (!name || !baseUrl || !model) {
-    showTestResult('error', 'Name, Base URL, and Model are required', true);
+    showTestResult('error', 'Name, Domain/URL, and Model are required', true);
     return;
   }
 
@@ -514,12 +574,12 @@ async function testProvider() {
   btn.disabled = true;
   btn.textContent = 'Testing…';
 
-  const baseUrl = document.getElementById('prov-base-url').value.trim();
+  const baseUrl = _resolveBaseUrl();
   const model = document.getElementById('prov-model').value.trim();
   const apiKey = document.getElementById('prov-api-key').value;  // blank = use stored key
 
   if (!baseUrl || !model) {
-    showTestResult('error', 'Set Base URL and Model first', true);
+    showTestResult('error', 'Set Domain/URL and Model first', true);
     btn.disabled = false;
     btn.textContent = origText;
     return;
