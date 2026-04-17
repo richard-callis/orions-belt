@@ -107,6 +107,16 @@ pip_install "torch==2.7.1+cpu" --index-url https://download.pytorch.org/whl/cpu 
     echo "  Retry: source .venv/bin/activate && pip install torch --index-url https://download.pytorch.org/whl/cpu"
 }
 
+# GLiNER — zero-shot NER model (stage 2 PII detection, handles any casing)
+echo "  Installing GLiNER..."
+pip_install gliner --quiet || {
+    echo "  WARNING: GLiNER install failed. Stage 2 NER will be disabled."
+    echo "  Retry: source .venv/bin/activate && pip install gliner"
+}
+
+# protobuf — required by transformers tokenizers (DeBERTa PHI judge)
+pip_install protobuf --quiet || true
+
 # 4. spaCy language model
 echo "[4/5] Downloading spaCy model..."
 if python -c "import spacy; spacy.load('en_core_web_lg')" 2>/dev/null; then

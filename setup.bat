@@ -86,6 +86,12 @@ if errorlevel 1 (
 
 call :pip_install transformers sentence-transformers numpy --quiet
 call :pip_install presidio-analyzer presidio-anonymizer spacy --quiet
+call :pip_install gliner --quiet
+if errorlevel 1 (
+    echo   WARNING: GLiNER install failed. Stage 2 NER will be disabled.
+    echo   Retry: .venv\Scripts\activate ^&^& pip install gliner
+)
+call :pip_install protobuf --quiet
 
 python -m spacy download en_core_web_sm
 if errorlevel 1 (
@@ -108,7 +114,7 @@ if not exist models mkdir models
 REM -- Download HuggingFace models ----------------------------------------------
 echo.
 echo [+] Downloading AI models ^(~670MB^)...
-echo     dslim/bert-base-NER       ~400MB   PII detection
+echo     gliner_medium-v2.1        ~400MB   PII detection ^(zero-shot NER^)
 echo     nli-deberta-v3-small      ~180MB   PHI judge
 echo     all-MiniLM-L6-v2          ~90MB    Memory embeddings
 echo.

@@ -53,11 +53,12 @@ class Config:
 
     # ── PII Guard — transformers-based pipeline ───────────────
     # Stage 1: Presidio rule-based (SSN, email, phone, credit card...)
-    # Stage 2: dslim/bert-base-NER — contextual NER (names, orgs, locations)
+    # Stage 2: urchade/gliner_medium-v2.1 — zero-shot span NER (detects any entity
+    #          type by name, works on uncapitalized text, replaces bert-base-NER)
     # Stage 3: cross-encoder/nli-deberta-v3-small — zero-shot PHI classifier
     # All models downloaded automatically from HuggingFace on first use.
     # No GGUF, no llama.cpp, no compiler required — pure pip.
-    PII_NER_MODEL = "dslim/bert-base-NER"
+    PII_NER_MODEL = "urchade/gliner_medium-v2.1"
     PII_JUDGE_MODEL = "cross-encoder/nli-deberta-v3-small"
     PII_JUDGE_THRESHOLD = 0.75       # confidence threshold to flag as PII/PHI
     PII_HASH_SALT = os.environ.get("PII_HASH_SALT", "orions-belt-pii")

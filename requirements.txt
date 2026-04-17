@@ -20,8 +20,10 @@ spacy>=3.7.0            # Required by presidio (pure Python wheel available)
 transformers>=4.40.0
 torch>=2.0.0,<2.8.0     # CPU-only: pip install torch --index-url https://download.pytorch.org/whl/cpu
                         # 2.7.1+cpu is known-good on Windows; 2.11.0 has DLL init issues
+gliner>=0.2.0           # GLiNER: zero-shot NER — detects any entity type regardless of capitalization
+protobuf>=3.20.0        # Required by transformers tokenizers (DeBERTa judge)
 # Models downloaded automatically on first use:
-#   NER:   dslim/bert-base-NER          (~400MB)
+#   NER:   urchade/gliner_medium-v2.1        (~400MB, replaces bert-base-NER)
 #   Judge: cross-encoder/nli-deberta-v3-small  (~180MB, zero-shot PHI classifier)
 
 # Memory — sentence embeddings for similarity recall

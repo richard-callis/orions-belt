@@ -16,11 +16,10 @@ os.environ["TRANSFORMERS_CACHE"] = str(BASE_DIR / "models" / "hub")
 
 MODELS = [
     {
-        "id": "dslim/bert-base-NER",
-        "type": "pipeline",
-        "task": "ner",
+        "id": "urchade/gliner_medium-v2.1",
+        "type": "gliner",
         "size": "~400MB",
-        "purpose": "Contextual PII detection (names, orgs, locations)",
+        "purpose": "Zero-shot NER — detects PII/PHI regardless of capitalization or format",
     },
     {
         "id": "cross-encoder/nli-deberta-v3-small",
@@ -49,6 +48,12 @@ def download_pipeline(model_id: str, task: str):
     del pipe
 
 
+def download_gliner(model_id: str):
+    from gliner import GLiNER
+    model = GLiNER.from_pretrained(model_id)
+    del model
+
+
 def download_sentence_transformer(model_id: str):
     from sentence_transformers import SentenceTransformer
     model = SentenceTransformer(model_id)
@@ -71,7 +76,9 @@ def main():
         print(f"         Size: {m['size']}", end=" ", flush=True)
 
         try:
-            if m["type"] == "sentence_transformer":
+            if m["type"] == "gliner":
+                download_gliner(m["id"])
+            elif m["type"] == "sentence_transformer":
                 download_sentence_transformer(m["id"])
             else:
                 download_pipeline(m["id"], m["task"])

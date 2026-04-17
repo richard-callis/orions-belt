@@ -5,7 +5,7 @@ No PII ever leaves the machine — detected values are hashed and stored locally
 
 Pipeline:
   Stage 1: Presidio (rule-based) — SSN, email, phone, credit card, passport
-  Stage 2: BERT NER (dslim/bert-base-NER) — contextual PERSON/ORG/LOC detection
+  Stage 2: GLiNER (urchade/gliner_medium-v2.1) — zero-shot span NER, any casing, any entity type
   Stage 3: DeBERTa zero-shot judge — PHI classification of ambiguous spans
 
 Graceful degradation:
@@ -81,16 +81,76 @@ def get_pii_guard() -> "PIIGuard":
 # ── Pure-regex fallback patterns (no torch, no spaCy) ────────────────────────
 # Used when Presidio/spaCy can't load, giving basic coverage for the most
 # common PII types that appear in enterprise chat (US-focused).
+#
+# SSN strategy — three tiers of confidence:
+#   High:   labeled + dashes/spaces  e.g. "SSN: 123-45-6789"
+#   Medium: labeled + bare 9 digits  e.g. "SSN: 123456789"  (user's concern)
+#   Lower:  bare 9 digits, no label  e.g. an INT column in a dataset result
+#
+# The bare-9-digit pattern is intentionally broad — any 9-digit number that
+# passes the SSN validity constraints (no 000/666/9xx prefix) is flagged.
+# This will catch SSN integer columns in query results at the cost of some
+# false positives (e.g. large account numbers).  The DeBERTa judge (Stage 3)
+# will suppress false positives when context doesn't look like PII.
 _REGEX_PATTERNS: list[tuple[str, re.Pattern]] = [
-    ("EMAIL_ADDRESS",    re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")),
-    ("PHONE_NUMBER",     re.compile(r"\b(?:\+?1[\s.\-]?)?(?:\(?\d{3}\)?[\s.\-]?)\d{3}[\s.\-]?\d{4}\b")),
-    ("US_SSN",           re.compile(r"\b(?!000|666|9\d\d)\d{3}[- ](?!00)\d{2}[- ](?!0000)\d{4}\b")),
-    ("CREDIT_CARD",      re.compile(r"\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b")),
-    ("IP_ADDRESS",       re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b")),
-    ("DATE_OF_BIRTH",    re.compile(r"\b(?:dob|date of birth|born)[:\s]+\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}\b", re.IGNORECASE)),
-    ("US_PASSPORT",      re.compile(r"\b[A-Z]{1,2}\d{6,9}\b")),
-    ("IBAN_CODE",        re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{4}\d{7}(?:[A-Z0-9]{0,16})?\b")),
+    ("EMAIL_ADDRESS", re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")),
+    ("PHONE_NUMBER",  re.compile(r"\b(?:\+?1[\s.\-]?)?(?:\(?\d{3}\)?[\s.\-]?)\d{3}[\s.\-]?\d{4}\b")),
+
+    # SSN — labeled, dashes/spaces optional (highest confidence)
+    ("US_SSN", re.compile(
+        r"(?:ssn|s\.s\.n\.?|social[\s\-]security(?:[\s\-](?:number|no\.?|num\.?|#))?)"
+        r"[\s:=#\-]+"
+        r"(?!000|666|9\d\d)\d{3}[-\s]?(?!00)\d{2}[-\s]?(?!0000)\d{4}\b",
+        re.IGNORECASE,
+    )),
+    # SSN — formatted with dashes or spaces, no label needed
+    ("US_SSN", re.compile(r"\b(?!000|666|9\d\d)\d{3}[- ](?!00)\d{2}[- ](?!0000)\d{4}\b")),
+    # SSN — bare 9-digit integer (catches INT columns; DeBERTa judge filters false positives)
+    ("US_SSN", re.compile(r"(?<!\d)(?!000|666|9\d\d)(?!000000000)\d{9}(?!\d)")),
+
+    ("CREDIT_CARD", re.compile(r"\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b")),
+    ("IP_ADDRESS",  re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b")),
+    ("DATE_OF_BIRTH", re.compile(r"\b(?:dob|date[\s\-]of[\s\-]birth|born)[:\s]+\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}\b", re.IGNORECASE)),
+    ("US_PASSPORT", re.compile(r"\b[A-Z]{1,2}\d{6,9}\b")),
+    ("IBAN_CODE",   re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{4}\d{7}(?:[A-Z0-9]{0,16})?\b")),
 ]
+
+
+# ── GLiNER label definitions ─────────────────────────────────────────────────
+# GLiNER is a zero-shot span model: it takes plain-English label names and
+# finds matching spans.  Works on any casing — no capitalization requirement.
+# The judge (Stage 3) still validates ambiguous spans.
+_GLINER_LABELS = [
+    "person name",
+    "organization",
+    "location",
+    "phone number",
+    "email address",
+    "social security number",
+    "credit card number",
+    "date of birth",
+    "passport number",
+    "IP address",
+    "medical record number",
+    "bank account number",
+    "driver's license",
+]
+
+_GLINER_LABEL_MAP: dict[str, str] = {
+    "person name":           "PERSON",
+    "organization":          "ORGANIZATION",
+    "location":              "LOCATION",
+    "phone number":          "PHONE_NUMBER",
+    "email address":         "EMAIL_ADDRESS",
+    "social security number":"US_SSN",
+    "credit card number":    "CREDIT_CARD",
+    "date of birth":         "DATE_OF_BIRTH",
+    "passport number":       "US_PASSPORT",
+    "IP address":            "IP_ADDRESS",
+    "medical record number": "MEDICAL_RECORD",
+    "bank account number":   "BANK_ACCOUNT",
+    "driver's license":      "DRIVER_LICENSE",
+}
 
 
 class PIIGuard:
@@ -102,7 +162,7 @@ class PIIGuard:
         self._ner_ready = False
         self._judge_ready = False
         self._presidio_analyzer = None
-        self._ner_pipeline = None
+        self._ner_model = None       # GLiNER instance (Stage 2)
         self._judge_pipeline = None
         self._init_lock = threading.Lock()
         self._initialized = False
@@ -160,22 +220,17 @@ class PIIGuard:
 
     def _init_ner(self):
         if not _is_torch_available():
-            log.info("PII Guard: Stage 2 (NER) skipped — torch unavailable")
+            log.info("PII Guard: Stage 2 (GLiNER) skipped — torch unavailable")
             return
         try:
-            from transformers import pipeline as hf_pipeline
+            from gliner import GLiNER
             from config import Config
-            model_name = getattr(Config, "PII_NER_MODEL", "dslim/bert-base-NER")
-            self._ner_pipeline = hf_pipeline(
-                "ner",
-                model=model_name,
-                aggregation_strategy="simple",
-                device=-1,  # CPU only
-            )
+            model_name = getattr(Config, "PII_NER_MODEL", "urchade/gliner_medium-v2.1")
+            self._ner_model = GLiNER.from_pretrained(model_name)
             self._ner_ready = True
-            log.info(f"PII Guard: NER pipeline loaded ({model_name})")
+            log.info(f"PII Guard: GLiNER loaded ({model_name})")
         except Exception as e:
-            log.warning(f"PII Guard: NER model unavailable ({e}) — Stage 2 disabled")
+            log.warning(f"PII Guard: GLiNER unavailable ({e}) — Stage 2 disabled")
 
     def _init_judge(self):
         if not _is_torch_available():
@@ -235,21 +290,25 @@ class PIIGuard:
                 for m in pattern.finditer(text):
                     spans.append((m.start(), m.end(), entity_type, m.group(), "regex"))
 
-        # Stage 2: BERT NER
+        # Stage 2: GLiNER — zero-shot span NER, works on any casing
         if self._ner_ready:
             try:
-                ner_results = self._ner_pipeline(text)
-                for entity in ner_results:
-                    label = entity.get("entity_group", entity.get("entity", "MISC"))
-                    word = entity.get("word", "")
+                gliner_entities = self._ner_model.predict_entities(
+                    text,
+                    _GLINER_LABELS,
+                    threshold=0.4,
+                )
+                for entity in gliner_entities:
+                    raw_label = entity.get("label", "")
+                    normalized = _GLINER_LABEL_MAP.get(raw_label, "MISC")
+                    if normalized == "MISC":
+                        continue
+                    word = entity.get("text", "")
                     start = entity.get("start", 0)
-                    end = entity.get("end", len(word))
-                    if label in ("PER", "PERSON", "ORG", "LOC", "GPE"):
-                        # Normalize label
-                        normalized = {"PER": "PERSON", "GPE": "LOCATION", "LOC": "LOCATION"}.get(label, label)
-                        spans.append((start, end, normalized, word, "ner"))
+                    end = entity.get("end", start + len(word))
+                    spans.append((start, end, normalized, word, "gliner"))
             except Exception as e:
-                log.debug(f"PII Guard: NER scan error: {e}")
+                log.debug(f"PII Guard: GLiNER scan error: {e}")
 
         # Deduplicate overlapping spans (keep highest-confidence, longest span)
         spans = _deduplicate_spans(spans)
@@ -267,7 +326,7 @@ class PIIGuard:
                 verified_spans = []
                 for span in spans:
                     start, end, etype, value, source = span
-                    if source == "ner" and len(value) > 2:
+                    if source in ("gliner", "ner") and len(value) > 2:
                         result = self._judge_pipeline(
                             value,
                             candidate_labels=["personal information", "medical information", "general text"],
