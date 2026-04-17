@@ -3,6 +3,7 @@ Orion's Belt — Settings API
 GET/PUT settings values, test LLM connection, LLM provider management.
 """
 import json
+import logging
 import time
 import uuid
 
@@ -13,6 +14,7 @@ from app import db
 from app.models.settings import Setting
 
 bp = Blueprint("settings", __name__)
+log = logging.getLogger("orions-belt")
 
 
 @bp.route("/settings")
@@ -252,6 +254,7 @@ def add_llm_provider():
     }
     providers.append(new_provider)
     Setting.set("llm.providers", providers, value_type="json")
+    log.info("Provider added: name=%r id=%s key_set=%s", name, new_provider["id"], bool(api_key))
 
     # Auto-select as active if it's the first provider
     if len(providers) == 1:
@@ -277,10 +280,14 @@ def update_llm_provider(provider_id):
     # Only overwrite the key if the user typed an actual new one.
     # Masked values (from the GET endpoint redaction) are ignored.
     new_key = body.get("api_key", "")
+    key_updated = False
     if new_key and not new_key.startswith("*"):
         providers[idx]["api_key"] = new_key
+        key_updated = True
 
     Setting.set("llm.providers", providers, value_type="json")
+    log.info("Provider updated: id=%s key_updated=%s key_set=%s",
+             provider_id, key_updated, bool(providers[idx].get("api_key")))
     return jsonify({"success": True, "provider": _redact_providers([providers[idx]])[0]})
 
 
@@ -334,7 +341,15 @@ def get_llm_config():
 
 @bp.route("/api/llm/test", methods=["POST"])
 def test_llm_connection():
-    """Test connection to an LLM endpoint."""
+    """Test connection to an LLM endpoint.
+
+    Accepts optional fields:
+      api_key      — key typed in the form (takes priority)
+      provider_id  — fall back to the stored key for this provider if api_key blank/masked
+    """
+    import logging
+    log = logging.getLogger("orions-belt")
+
     body = request.get_json() or {}
     base_url = body.get("base_url", "").strip()
     model = body.get("model", "").strip()
@@ -342,10 +357,25 @@ def test_llm_connection():
     if not base_url or not model:
         return jsonify({"error": "Base URL and model are required"}), 400
 
+    # Resolve API key: form value > stored provider key > empty
+    raw_key = body.get("api_key", "")
+    if not raw_key or raw_key.startswith("*"):
+        # masked or blank — look up the real key from the DB
+        provider_id = body.get("provider_id", "")
+        if provider_id:
+            stored = next((p for p in _get_providers() if p.get("id") == provider_id), None)
+            raw_key = (stored or {}).get("api_key", "")
+
+    log.info("LLM test: url=%s model=%s key_set=%s", base_url, model, bool(raw_key))
+
     start = time.time()
 
     try:
         url = f"{base_url.rstrip('/')}/chat/completions"
+        headers = {"Content-Type": "application/json"}
+        if raw_key:
+            headers["Authorization"] = f"Bearer {raw_key}"
+
         res = httpx.post(
             url,
             json={
@@ -354,6 +384,7 @@ def test_llm_connection():
                 "max_tokens": 5,
                 "stream": False,
             },
+            headers=headers,
             timeout=10.0,
         )
 

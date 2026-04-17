@@ -8,6 +8,7 @@ import os
 import threading
 import time
 import logging
+import logging.handlers
 from pathlib import Path
 
 # Ensure the project root is on sys.path regardless of where launch.py is called from
@@ -16,7 +17,19 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 os.chdir(PROJECT_ROOT)
 
-logging.basicConfig(level=logging.INFO)
+LOG_FILE = PROJECT_ROOT / "logs" / "orions-belt.log"
+LOG_FILE.parent.mkdir(exist_ok=True)
+
+_fmt = logging.Formatter("%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+                          datefmt="%Y-%m-%d %H:%M:%S")
+_file_handler = logging.handlers.RotatingFileHandler(
+    LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+)
+_file_handler.setFormatter(_fmt)
+_console_handler = logging.StreamHandler()
+_console_handler.setFormatter(_fmt)
+
+logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _console_handler])
 log = logging.getLogger("orions-belt")
 
 PORT = 5000

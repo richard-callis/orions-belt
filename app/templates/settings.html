@@ -90,7 +90,11 @@
           <button id="prov-save-btn" class="px-4 py-2 rounded text-sm bg-accent/15 text-accent hover:bg-accent/30 transition-colors font-medium">
             Save Provider
           </button>
-          <button id="prov-cancel-btn" class="px-4 py-2 rounded text-sm bg-bg-raised border border-border-subtle text-text-muted hover:text-accent hover:border-accent/40 transition-colors">
+          <button id="prov-test-btn" type="button" onclick="testProvider()"
+                  class="px-4 py-2 rounded text-sm border border-border-subtle text-text-muted hover:text-accent hover:border-accent/40 transition-colors">
+            Test Connection
+          </button>
+          <button id="prov-cancel-btn" class="px-4 py-2 rounded text-sm text-text-muted hover:text-accent transition-colors">
             Cancel
           </button>
         </div>
@@ -310,6 +314,7 @@ function renderProviders() {
     const typeLabel = p.type === 'genai' ? 'GenAI' : 'Custom';
     const typeColor = isActive ? 'text-accent' : 'text-text-muted';
 
+    const hasKey = p.api_key && p.api_key.length > 0;
     const card = document.createElement('div');
     card.className = `rounded-lg border transition-colors ${
       isActive
@@ -327,6 +332,10 @@ function renderProviders() {
         </div>
         <div class="flex items-center gap-1.5 flex-shrink-0 ml-2">
           <span class="text-[10px] px-1.5 py-0.5 rounded border ${typeColor} border-current">${typeLabel}</span>
+          ${hasKey
+            ? '<span class="text-[10px] text-status-healthy px-1.5 py-0.5 rounded border border-status-healthy/40" title="API key is stored">Key ✓</span>'
+            : '<span class="text-[10px] text-text-muted px-1.5 py-0.5 rounded border border-border-subtle" title="No API key set">No key</span>'
+          }
           ${isActive
             ? '<span class="text-[10px] text-accent px-2 py-0.5 bg-accent/10 rounded">Active</span>'
             : `<button onclick="activateProvider('${p.id}')" class="text-[10px] text-text-muted hover:text-accent px-2 py-0.5 transition-colors">Use</button>`
@@ -500,16 +509,19 @@ async function deleteProvider(providerId) {
 // ── Test connection ───────────────────────────────────────────────────────────
 
 async function testProvider() {
-  const btn = document.getElementById('prov-save-btn');
+  const btn = document.getElementById('prov-test-btn');
   const origText = btn.textContent;
   btn.disabled = true;
-  btn.textContent = 'Testing...';
+  btn.textContent = 'Testing…';
 
   const baseUrl = document.getElementById('prov-base-url').value.trim();
   const model = document.getElementById('prov-model').value.trim();
+  const apiKey = document.getElementById('prov-api-key').value;  // blank = use stored key
 
   if (!baseUrl || !model) {
     showTestResult('error', 'Set Base URL and Model first', true);
+    btn.disabled = false;
+    btn.textContent = origText;
     return;
   }
 
@@ -517,7 +529,12 @@ async function testProvider() {
     const res = await fetch('/api/llm/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ base_url: baseUrl, model }),
+      body: JSON.stringify({
+        base_url: baseUrl,
+        model,
+        api_key: apiKey,            // form value (empty = fall back to stored)
+        provider_id: editingProviderId || '',  // so backend can look up stored key
+      }),
     });
 
     const data = await res.json();
@@ -530,7 +547,7 @@ async function testProvider() {
     showTestResult('error', `Failed: ${e.message}`);
   } finally {
     btn.disabled = false;
-    btn.textContent = origText;
+    btn.textContent = 'Test Connection';
   }
 }
 
