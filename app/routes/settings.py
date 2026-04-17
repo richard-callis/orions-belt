@@ -226,6 +226,44 @@ def _redact_providers(providers: list) -> list:
     return result
 
 
+@bp.route("/api/prompts", methods=["GET"])
+def get_prompts():
+    """Return current system prompts (base + planning suffix) and their defaults."""
+    from app.routes.chat import _BUILTIN_BASE_PROMPT, _BUILTIN_PLANNING_SUFFIX
+    base = Setting.get("system_prompt.base") or ""
+    planning = Setting.get("system_prompt.planning_suffix") or ""
+    return jsonify({
+        "base": base,
+        "planning_suffix": planning,
+        "default_base": _BUILTIN_BASE_PROMPT,
+        "default_planning_suffix": _BUILTIN_PLANNING_SUFFIX,
+    })
+
+
+@bp.route("/api/prompts", methods=["PUT"])
+def save_prompts():
+    """Save system prompt settings."""
+    body = request.get_json() or {}
+    if "base" in body:
+        val = body["base"].strip()
+        Setting.set("system_prompt.base", val if val else None)
+    if "planning_suffix" in body:
+        val = body["planning_suffix"].strip()
+        Setting.set("system_prompt.planning_suffix", val if val else None)
+    return jsonify({"success": True})
+
+
+@bp.route("/api/prompts/reset", methods=["POST"])
+def reset_prompts():
+    """Reset system prompts to built-in defaults (deletes the setting rows)."""
+    for key in ("system_prompt.base", "system_prompt.planning_suffix"):
+        row = Setting.query.get(key)
+        if row:
+            db.session.delete(row)
+    db.session.commit()
+    return jsonify({"success": True})
+
+
 @bp.route("/api/llm/debug", methods=["GET"])
 def debug_providers():
     """Debug: show raw and parsed provider data. API keys are redacted."""

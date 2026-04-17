@@ -46,13 +46,44 @@ def _sse_format(event: str, data: dict | None = None) -> str:
     return f"event: {event}\ndata: {json.dumps(data, default=str)}\nretry: 3000\n\n"
 
 
-def _get_default_system_prompt():
-    return (
-        "You are Orion's Belt, a local AI assistant running on the user's Windows machine. "
-        "You help with project management, coding, data analysis, and executing tasks via MCP tools. "
-        "You have access to file operations, SQL queries, REST API calls, and Outlook integration. "
-        "Be helpful, concise, and accurate. When executing tools, explain what you're doing."
-    )
+_BUILTIN_BASE_PROMPT = (
+    "You are Orion's Belt, a local AI assistant running on the user's Windows machine. "
+    "You help with project management, coding, data analysis, and executing tasks via MCP tools. "
+    "You have access to file operations, SQL queries, REST API calls, and Outlook integration. "
+    "Be helpful, concise, and accurate. When executing tools, explain what you're doing."
+)
+
+_BUILTIN_PLANNING_SUFFIX = (
+    "When in a planning session, ask thoughtful clarifying questions about goals, scope, "
+    "constraints, and success criteria. Guide the conversation so that by the end you have "
+    "enough detail to write a comprehensive, actionable plan. You may use MCP tools to read "
+    "existing files or query data to inform your planning."
+)
+
+
+def _get_base_system_prompt() -> str:
+    """Return the configured base system prompt, falling back to the built-in default."""
+    from app.models.settings import Setting
+    stored = Setting.get("system_prompt.base")
+    return stored if stored else _BUILTIN_BASE_PROMPT
+
+
+def _get_planning_suffix() -> str:
+    """Return the planning session suffix, falling back to the built-in default."""
+    from app.models.settings import Setting
+    stored = Setting.get("system_prompt.planning_suffix")
+    return stored if stored else _BUILTIN_PLANNING_SUFFIX
+
+
+def _build_system_prompt(tools: list) -> str:
+    """Assemble the full base system prompt with active MCP tools appended."""
+    prompt = _get_base_system_prompt()
+    if tools:
+        tool_lines = "\n".join(
+            f"  - {t.name} (tier {t.tier}): {t.description}" for t in tools
+        )
+        prompt += f"\n\nAvailable MCP tools you can call:\n{tool_lines}"
+    return prompt
 
 
 # ── Page routes ───────────────────────────────────────────────────────────────
@@ -359,7 +390,12 @@ def stream_messages(session_id):
     )
     model = explicit_model or (ollama_model or llm_model)
     base_url = explicit_base_url or llm_base_url
-    system_prompt = body.get("system_prompt", _get_default_system_prompt())
+    # Load tools first so the system prompt can include the tool list
+    tools = MCPTool.query.filter_by(enabled=True).all()
+    tool_defs = build_tool_definitions(tools)
+
+    # Build system prompt: base (from settings or built-in) + active tool list
+    system_prompt = body.get("system_prompt") or _build_system_prompt(tools)
 
     # If the session is linked to a work item, append a planning context block
     if session.linked_task_id or session.linked_feature_id or session.linked_epic_id:
@@ -376,22 +412,15 @@ def stream_messages(session_id):
         if _wi:
             _wi_title = getattr(_wi, "title", "") or ""
             _wi_desc = _wi.description or "(none yet)"
+            _planning_suffix = _get_planning_suffix()
             system_prompt += (
                 f"\n\n=== PLANNING SESSION ===\n"
                 f"You are helping the user plan a {_wi_type}.\n"
                 f"  Title: {_wi_title}\n"
                 f"  Current description: {_wi_desc}\n\n"
-                f"Your job: ask thoughtful clarifying questions about goals, scope, constraints, "
-                f"and success criteria. Guide the conversation so that by the end you have enough "
-                f"detail to write a comprehensive, actionable description that will be saved back "
-                f"to the {_wi_type}. Do not write the final description until the user asks you to "
-                f"or until you have gathered enough information.\n"
+                f"{_planning_suffix}\n"
                 f"=== END PLANNING CONTEXT ==="
             )
-
-    # Load tools
-    tools = MCPTool.query.filter_by(enabled=True).all()
-    tool_defs = build_tool_definitions(tools)
 
     # ── PII Guard: scan outbound user message ─────────────────────────────────
     skip_pii = body.get("skip_pii", False)

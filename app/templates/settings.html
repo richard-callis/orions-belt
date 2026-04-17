@@ -9,6 +9,7 @@
   <aside class="hidden md:flex flex-col w-52 border-r border-border-subtle bg-bg-sidebar flex-shrink-0 py-3">
     {% set sections = [
       ('cpu','LLM Provider','llm'),
+      ('message-square','Prompts','prompts'),
       ('shield','PII Guard','pii'),
       ('folder-open','Directories','dirs'),
       ('plug','Connectors','connectors-cfg'),
@@ -212,6 +213,74 @@
           "Three stars. One workbench. Every tool you need."<br>
           Alnitak · Alnilam · Mintaka
         </p>
+      </div>
+    </div>
+
+    <!-- ── Prompts ───────────────────────────────────────────── -->
+    <div id="section-prompts" class="hidden space-y-5">
+      <div>
+        <h2 class="text-base font-semibold text-text-primary mb-0.5">System Prompts</h2>
+        <p class="text-xs text-text-muted">Customise how the AI behaves in chat and planning sessions. MCP tool definitions are always appended automatically.</p>
+      </div>
+
+      <!-- Active tools notice -->
+      <div class="rounded-lg border border-border-subtle bg-bg-card p-4">
+        <div class="flex items-center gap-2 mb-2">
+          <i data-lucide="wrench" class="w-3.5 h-3.5 text-accent"></i>
+          <span class="text-xs font-semibold text-text-primary">Active MCP Tools (auto-appended to prompt)</span>
+        </div>
+        <div id="prompts-tool-list" class="text-[11px] font-mono text-text-muted space-y-0.5">
+          <span class="italic">Loading…</span>
+        </div>
+        <p class="text-[10px] text-text-muted mt-2">Enable/disable tools on the <a href="/mcp" class="text-accent hover:underline">MCP Tools page</a>.</p>
+      </div>
+
+      <!-- Base system prompt -->
+      <div class="rounded-lg border border-border-subtle bg-bg-card p-5 space-y-3">
+        <div class="flex items-center justify-between">
+          <div>
+            <h3 class="text-sm font-semibold text-text-primary">Base System Prompt</h3>
+            <p class="text-xs text-text-muted mt-0.5">Used for all chats and agents. MCP tool list is appended after this.</p>
+          </div>
+          <button onclick="resetPrompt('base')"
+                  class="text-[10px] text-text-muted hover:text-accent transition-colors px-2 py-1 rounded border border-border-subtle hover:border-accent/40">
+            Reset to default
+          </button>
+        </div>
+        <textarea id="prompt-base" rows="8"
+                  placeholder="Loading…"
+                  class="w-full px-3 py-2.5 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent font-mono resize-y leading-relaxed"></textarea>
+        <div class="flex items-center justify-between">
+          <span class="text-[10px] text-text-muted" id="prompt-base-status"></span>
+          <button onclick="savePrompts()"
+                  class="px-4 py-1.5 rounded text-sm font-medium bg-accent text-white hover:bg-accent/80 transition-colors">
+            Save
+          </button>
+        </div>
+      </div>
+
+      <!-- Planning suffix -->
+      <div class="rounded-lg border border-border-subtle bg-bg-card p-5 space-y-3">
+        <div class="flex items-center justify-between">
+          <div>
+            <h3 class="text-sm font-semibold text-text-primary">Planning Session Instructions</h3>
+            <p class="text-xs text-text-muted mt-0.5">Appended when a chat is linked to an Epic, Feature, or Task via "Plan with AI".</p>
+          </div>
+          <button onclick="resetPrompt('planning')"
+                  class="text-[10px] text-text-muted hover:text-accent transition-colors px-2 py-1 rounded border border-border-subtle hover:border-accent/40">
+            Reset to default
+          </button>
+        </div>
+        <textarea id="prompt-planning" rows="5"
+                  placeholder="Loading…"
+                  class="w-full px-3 py-2.5 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent font-mono resize-y leading-relaxed"></textarea>
+        <div class="flex items-center justify-between">
+          <span class="text-[10px] text-text-muted" id="prompt-planning-status"></span>
+          <button onclick="savePrompts()"
+                  class="px-4 py-1.5 rounded text-sm font-medium bg-accent text-white hover:bg-accent/80 transition-colors">
+            Save
+          </button>
+        </div>
       </div>
     </div>
 
@@ -631,5 +700,89 @@ function showTestResult(type, message, persist = false) {
 document.getElementById('add-provider-trigger').addEventListener('click', openAddForm);
 document.getElementById('prov-save-btn').addEventListener('click', saveProvider);
 document.getElementById('prov-cancel-btn').addEventListener('click', closeForm);
+
+// ── Prompts section ───────────────────────────────────────────────────────────
+
+let _promptDefaults = {};
+
+async function loadPrompts() {
+  try {
+    const [promptRes, toolRes] = await Promise.all([
+      fetch('/api/prompts'),
+      fetch('/mcp/api/tools'),
+    ]);
+    const prompts = await promptRes.json();
+    const tools = await toolRes.json();
+
+    _promptDefaults = {
+      base: prompts.default_base,
+      planning: prompts.default_planning_suffix,
+    };
+
+    // Populate textareas — show stored value or default as placeholder
+    const baseEl = document.getElementById('prompt-base');
+    const planEl = document.getElementById('prompt-planning');
+    baseEl.value = prompts.base || '';
+    baseEl.placeholder = prompts.default_base;
+    planEl.value = prompts.planning_suffix || '';
+    planEl.placeholder = prompts.default_planning_suffix;
+
+    // Show active tools
+    const toolListEl = document.getElementById('prompts-tool-list');
+    const active = (tools || []).filter(t => t.enabled !== false);
+    if (active.length === 0) {
+      toolListEl.innerHTML = '<span class="italic">No tools enabled.</span>';
+    } else {
+      toolListEl.innerHTML = active.map(t =>
+        `<div><span class="text-accent">▸ ${escHtml(t.name)}</span> <span class="opacity-60">(tier ${t.tier}) — ${escHtml(t.description || '')}</span></div>`
+      ).join('');
+    }
+    lucide.createIcons();
+  } catch (e) {
+    console.error('Failed to load prompts:', e);
+  }
+}
+
+async function savePrompts() {
+  const base = document.getElementById('prompt-base').value.trim();
+  const planning = document.getElementById('prompt-planning').value.trim();
+
+  try {
+    const res = await fetch('/api/prompts', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base, planning_suffix: planning }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const baseStatus = document.getElementById('prompt-base-status');
+    const planStatus = document.getElementById('prompt-planning-status');
+    baseStatus.textContent = 'Saved ✓';
+    planStatus.textContent = 'Saved ✓';
+    setTimeout(() => { baseStatus.textContent = ''; planStatus.textContent = ''; }, 2500);
+  } catch (e) {
+    console.error('Failed to save prompts:', e);
+  }
+}
+
+async function resetPrompt(which) {
+  if (which === 'base') {
+    document.getElementById('prompt-base').value = '';
+  } else {
+    document.getElementById('prompt-planning').value = '';
+  }
+
+  // Save immediately (empty value = use built-in default)
+  await savePrompts();
+  await loadPrompts(); // re-populate placeholders
+}
+
+// Load prompts when the Prompts section becomes visible
+const _origShowSection = showSection;
+// Patch showSection to lazy-load data per section
+window.showSection = function(id) {
+  _origShowSection(id);
+  if (id === 'prompts') loadPrompts();
+};
 </script>
 {% endblock %}
