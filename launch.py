@@ -64,16 +64,17 @@ def _seed_builtin_tools(app):
 def _migrate_llm_settings(app):
     """Clean up corrupted LLM provider data from earlier buggy saves."""
     import json
+    from app import db
     from app.models.settings import Setting
 
     # Remove old flat keys that are no longer used
     for key in ("llm.base_url", "llm.api_key", "llm.model", "llm.provider"):
-        row = Setting.query.get(key)
+        row = db.session.get(Setting, key)
         if row:
             db.session.delete(row)
 
     # Fix corrupted llm.providers
-    row = Setting.query.get("llm.providers")
+    row = db.session.get(Setting, "llm.providers")
     if row:
         try:
             providers = json.loads(row.value)
