@@ -3,6 +3,12 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).parent
 
+# ── HuggingFace model cache — store inside project/models/ ────
+# Models download once on first use, then served from cache.
+# Delete the models/ directory to force a re-download.
+os.environ.setdefault("HF_HOME", str(BASE_DIR / "models"))
+os.environ.setdefault("TRANSFORMERS_CACHE", str(BASE_DIR / "models" / "hub"))
+
 
 class Config:
     # ── Database ──────────────────────────────────────────────
