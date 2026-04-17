@@ -105,11 +105,32 @@ if errorlevel 1 (
     echo   Re-run manually: python download_models.py
 )
 
+REM Generate icon + create desktop shortcut
+echo.
+echo [+] Creating desktop shortcut...
+python create_icon.py
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$projectDir = '%~dp0'.TrimEnd('\'); " ^
+  "$desktop = [Environment]::GetFolderPath('Desktop'); " ^
+  "$iconPath = Join-Path $projectDir 'app\static\img\icon.ico'; " ^
+  "$vbsPath  = Join-Path $projectDir 'start_silent.vbs'; " ^
+  "$lnk = Join-Path $desktop 'Orions Belt.lnk'; " ^
+  "$shell = New-Object -ComObject WScript.Shell; " ^
+  "$sc = $shell.CreateShortcut($lnk); " ^
+  "$sc.TargetPath = 'wscript.exe'; " ^
+  "$sc.Arguments  = \"\`\"$vbsPath\`\"\"; " ^
+  "$sc.WorkingDirectory = $projectDir; " ^
+  "$sc.Description = 'Orion''s Belt — Local AI Workbench'; " ^
+  "if (Test-Path $iconPath) { $sc.IconLocation = $iconPath }; " ^
+  "$sc.Save(); " ^
+  "Write-Host '  Shortcut created: Orions Belt on Desktop'"
+
 echo.
 echo  ==========================================
 echo   Setup complete!
 echo  ==========================================
 echo.
-echo  To start:  double-click run.bat
+echo  Double-click "Orions Belt" on your Desktop to launch.
+echo  (Or run run.bat from this folder)
 echo.
 pause

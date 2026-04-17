@@ -4,9 +4,17 @@ Starts Flask in a background thread, opens a native pywebview window.
 Sits in the system tray when minimized (like Discord).
 """
 import sys
+import os
 import threading
 import time
 import logging
+from pathlib import Path
+
+# Ensure the project root is on sys.path regardless of where launch.py is called from
+PROJECT_ROOT = Path(__file__).resolve().parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+os.chdir(PROJECT_ROOT)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("orions-belt")
