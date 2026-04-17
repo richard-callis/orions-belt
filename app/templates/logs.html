@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}Logs{% endblock %}
+{% block page_title %}Logs{% endblock %}
+
+{% block content %}
+<div class="flex flex-col h-full">
+
+  <!-- Tabs + filter bar -->
+  <div class="flex items-center justify-between px-5 border-b border-border-subtle bg-bg-sidebar flex-shrink-0">
+    <div class="flex">
+      {% for tab, icon in [('Audit','shield-check'),('PII','shield-alert'),('Agent','bot'),('LLM','cpu')] %}
+      <button class="flex items-center gap-2 px-4 py-2.5 text-xs font-medium transition-colors border-b-2
+                     {% if loop.first %}border-accent text-accent{% else %}border-transparent text-text-muted hover:text-text-secondary{% endif %}"
+              onclick="switchTab('{{ tab.lower() }}', this)">
+        <i data-lucide="{{ icon }}" class="w-3.5 h-3.5"></i>
+        {{ tab }}
+      </button>
+      {% endfor %}
+    </div>
+    <div class="flex items-center gap-2 py-2">
+      <input type="text" placeholder="Filter..."
+             class="px-2.5 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent w-40" />
+      <select class="px-2 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-muted focus:outline-none focus:border-accent">
+        <option>Last 1h</option><option>Last 24h</option><option>Last 7d</option><option>All time</option>
+      </select>
+      <button class="p-1.5 rounded border border-border-subtle text-text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Export">
+        <i data-lucide="download" class="w-3.5 h-3.5"></i>
+      </button>
+    </div>
+  </div>
+
+  <!-- Log table -->
+  <div class="flex-1 overflow-auto">
+    <table class="w-full text-xs">
+      <thead class="sticky top-0 bg-bg-raised border-b border-border-subtle z-10">
+        <tr class="text-text-muted font-mono">
+          <th class="text-left px-4 py-2.5 font-medium w-36">Time</th>
+          <th class="text-left px-4 py-2.5 font-medium">Tool / Event</th>
+          <th class="text-left px-4 py-2.5 font-medium w-16">Tier</th>
+          <th class="text-left px-4 py-2.5 font-medium">Caller</th>
+          <th class="text-left px-4 py-2.5 font-medium w-24">Outcome</th>
+          <th class="text-left px-4 py-2.5 font-medium">Detail</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-border-subtle/40" id="log-table-body">
+        {% set log_rows = [
+          ('14:32:01','read_file',0,'Design Agent','auto','Read C:\\projects\\palette.json'),
+          ('14:31:58','search_files',0,'Design Agent','auto','Pattern *.css in /projects'),
+          ('14:31:40','call_connector',1,'Design Agent','auto','GET /design-tokens → 200 OK'),
+          ('14:30:12','modify_file',2,'Code Agent','approved','C:\\projects\\styles.css (user approved after 4s)'),
+          ('14:28:55','delete_file',3,'Code Agent','rejected','C:\\projects\\old-theme.css — user rejected'),
+          ('14:25:11','run_sql_query',1,'Data Agent','auto','SELECT * FROM v_monthly_kpi LIMIT 100'),
+          ('14:22:04','read_file',0,'Research Agent','auto','Read C:\\documents\\brief.docx'),
+          ('14:20:33','create_file',1,'Code Agent','auto','Created C:\\projects\\theme-v2.css'),
+        ] %}
+        {% for time, tool, tier, caller, outcome, detail in log_rows %}
+        <tr class="hover:bg-bg-raised/30 transition-colors group">
+          <td class="px-4 py-2.5 font-mono text-text-muted whitespace-nowrap">{{ time }}</td>
+          <td class="px-4 py-2.5 font-mono text-text-primary">{{ tool }}</td>
+          <td class="px-4 py-2.5">
+            <span class="px-1.5 py-0.5 rounded border text-[10px] tier-{{ tier }}">{{ tier }}</span>
+          </td>
+          <td class="px-4 py-2.5 text-text-secondary">{{ caller }}</td>
+          <td class="px-4 py-2.5">
+            <span class="px-1.5 py-0.5 rounded text-[10px] font-medium
+              {% if outcome == 'auto' %}text-status-healthy bg-status-healthy/10
+              {% elif outcome == 'approved' %}text-accent bg-accent/10
+              {% elif outcome == 'blocked' %}text-status-error bg-status-error/10
+              {% else %}text-status-warning bg-status-warning/10{% endif %}">
+              {{ outcome }}
+            </span>
+          </td>
+          <td class="px-4 py-2.5 text-text-muted truncate max-w-xs">{{ detail }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Footer stats -->
+  <div class="flex items-center gap-6 px-5 py-2 border-t border-border-subtle bg-bg-sidebar flex-shrink-0 text-[10px] font-mono text-text-muted">
+    <span>{{ log_rows|length if log_rows is defined else 8 }} entries shown</span>
+    <span class="flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-status-healthy"></span>6 auto</span>
+    <span class="flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-accent"></span>1 approved</span>
+    <span class="flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-status-warning"></span>1 rejected</span>
+    <span class="ml-auto opacity-60">Live tail: paused</span>
+    <button class="text-accent hover:text-accent/70 transition-colors">Resume</button>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  function switchTab(tab, btn) {
+    // Update tab styling
+    document.querySelectorAll('[onclick^="switchTab"]').forEach(b => {
+      b.classList.remove('border-accent','text-accent');
+      b.classList.add('border-transparent','text-text-muted');
+    });
+    btn.classList.add('border-accent','text-accent');
+    btn.classList.remove('border-transparent','text-text-muted');
+    // TODO: fetch /api/logs?stream=tab
+  }
+</script>
+{% endblock %}

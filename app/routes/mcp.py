@@ -4,5 +4,6 @@ bp = Blueprint("mcp", __name__, url_prefix="/mcp")
 
 
 @bp.route("/")
+@bp.route("")
 def index():
     return render_template("mcp.html")

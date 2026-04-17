@@ -1,0 +1,286 @@
+{% extends "base.html" %}
+{% block title %}Projects{% endblock %}
+{% block page_title %}Projects{% endblock %}
+
+{% block header_actions %}
+<button onclick="openNewProjectModal()"
+        class="flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium bg-accent/15 text-accent hover:bg-accent/30 transition-colors">
+  <i data-lucide="plus" class="w-3 h-3"></i>
+  New Project
+</button>
+{% endblock %}
+
+{% block content %}
+<div class="flex h-full">
+
+  <!-- ── Left: Project list ──────────────────────────────── -->
+  <aside class="flex flex-col w-64 border-r border-border-subtle bg-bg-sidebar flex-shrink-0">
+    <div class="px-3 py-2.5 border-b border-border-subtle">
+      <input type="text" placeholder="Filter projects..."
+             class="w-full px-2 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent" />
+    </div>
+
+    <div class="flex-1 overflow-y-auto py-1" id="project-list">
+      <!-- Placeholder projects -->
+      {% set statuses = [('active','status-healthy'), ('active','status-healthy'), ('paused','border-visible'), ('completed','status-info')] %}
+      {% set names = ['Website Redesign', 'Data Pipeline', 'Mobile App', 'API Integration'] %}
+      {% for name in names %}
+      {% set i = loop.index0 %}
+      <div class="mx-1 my-0.5 px-3 py-2.5 rounded-lg cursor-pointer hover:bg-bg-raised transition-colors group
+                  {% if i == 0 %}bg-accent/10 border border-accent/20{% endif %}">
+        <div class="flex items-center gap-2 mb-1">
+          <span class="w-1.5 h-1.5 rounded-full bg-{{ statuses[i][1] }}"></span>
+          <span class="text-sm font-medium truncate {% if i == 0 %}text-accent{% else %}text-text-secondary group-hover:text-text-primary{% endif %}">
+            {{ name }}
+          </span>
+        </div>
+        <div class="flex items-center gap-3 text-[10px] text-text-muted font-mono pl-3.5">
+          <span>{{ [3,1,5,2][i] }} epics</span>
+          <span>{{ [12,4,18,7][i] }} tasks</span>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </aside>
+
+  <!-- ── Center: Epic → Feature → Task tree ─────────────── -->
+  <div class="flex flex-col flex-1 min-w-0">
+
+    <!-- Project header -->
+    <div class="px-5 py-3.5 border-b border-border-subtle bg-bg-sidebar flex items-center gap-3 flex-shrink-0">
+      <div>
+        <h1 class="text-base font-semibold text-text-primary">Website Redesign</h1>
+        <p class="text-xs text-text-muted mt-0.5">Modernize the company website with new branding and improved UX</p>
+      </div>
+      <div class="ml-auto flex items-center gap-2">
+        <button class="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs border border-border-subtle text-text-secondary hover:text-accent hover:border-accent/40 transition-colors">
+          <i data-lucide="message-square" class="w-3 h-3"></i>
+          Discuss
+        </button>
+        <button onclick="openNewEpicModal()"
+                class="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs bg-accent/15 text-accent hover:bg-accent/30 transition-colors">
+          <i data-lucide="plus" class="w-3 h-3"></i>
+          Add Epic
+        </button>
+      </div>
+    </div>
+
+    <!-- Stats bar -->
+    <div class="flex items-center gap-6 px-5 py-2 border-b border-border-subtle bg-bg-card/50 flex-shrink-0">
+      {% set stats = [('3','Epics','status-info'),('8','Features','accent'),('12','Tasks','text-text-secondary'),('5','Done','status-healthy'),('2','In Progress','status-warning')] %}
+      {% for val, label, color in stats %}
+      <div class="flex items-center gap-1.5">
+        <span class="text-sm font-bold font-mono text-{{ color }}">{{ val }}</span>
+        <span class="text-[10px] text-text-muted">{{ label }}</span>
+      </div>
+      {% if not loop.last %}<span class="text-border-visible">|</span>{% endif %}
+      {% endfor %}
+    </div>
+
+    <!-- Epic/Feature/Task tree -->
+    <div class="flex-1 overflow-y-auto p-5 space-y-3">
+
+      {% set epics = [
+        ('Design System', 'Establish visual language and component library', 'in_progress'),
+        ('Content Migration', 'Move and restructure all existing content', 'backlog'),
+        ('Performance Optimization', 'Achieve 90+ Lighthouse scores', 'backlog'),
+      ] %}
+
+      {% for epic_title, epic_desc, epic_status in epics %}
+      <div class="rounded-lg border border-border-subtle bg-bg-card overflow-hidden">
+
+        <!-- Epic header -->
+        <div class="flex items-center gap-3 px-4 py-3 bg-bg-raised/50 cursor-pointer hover:bg-bg-raised transition-colors"
+             onclick="toggleEpic(this)">
+          <i data-lucide="chevron-down" class="w-3.5 h-3.5 text-text-muted flex-shrink-0 epic-chevron transition-transform"></i>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2">
+              <span class="text-sm font-semibold text-text-primary">{{ epic_title }}</span>
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-medium border
+                {% if epic_status == 'in_progress' %}bg-accent/10 text-accent border-accent/30
+                {% elif epic_status == 'done' %}bg-status-healthy/10 text-status-healthy border-status-healthy/30
+                {% else %}bg-bg-raised text-text-muted border-border-subtle{% endif %}">
+                {{ epic_status.replace('_',' ').title() }}
+              </span>
+            </div>
+            <p class="text-xs text-text-muted mt-0.5 truncate">{{ epic_desc }}</p>
+          </div>
+          <button class="flex items-center gap-1 px-2 py-1 rounded text-[10px] text-text-muted hover:text-accent hover:bg-accent/10 transition-colors flex-shrink-0"
+                  onclick="event.stopPropagation(); openNewFeatureModal()">
+            <i data-lucide="plus" class="w-3 h-3"></i>
+            Feature
+          </button>
+        </div>
+
+        <!-- Features -->
+        <div class="epic-body divide-y divide-border-subtle/50">
+          {% set features = [('Color Palette & Typography', 'done'), ('Component Library', 'in_progress'), ('Responsive Grid', 'backlog')] if loop.first else [('Content Audit', 'backlog'), ('Copy Rewrite', 'backlog')] %}
+
+          {% for feat_title, feat_status in features %}
+          <div class="pl-8 pr-4">
+
+            <!-- Feature row -->
+            <div class="flex items-center gap-3 py-2.5 cursor-pointer hover:bg-bg-raised/30 -mx-4 px-4 transition-colors"
+                 onclick="toggleFeature(this)">
+              <i data-lucide="chevron-right" class="w-3 h-3 text-text-muted flex-shrink-0 feat-chevron transition-transform"></i>
+              <i data-lucide="layers" class="w-3.5 h-3.5 text-text-muted flex-shrink-0"></i>
+              <span class="text-sm text-text-secondary flex-1 truncate">{{ feat_title }}</span>
+              <span class="px-1.5 py-0.5 rounded text-[10px] border
+                {% if feat_status == 'in_progress' %}bg-accent/10 text-accent border-accent/30
+                {% elif feat_status == 'done' %}bg-status-healthy/10 text-status-healthy border-status-healthy/30
+                {% else %}bg-bg-raised text-text-muted border-border-subtle{% endif %}">
+                {{ feat_status.replace('_',' ').title() }}
+              </span>
+              <button class="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] text-text-muted hover:text-accent hover:bg-accent/10 transition-colors flex-shrink-0"
+                      onclick="event.stopPropagation()">
+                <i data-lucide="plus" class="w-2.5 h-2.5"></i>
+                Task
+              </button>
+            </div>
+
+            <!-- Tasks -->
+            <div class="feat-body pb-2 space-y-1 hidden">
+              {% set tasks = [
+                ('Research color psychology', 'done', null),
+                ('Define primary/secondary palette', 'done', null),
+                ('Document typography scale', 'in_progress', 'Design Agent'),
+                ('Create Figma tokens', 'backlog', null),
+              ] if (feat_title == 'Color Palette & Typography') else [
+                ('Audit existing content', 'backlog', null),
+                ('Map new IA structure', 'backlog', 'Research Agent'),
+              ] %}
+
+              {% for task_title, task_status, agent in tasks %}
+              <div class="flex items-center gap-3 pl-6 pr-2 py-1.5 rounded-lg hover:bg-bg-raised/40 transition-colors group cursor-pointer"
+                   onclick="openTask('{{ task_title }}')">
+                <!-- Status icon -->
+                {% if task_status == 'done' %}
+                <i data-lucide="check-circle-2" class="w-3.5 h-3.5 text-status-healthy flex-shrink-0"></i>
+                {% elif task_status == 'in_progress' %}
+                <i data-lucide="loader" class="w-3.5 h-3.5 text-accent flex-shrink-0 spin-slow"></i>
+                {% else %}
+                <i data-lucide="circle" class="w-3.5 h-3.5 text-text-muted flex-shrink-0"></i>
+                {% endif %}
+
+                <span class="text-xs flex-1 truncate
+                  {% if task_status == 'done' %}text-text-muted line-through{% else %}text-text-secondary group-hover:text-text-primary{% endif %}">
+                  {{ task_title }}
+                </span>
+
+                {% if agent %}
+                <span class="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] border border-accent/30 bg-accent/5 text-accent">
+                  <i data-lucide="bot" class="w-2.5 h-2.5"></i>
+                  {{ agent }}
+                </span>
+                {% endif %}
+
+                <!-- Task actions (hover) -->
+                <div class="hidden group-hover:flex items-center gap-1 flex-shrink-0">
+                  <button class="p-1 rounded hover:bg-accent/10 hover:text-accent text-text-muted transition-colors"
+                          title="Assign agent" onclick="event.stopPropagation()">
+                    <i data-lucide="bot" class="w-3 h-3"></i>
+                  </button>
+                  <button class="p-1 rounded hover:bg-accent/10 hover:text-accent text-text-muted transition-colors"
+                          title="Discuss" onclick="event.stopPropagation()">
+                    <i data-lucide="message-square" class="w-3 h-3"></i>
+                  </button>
+                </div>
+              </div>
+              {% endfor %}
+            </div>
+
+          </div>
+          {% endfor %}
+        </div>
+
+      </div>
+      {% endfor %}
+
+    </div>
+  </div>
+
+  <!-- ── Right: Task detail panel ───────────────────────── -->
+  <aside id="task-panel" class="hidden xl:flex flex-col w-80 border-l border-border-subtle bg-bg-sidebar flex-shrink-0">
+    <div class="px-4 py-3 border-b border-border-subtle flex items-center justify-between">
+      <span class="text-xs font-semibold text-text-muted uppercase tracking-wider">Task Detail</span>
+      <button onclick="closeTaskPanel()" class="p-1 rounded hover:bg-bg-raised transition-colors text-text-muted">
+        <i data-lucide="x" class="w-3.5 h-3.5"></i>
+      </button>
+    </div>
+    <div id="task-panel-body" class="flex-1 overflow-y-auto p-4 flex flex-col items-center justify-center">
+      <p class="text-text-muted text-sm">Select a task to view details</p>
+    </div>
+  </aside>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  function toggleEpic(header) {
+    const body = header.nextElementSibling;
+    const chevron = header.querySelector('.epic-chevron');
+    body.classList.toggle('hidden');
+    chevron.style.transform = body.classList.contains('hidden') ? 'rotate(-90deg)' : '';
+  }
+
+  function toggleFeature(row) {
+    const body = row.parentElement.querySelector('.feat-body');
+    const chevron = row.querySelector('.feat-chevron');
+    body.classList.toggle('hidden');
+    chevron.style.transform = body.classList.contains('hidden') ? '' : 'rotate(90deg)';
+  }
+
+  function openTask(name) {
+    const panel = document.getElementById('task-panel');
+    panel.classList.remove('hidden');
+    panel.classList.add('flex');
+    document.getElementById('task-panel-body').innerHTML = `
+      <div class="w-full space-y-4 fade-in">
+        <div>
+          <div class="text-xs text-text-muted mb-1">Title</div>
+          <div class="text-sm font-medium text-text-primary">${name}</div>
+        </div>
+        <div>
+          <div class="text-xs text-text-muted mb-1">Status</div>
+          <select class="px-2 py-1 text-xs rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent w-full">
+            <option>Backlog</option><option>In Progress</option><option>Review</option><option>Done</option><option>Blocked</option>
+          </select>
+        </div>
+        <div>
+          <div class="text-xs text-text-muted mb-1">Acceptance Criteria</div>
+          <textarea rows="4" placeholder="What does done look like?"
+            class="w-full resize-none text-xs rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted px-2 py-1.5 focus:outline-none focus:border-accent"></textarea>
+        </div>
+        <div>
+          <div class="text-xs text-text-muted mb-2">Assign Agent</div>
+          <select class="px-2 py-1 text-xs rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent w-full">
+            <option value="">— none —</option>
+            <option>Design Agent</option>
+            <option>Research Agent</option>
+            <option>Code Agent</option>
+          </select>
+        </div>
+        <div class="pt-2 flex gap-2">
+          <button class="flex-1 py-1.5 rounded text-xs bg-accent/15 text-accent hover:bg-accent/30 transition-colors font-medium">Save</button>
+          <button class="flex items-center gap-1 px-3 py-1.5 rounded text-xs border border-border-subtle text-text-secondary hover:text-accent hover:border-accent/40 transition-colors">
+            <i data-lucide="bot" class="w-3 h-3"></i>
+            Run Agent
+          </button>
+        </div>
+      </div>
+    `;
+    lucide.createIcons();
+  }
+
+  function closeTaskPanel() {
+    const panel = document.getElementById('task-panel');
+    panel.classList.add('hidden');
+    panel.classList.remove('flex');
+  }
+
+  function openNewProjectModal() { /* TODO */ }
+  function openNewEpicModal() { /* TODO */ }
+  function openNewFeatureModal() { /* TODO */ }
+</script>
+{% endblock %}

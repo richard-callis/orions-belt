@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}Orion's Belt{% endblock %} — Orion's Belt</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+  <!-- Tailwind CDN with ORION color system -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            bg: {
+              page:    '#0f0f0f',
+              sidebar: '#1a1a1a',
+              card:    '#1e1e1e',
+              raised:  '#262626',
+            },
+            border: {
+              subtle:  '#2d2d2d',
+              visible: '#404040',
+            },
+            text: {
+              primary:   '#ffffff',
+              secondary: '#c8c8c8',
+              muted:     '#9ca3af',
+            },
+            status: {
+              healthy: '#0474BA',
+              warning: '#FFA630',
+              error:   '#FFA630',
+              info:    '#0474BA',
+            },
+            accent: '#00A7E1',
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+            mono: ['JetBrains Mono', 'Fira Code', 'ui-monospace', 'monospace'],
+          },
+        }
+      }
+    }
+  </script>
+
+  <!-- HTMX -->
+  <script src="https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js"></script>
+
+  <!-- Lucide icons -->
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+
+  <!-- Custom CSS -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/custom.css') }}" />
+
+  {% block head %}{% endblock %}
+</head>
+
+<body class="flex flex-col h-[100dvh] overflow-hidden bg-bg-page text-text-primary">
+
+  <!-- ── Header ─────────────────────────────────────────────── -->
+  <header class="flex items-center px-4 py-3 border-b border-border-subtle bg-bg-sidebar flex-shrink-0 z-10">
+    <!-- Logo -->
+    <div class="flex items-center gap-3">
+      <!-- Three-star belt logo -->
+      <div class="flex items-center gap-[3px] px-2 py-1.5 rounded bg-accent/10 border border-accent/20 flex-shrink-0">
+        <span class="w-2 h-2 rounded-full bg-accent pulse-dot" style="animation-delay:0s"></span>
+        <span class="w-2 h-2 rounded-full bg-accent pulse-dot" style="animation-delay:0.3s"></span>
+        <span class="w-2 h-2 rounded-full bg-accent pulse-dot" style="animation-delay:0.6s"></span>
+      </div>
+      <span class="font-semibold text-text-primary tracking-wide">Orion's Belt</span>
+    </div>
+
+    <!-- Page title -->
+    <div class="ml-4 pl-4 border-l border-border-subtle hidden md:block">
+      <span class="text-xs text-text-muted">{% block page_title %}{% endblock %}</span>
+    </div>
+
+    <!-- Right side actions -->
+    <div class="ml-auto flex items-center gap-2">
+      {% block header_actions %}{% endblock %}
+
+      <!-- LLM model indicator -->
+      <div class="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-border-subtle bg-bg-raised text-xs text-text-muted font-mono">
+        <span class="w-1.5 h-1.5 rounded-full bg-status-healthy pulse-dot"></span>
+        <span id="llm-model-name">GPT-4o</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── Body: Sidebar + Main ───────────────────────────────── -->
+  <div class="flex flex-1 min-h-0 overflow-hidden">
+
+    <!-- ── Sidebar ─────────────────────────────────────────── -->
+    <aside id="sidebar" class="hidden md:flex flex-col bg-bg-sidebar border-r border-border-subtle flex-shrink-0 w-56 transition-all duration-200">
+
+      <nav class="flex-1 py-2 overflow-y-auto">
+        {% set nav = [
+          ('chat.index',       'message-square',  'Chat',        '/chat'),
+          ('work.index',       'folder-kanban',   'Projects',    '/work'),
+          ('agents.index',     'bot',             'Agents',      '/agents'),
+          ('mcp.index',        'wrench',          'MCP Tools',   '/mcp'),
+          ('connectors.index', 'plug',            'Connectors',  '/connectors'),
+          ('memory.index',     'brain',           'Memory',      '/memory'),
+          ('logs.index',       'file-text',       'Logs',        '/logs'),
+        ] %}
+
+        {% for endpoint, icon, label, prefix in nav %}
+          {% set active = request.path.startswith(prefix) %}
+          <a href="{{ url_for(endpoint) }}"
+             class="flex items-center py-2.5 text-sm transition-colors gap-3 px-4
+                    {% if active %}bg-accent/15 text-accent border-r-2 border-accent
+                    {% else %}text-text-secondary hover:bg-bg-raised hover:text-text-primary{% endif %}">
+            <i data-lucide="{{ icon }}" class="w-[18px] h-[18px] flex-shrink-0"></i>
+            <span class="truncate flex-1 sidebar-label">{{ label }}</span>
+          </a>
+        {% endfor %}
+      </nav>
+
+      <!-- Settings -->
+      <div class="border-t border-border-subtle">
+        {% set settings_active = request.path.startswith('/settings') %}
+        <a href="{{ url_for('settings.index') }}"
+           class="flex items-center py-2.5 text-sm transition-colors gap-3 px-4
+                  {% if settings_active %}bg-accent/15 text-accent border-r-2 border-accent
+                  {% else %}text-text-secondary hover:bg-bg-raised hover:text-text-primary{% endif %}">
+          <i data-lucide="settings-2" class="w-[18px] h-[18px] flex-shrink-0"></i>
+          <span class="truncate flex-1 sidebar-label">Settings</span>
+        </a>
+      </div>
+
+      <!-- Collapse button -->
+      <button onclick="toggleSidebar()"
+              class="flex items-center py-2.5 text-xs text-text-muted hover:text-text-secondary hover:bg-bg-raised transition-colors flex-shrink-0 border-t border-border-subtle gap-2 px-4">
+        <i data-lucide="chevron-left" id="sidebar-chevron" class="w-[15px] h-[15px]"></i>
+        <span class="sidebar-label">Collapse</span>
+      </button>
+    </aside>
+
+    <!-- ── Main content ───────────────────────────────────── -->
+    <main class="flex-1 min-h-0 overflow-auto relative bg-bg-page">
+      {% block content %}{% endblock %}
+    </main>
+
+  </div>
+
+  <!-- ── Status bar ─────────────────────────────────────────── -->
+  <div class="hidden md:flex items-center gap-4 px-4 py-1.5 border-t border-border-subtle bg-bg-sidebar text-xs text-text-muted font-mono flex-shrink-0">
+    <span class="flex items-center gap-1.5">
+      <span class="inline-block w-2 h-2 rounded-full bg-status-healthy pulse-dot"></span>
+      LLM
+    </span>
+    <span class="flex items-center gap-1.5" id="pii-status">
+      <span class="inline-block w-2 h-2 rounded-full bg-border-visible"></span>
+      PII Guard
+    </span>
+    <span class="flex items-center gap-1.5">
+      <span class="inline-block w-2 h-2 rounded-full bg-status-healthy pulse-dot"></span>
+      SQLite
+    </span>
+    <span class="ml-auto opacity-40">Orion's Belt v0.1.0</span>
+  </div>
+
+  <!-- ── Mobile bottom nav ──────────────────────────────────── -->
+  <nav class="flex md:hidden flex-shrink-0 border-t border-border-subtle bg-bg-sidebar">
+    {% set mobile_nav = [
+      ('chat.index',   'message-square', 'Chat',     '/chat'),
+      ('work.index',   'folder-kanban',  'Projects', '/work'),
+      ('agents.index', 'bot',            'Agents',   '/agents'),
+      ('mcp.index',    'wrench',         'Tools',    '/mcp'),
+      ('logs.index',   'file-text',      'Logs',     '/logs'),
+    ] %}
+    {% for endpoint, icon, label, prefix in mobile_nav %}
+      {% set active = request.path.startswith(prefix) %}
+      <a href="{{ url_for(endpoint) }}"
+         class="flex-1 flex flex-col items-center justify-center py-2.5 gap-1 text-[10px] font-medium transition-colors
+                {% if active %}text-accent{% else %}text-text-muted{% endif %}">
+        <i data-lucide="{{ icon }}" class="w-[22px] h-[22px]" stroke-width="{{ '2' if active else '1.5' }}"></i>
+        <span>{{ label }}</span>
+      </a>
+    {% endfor %}
+  </nav>
+
+  <script>
+    // ── Init icons ────────────────────────────────────────────
+    lucide.createIcons();
+
+    // ── Sidebar collapse ──────────────────────────────────────
+    function toggleSidebar() {
+      const sidebar = document.getElementById('sidebar');
+      const chevron = document.getElementById('sidebar-chevron');
+      sidebar.classList.toggle('sidebar-collapsed');
+      if (sidebar.classList.contains('sidebar-collapsed')) {
+        chevron.style.transform = 'rotate(180deg)';
+      } else {
+        chevron.style.transform = '';
+      }
+    }
+
+    // ── Re-init icons after HTMX swaps ───────────────────────
+    document.body.addEventListener('htmx:afterSwap', () => lucide.createIcons());
+  </script>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

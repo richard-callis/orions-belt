@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+{% block title %}MCP Tools{% endblock %}
+{% block page_title %}MCP Tools{% endblock %}
+
+{% block content %}
+<div class="flex h-full">
+
+  <!-- ── Tool list ───────────────────────────────────────── -->
+  <div class="flex flex-col flex-1 min-w-0">
+
+    <!-- Toolbar -->
+    <div class="px-5 py-3 border-b border-border-subtle bg-bg-sidebar flex items-center gap-3 flex-shrink-0">
+      <div class="flex items-center gap-2">
+        {% for tier, label in [('All',''),('0','Auto'),('1','Audit'),('2','Warn'),('3','Stop')] %}
+        <button class="px-2.5 py-1 rounded text-xs font-medium transition-colors
+                       {% if loop.first %}bg-accent/15 text-accent{% else %}text-text-muted hover:text-text-secondary hover:bg-bg-raised{% endif %}">
+          {% if not loop.first %}
+          <span class="tier-{{ tier }} px-1.5 py-0.5 rounded border text-[10px] mr-1">{{ tier }}</span>
+          {% endif %}
+          {{ label or 'All' }}
+        </button>
+        {% endfor %}
+      </div>
+      <div class="flex items-center gap-2 ml-auto">
+        <input type="text" placeholder="Filter tools..."
+               class="px-2.5 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent w-48" />
+        <button class="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs bg-accent/15 text-accent hover:bg-accent/30 transition-colors">
+          <i data-lucide="sparkles" class="w-3 h-3"></i>
+          Propose Tool
+        </button>
+      </div>
+    </div>
+
+    <div class="flex-1 overflow-y-auto p-5">
+
+      <!-- Section: Built-in tools -->
+      <div class="mb-1 flex items-center gap-2">
+        <span class="text-xs font-semibold text-text-muted uppercase tracking-wider">Built-in</span>
+        <span class="px-1.5 py-0.5 rounded-full bg-bg-raised text-text-muted text-[10px]">12</span>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-2 mb-6">
+        {% set tools = [
+          ('read_file',        0, 'file-text',     'Read a file from an authorized directory'),
+          ('list_directory',   0, 'folder-open',   'List files in an authorized directory'),
+          ('search_files',     0, 'search',        'Search for files by pattern'),
+          ('search_emails',    0, 'mail',          'Search Outlook emails (read-only)'),
+          ('create_file',      1, 'file-plus',     'Create a new file — fails if exists'),
+          ('append_to_file',   1, 'file-plus-2',   'Append content to an existing file'),
+          ('call_connector',   1, 'plug',          'Call a configured connector'),
+          ('run_sql_query',    1, 'database',      'Run a SELECT query via SQL connector'),
+          ('modify_file',      2, 'file-edit',     'Overwrite an existing file'),
+          ('create_directory', 2, 'folder-plus',   'Create a new directory'),
+          ('delete_file',      3, 'trash-2',       'Delete a file — hard stop'),
+          ('move_file',        3, 'file-symlink',  'Move or rename a file — hard stop'),
+        ] %}
+        {% for name, tier, icon, desc in tools %}
+        <div class="rounded-lg border border-border-subtle bg-bg-card p-3.5 hover:border-border-visible transition-colors cursor-pointer group">
+          <div class="flex items-start gap-3">
+            <div class="w-8 h-8 rounded-lg bg-bg-raised border border-border-subtle flex items-center justify-center flex-shrink-0">
+              <i data-lucide="{{ icon }}" class="w-4 h-4 text-text-muted group-hover:text-accent transition-colors"></i>
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center gap-2 mb-1">
+                <span class="text-sm font-mono font-medium text-text-primary">{{ name }}</span>
+                <span class="px-1.5 py-0.5 rounded border text-[10px] tier-{{ tier }}">Tier {{ tier }}</span>
+              </div>
+              <p class="text-[11px] text-text-muted leading-relaxed">{{ desc }}</p>
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+
+      <!-- Section: Proposed tools (pending approval) -->
+      <div class="mb-3 flex items-center gap-2">
+        <span class="text-xs font-semibold text-text-muted uppercase tracking-wider">Pending Review</span>
+        <span class="px-1.5 py-0.5 rounded-full bg-status-warning/20 text-status-warning text-[10px] font-bold">1</span>
+      </div>
+
+      <!-- Proposal card -->
+      <div class="rounded-lg border border-status-warning/30 bg-status-warning/5 p-4 mb-6">
+        <div class="flex items-start justify-between gap-4">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="text-sm font-mono font-medium text-text-primary">analyze_csv</span>
+              <span class="px-1.5 py-0.5 rounded border tier-1 text-[10px]">Tier 1</span>
+              <span class="px-1.5 py-0.5 rounded text-[10px] bg-status-warning/15 text-status-warning border border-status-warning/30">Proposed by: Code Agent</span>
+            </div>
+            <p class="text-xs text-text-muted mb-3">Parse and summarize a CSV file from an authorized directory</p>
+
+            <!-- Safety scan results -->
+            <div class="space-y-1.5 text-xs mb-3">
+              <div class="flex items-center gap-2 text-status-healthy">
+                <i data-lucide="check-circle-2" class="w-3.5 h-3.5"></i>
+                AST scan passed — no banned imports or dangerous calls
+              </div>
+              <div class="flex items-center gap-2 text-status-healthy">
+                <i data-lucide="check-circle-2" class="w-3.5 h-3.5"></i>
+                Local LLM review: safe — reads only, no network, no modification
+              </div>
+            </div>
+
+            <!-- Code preview -->
+            <details class="text-xs">
+              <summary class="text-text-muted cursor-pointer hover:text-text-secondary transition-colors mb-1">View proposed code</summary>
+              <pre class="bg-bg-sidebar border border-border-subtle rounded p-3 font-mono text-text-secondary overflow-x-auto text-[11px]">def analyze_csv(path: str, max_rows: int = 100) -> dict:
+    import csv, pathlib
+    p = pathlib.Path(path)
+    rows = []
+    with open(p, newline='') as f:
+        reader = csv.DictReader(f)
+        for i, row in enumerate(reader):
+            if i >= max_rows: break
+            rows.append(dict(row))
+    return {"rows": rows, "count": len(rows),
+            "columns": list(rows[0].keys()) if rows else []}</pre>
+            </details>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2 mt-3 pt-3 border-t border-status-warning/20">
+          <input type="text" placeholder="Approval notes (optional)"
+                 class="flex-1 px-2.5 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent" />
+          <button class="px-3 py-1.5 rounded text-xs bg-status-healthy/15 text-status-healthy hover:bg-status-healthy/30 transition-colors font-medium">
+            Approve
+          </button>
+          <button class="px-3 py-1.5 rounded text-xs bg-status-error/15 text-status-error hover:bg-status-error/30 transition-colors font-medium">
+            Reject
+          </button>
+        </div>
+      </div>
+
+      <!-- Authorized Directories -->
+      <div class="mb-3 flex items-center justify-between">
+        <span class="text-xs font-semibold text-text-muted uppercase tracking-wider">Authorized Directories</span>
+        <button class="flex items-center gap-1 px-2.5 py-1 rounded text-[10px] bg-accent/15 text-accent hover:bg-accent/30 transition-colors">
+          <i data-lucide="plus" class="w-3 h-3"></i>
+          Add Directory
+        </button>
+      </div>
+
+      <div class="space-y-2">
+        {% set dirs = [
+          ('C:\\Users\\user\\projects', 'Projects', True, False, 3),
+          ('C:\\Users\\user\\documents\\reports', 'Reports', True, True, 1),
+        ] %}
+        {% for path, alias, recursive, readonly, max_tier in dirs %}
+        <div class="rounded-lg border border-border-subtle bg-bg-card p-3 flex items-center gap-4">
+          <i data-lucide="folder-open" class="w-4 h-4 text-accent flex-shrink-0"></i>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 mb-0.5">
+              <span class="text-sm font-medium text-text-primary">{{ alias }}</span>
+              {% if readonly %}<span class="px-1.5 py-0.5 rounded text-[10px] bg-status-info/10 text-status-info border border-status-info/20">read-only</span>{% endif %}
+              <span class="px-1.5 py-0.5 rounded text-[10px] border tier-{{ max_tier }}">max tier {{ max_tier }}</span>
+            </div>
+            <div class="text-[11px] font-mono text-text-muted">{{ path }}</div>
+          </div>
+          <button class="p-1.5 rounded text-text-muted hover:text-status-error hover:bg-status-error/10 transition-colors">
+            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+          </button>
+        </div>
+        {% endfor %}
+      </div>
+
+    </div>
+  </div>
+
+</div>
+{% endblock %}

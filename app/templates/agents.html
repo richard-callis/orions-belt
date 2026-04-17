@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}Agents{% endblock %}
+{% block page_title %}Agents{% endblock %}
+
+{% block header_actions %}
+<button class="flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium bg-accent/15 text-accent hover:bg-accent/30 transition-colors">
+  <i data-lucide="plus" class="w-3 h-3"></i>
+  New Agent
+</button>
+{% endblock %}
+
+{% block content %}
+<div class="flex h-full">
+
+  <!-- ── Agent list ──────────────────────────────────────── -->
+  <aside class="flex flex-col w-64 border-r border-border-subtle bg-bg-sidebar flex-shrink-0">
+    <div class="px-3 py-2.5 border-b border-border-subtle">
+      <span class="text-xs font-semibold text-text-muted uppercase tracking-wider">Agents</span>
+    </div>
+    <div class="flex-1 overflow-y-auto py-1">
+      {% set agents = [
+        ('Design Agent',    'bot',    'idle',    'Handles UI/UX tasks and visual research'),
+        ('Research Agent',  'search', 'running', 'Researches topics, summarizes findings'),
+        ('Code Agent',      'code',   'idle',    'Writes, reviews, and refactors code'),
+        ('Data Agent',      'table',  'idle',    'Queries data sources, generates reports'),
+      ] %}
+      {% for name, icon, status, desc in agents %}
+      <div class="mx-1 my-0.5 px-3 py-2.5 rounded-lg cursor-pointer hover:bg-bg-raised transition-colors group
+                  {% if loop.first %}bg-accent/10 border border-accent/20{% endif %}">
+        <div class="flex items-center gap-2 mb-1">
+          <i data-lucide="{{ icon }}" class="w-3.5 h-3.5 flex-shrink-0 {% if loop.first %}text-accent{% else %}text-text-muted{% endif %}"></i>
+          <span class="text-sm font-medium truncate {% if loop.first %}text-accent{% else %}text-text-secondary group-hover:text-text-primary{% endif %}">{{ name }}</span>
+          {% if status == 'running' %}
+          <span class="ml-auto w-1.5 h-1.5 rounded-full bg-status-healthy pulse-dot flex-shrink-0"></span>
+          {% endif %}
+        </div>
+        <p class="text-[10px] text-text-muted truncate pl-5">{{ desc }}</p>
+      </div>
+      {% endfor %}
+    </div>
+  </aside>
+
+  <!-- ── Agent detail ─────────────────────────────────── -->
+  <div class="flex flex-col flex-1 min-w-0">
+
+    <!-- Agent header -->
+    <div class="px-5 py-3.5 border-b border-border-subtle bg-bg-sidebar flex items-center gap-4 flex-shrink-0">
+      <div class="w-10 h-10 rounded-xl bg-accent/15 border border-accent/30 flex items-center justify-center flex-shrink-0">
+        <i data-lucide="bot" class="w-5 h-5 text-accent"></i>
+      </div>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2">
+          <h1 class="text-base font-semibold text-text-primary">Design Agent</h1>
+          <span class="px-2 py-0.5 rounded-full text-[10px] border border-border-subtle text-text-muted bg-bg-raised">idle</span>
+        </div>
+        <p class="text-xs text-text-muted">Handles UI/UX tasks and visual research</p>
+      </div>
+      <div class="flex items-center gap-2 flex-shrink-0">
+        <button class="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs border border-border-subtle text-text-secondary hover:text-accent hover:border-accent/40 transition-colors">
+          <i data-lucide="settings" class="w-3 h-3"></i>
+          Configure
+        </button>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="flex border-b border-border-subtle bg-bg-sidebar flex-shrink-0">
+      {% for tab in ['Runs', 'Configuration', 'Tools'] %}
+      <button class="px-4 py-2.5 text-xs font-medium transition-colors border-b-2
+                     {% if loop.first %}border-accent text-accent{% else %}border-transparent text-text-muted hover:text-text-secondary{% endif %}">
+        {{ tab }}
+      </button>
+      {% endfor %}
+    </div>
+
+    <!-- Runs tab content -->
+    <div class="flex-1 overflow-y-auto p-5 space-y-3">
+
+      <!-- Active run -->
+      <div class="rounded-lg border border-accent/30 bg-accent/5 p-4">
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-status-healthy pulse-dot"></span>
+            <span class="text-sm font-medium text-text-primary">Running: Document typography scale</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="text-[10px] font-mono text-text-muted">Step 3 / 20</span>
+            <button class="p-1.5 rounded bg-status-error/15 text-status-error hover:bg-status-error/30 transition-colors">
+              <i data-lucide="square" class="w-3 h-3"></i>
+            </button>
+          </div>
+        </div>
+
+        <!-- Steps -->
+        <div class="space-y-2 text-xs">
+          {% set steps = [
+            ('check-circle-2','text-status-healthy','read_file','Tier 0','Read typography guidelines','Completed in 0.3s'),
+            ('check-circle-2','text-status-healthy','search_files','Tier 0','Search for existing type scales','Found 3 references'),
+            ('loader','text-accent spin-slow','call_connector','Tier 1','Querying design tokens API','Running...'),
+          ] %}
+          {% for icon, color, tool, tier, action, result in steps %}
+          <div class="flex items-start gap-2.5">
+            <i data-lucide="{{ icon }}" class="w-3.5 h-3.5 {{ color }} flex-shrink-0 mt-0.5"></i>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center gap-2">
+                <span class="font-mono text-accent">{{ tool }}</span>
+                <span class="px-1 py-0.5 rounded border text-[10px] tier-{{ tier[-1] }}">{{ tier }}</span>
+              </div>
+              <div class="text-text-muted mt-0.5">{{ action }}</div>
+              {% if result != 'Running...' %}
+              <div class="text-text-muted/60 mt-0.5">→ {{ result }}</div>
+              {% endif %}
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+
+      <!-- Past runs -->
+      {% for i in range(3) %}
+      <div class="rounded-lg border border-border-subtle bg-bg-card p-4 hover:border-border-visible transition-colors cursor-pointer">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <i data-lucide="check-circle-2" class="w-3.5 h-3.5 text-status-healthy"></i>
+            <span class="text-sm text-text-secondary">Research color psychology</span>
+          </div>
+          <span class="text-[10px] font-mono text-text-muted">{{ [8,5,12][i] }}m ago · {{ [6,4,9][i] }} steps · {{ [2.1,1.4,3.2][i] }}k tokens</span>
+        </div>
+      </div>
+      {% endfor %}
+
+    </div>
+  </div>
+
+</div>
+{% endblock %}

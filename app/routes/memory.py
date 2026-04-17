@@ -4,5 +4,6 @@ bp = Blueprint("memory", __name__, url_prefix="/memory")
 
 
 @bp.route("/")
+@bp.route("")
 def index():
     return render_template("memory.html")

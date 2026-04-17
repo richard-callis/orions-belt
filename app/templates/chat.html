@@ -1,0 +1,292 @@
+{% extends "base.html" %}
+{% block title %}Chat{% endblock %}
+{% block page_title %}Chat{% endblock %}
+
+{% block header_actions %}
+<button onclick="newSession()"
+        class="flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium bg-accent/15 text-accent hover:bg-accent/30 transition-colors">
+  <i data-lucide="plus" class="w-3 h-3"></i>
+  New
+</button>
+{% endblock %}
+
+{% block content %}
+<div class="flex h-full">
+
+  <!-- ── Session list ─────────────────────────────────────── -->
+  <aside class="hidden lg:flex flex-col w-60 border-r border-border-subtle bg-bg-sidebar flex-shrink-0">
+    <div class="px-3 py-2.5 border-b border-border-subtle flex items-center justify-between">
+      <span class="text-xs font-semibold text-text-muted uppercase tracking-wider">Sessions</span>
+    </div>
+
+    <div class="flex-1 overflow-y-auto py-1" id="session-list">
+      <!-- Active session -->
+      <div class="mx-1 my-0.5 px-3 py-2.5 rounded-lg cursor-pointer bg-accent/10 border border-accent/20 text-accent">
+        <div class="text-sm font-medium truncate">New conversation</div>
+        <div class="text-[10px] text-accent/60 mt-0.5 font-mono">just now · 0 tokens</div>
+      </div>
+
+      <!-- Past sessions (placeholder) -->
+      {% for i in range(5) %}
+      <div class="mx-1 my-0.5 px-3 py-2.5 rounded-lg cursor-pointer hover:bg-bg-raised transition-colors group">
+        <div class="text-sm text-text-secondary truncate group-hover:text-text-primary">Session {{ loop.index }}</div>
+        <div class="text-[10px] text-text-muted mt-0.5 font-mono">2h ago · 1.2k tokens</div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <!-- Context link -->
+    <div class="px-3 py-2 border-t border-border-subtle">
+      <div class="text-[10px] text-text-muted mb-1">Linked to</div>
+      <button class="w-full flex items-center gap-2 px-2 py-1.5 rounded border border-border-subtle hover:border-accent/40 transition-colors text-xs text-text-muted hover:text-accent">
+        <i data-lucide="link" class="w-3 h-3"></i>
+        Link to task...
+      </button>
+    </div>
+  </aside>
+
+  <!-- ── Chat area ────────────────────────────────────────── -->
+  <div class="flex flex-col flex-1 min-w-0">
+
+    <!-- Session header bar -->
+    <div class="flex items-center justify-between px-4 py-2.5 border-b border-border-subtle bg-bg-sidebar flex-shrink-0">
+      <div class="flex items-center gap-2">
+        <span class="text-sm font-medium text-text-primary" id="session-name">New conversation</span>
+        <button class="p-1 rounded hover:bg-bg-raised transition-colors text-text-muted hover:text-text-secondary">
+          <i data-lucide="pencil" class="w-3 h-3"></i>
+        </button>
+      </div>
+
+      <div class="flex items-center gap-2">
+        <!-- Token meter -->
+        <div class="hidden sm:flex items-center gap-2">
+          <div class="text-[10px] font-mono text-text-muted">
+            <span id="tokens-used">0</span> / <span id="tokens-max">128k</span>
+          </div>
+          <div class="w-24 h-1 rounded-full bg-bg-raised overflow-hidden">
+            <div id="token-meter" class="token-meter-bar h-full rounded-full bg-status-healthy" style="width:0%"></div>
+          </div>
+        </div>
+
+        <!-- Compact button -->
+        <button onclick="compactContext()"
+                title="Compact context"
+                class="flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-medium border border-border-subtle text-text-muted hover:text-accent hover:border-accent/40 transition-colors">
+          <i data-lucide="minimize-2" class="w-3 h-3"></i>
+          Compact
+        </button>
+
+        <!-- Context strategy -->
+        <select id="context-strategy"
+                class="px-2 py-1 text-xs rounded border border-border-visible bg-bg-raised text-text-muted focus:outline-none focus:border-accent">
+          <option value="full">Full context</option>
+          <option value="sliding">Sliding window</option>
+          <option value="summarize">Auto-summarize</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Messages -->
+    <div class="flex-1 overflow-y-auto px-4 py-4 space-y-4" id="messages">
+
+      <!-- Empty state -->
+      <div id="empty-state" class="flex flex-col items-center justify-center h-full text-center py-16">
+        <div class="flex items-center gap-[4px] mb-4 opacity-30">
+          <span class="w-3 h-3 rounded-full bg-accent"></span>
+          <span class="w-3 h-3 rounded-full bg-accent"></span>
+          <span class="w-3 h-3 rounded-full bg-accent"></span>
+        </div>
+        <p class="text-text-muted text-sm mb-1">Start a conversation</p>
+        <p class="text-text-muted text-xs opacity-60">Messages are screened for PII before leaving this machine</p>
+      </div>
+
+      <!-- Example assistant message (hidden by default, shown when messages exist) -->
+      <!--
+      <div class="flex justify-start fade-in">
+        <div class="max-w-[85%] space-y-2 items-start flex flex-col">
+          <div class="rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-bg-card border border-border-subtle text-text-primary prose-dark">
+            Hello! How can I help you today?
+          </div>
+          <div class="flex items-center gap-2 text-[10px] text-text-muted px-1">
+            <span class="font-mono">GPT-4o</span>
+            <span>·</span>
+            <span>just now</span>
+            <span>·</span>
+            <span>12 tokens</span>
+            <button class="hover:text-accent transition-colors"><i data-lucide="copy" class="w-3 h-3"></i></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="flex justify-end fade-in">
+        <div class="max-w-[85%] space-y-2 items-end flex flex-col">
+          <div class="rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-accent text-white">
+            What is Orion's Belt?
+          </div>
+          <div class="flex items-center gap-2 text-[10px] text-text-muted px-1">
+            <span>just now</span>
+            <span>·</span>
+            <span>8 tokens</span>
+          </div>
+        </div>
+      </div>
+      -->
+
+      <!-- Tool call example:
+      <div class="flex justify-start fade-in">
+        <div class="max-w-[85%] space-y-2 items-start flex flex-col">
+          <div class="w-full rounded-lg border border-status-info/30 bg-status-info/5 text-xs overflow-hidden">
+            <div class="flex items-center gap-2 px-3 py-1.5 border-b border-status-info/20 bg-status-info/10">
+              <i data-lucide="terminal" class="w-3 h-3 text-status-info"></i>
+              <span class="font-mono text-status-info">read_file</span>
+              <span class="ml-auto px-1.5 py-0.5 rounded text-[10px] border tier-0">Tier 0</span>
+            </div>
+            <div class="px-3 py-2 font-mono text-text-secondary">/projects/data.csv</div>
+            <div class="px-3 py-2 border-t border-status-info/20 font-mono text-text-muted whitespace-pre-wrap max-h-32 overflow-y-auto">
+              id,name,value\n1,Alice,100\n2,Bob,200
+            </div>
+          </div>
+        </div>
+      </div>
+      -->
+    </div>
+
+    <!-- PII warning banner (shown when PII detected) -->
+    <div id="pii-banner" class="hidden items-center justify-between px-4 py-2 border-t border-status-warning/20 bg-status-warning/5 flex-shrink-0">
+      <div class="flex items-center gap-2 text-xs text-status-warning">
+        <i data-lucide="shield-alert" class="w-3.5 h-3.5"></i>
+        <span>PII detected in your message — <strong id="pii-types"></strong> hashed before sending</span>
+      </div>
+      <button onclick="document.getElementById('pii-banner').classList.add('hidden')"
+              class="text-text-muted hover:text-text-secondary transition-colors">
+        <i data-lucide="x" class="w-3.5 h-3.5"></i>
+      </button>
+    </div>
+
+    <!-- Input area -->
+    <div class="flex-shrink-0 px-4 py-3 border-t border-border-subtle bg-bg-sidebar">
+      <!-- Linked context chip (if linked to a task) -->
+      <div id="context-chip" class="hidden mb-2">
+        <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] border border-accent/30 bg-accent/5 text-accent">
+          <i data-lucide="link" class="w-2.5 h-2.5"></i>
+          <span id="context-chip-label">Task: Build login page</span>
+          <button class="hover:text-white transition-colors" onclick="unlinkContext()">
+            <i data-lucide="x" class="w-2.5 h-2.5"></i>
+          </button>
+        </span>
+      </div>
+
+      <div class="flex items-end gap-2">
+        <textarea id="chat-input"
+                  placeholder="Ask anything... (Shift+Enter for new line)"
+                  rows="1"
+                  class="flex-1 resize-none rounded-lg border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted text-sm px-3 py-2.5 focus:outline-none focus:border-accent transition-colors min-h-[40px] max-h-48 overflow-y-auto"></textarea>
+
+        <!-- Stop button (shown while streaming) -->
+        <button id="stop-btn"
+                class="hidden p-2.5 rounded-lg bg-status-error/15 text-status-error hover:bg-status-error/30 transition-colors flex-shrink-0"
+                onclick="stopGeneration()">
+          <i data-lucide="square" class="w-[18px] h-[18px]"></i>
+        </button>
+
+        <!-- Send button -->
+        <button id="send-btn"
+                onclick="sendMessage()"
+                class="p-2.5 rounded-lg bg-accent text-white hover:bg-accent/80 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0">
+          <i data-lucide="send" class="w-[18px] h-[18px]"></i>
+        </button>
+      </div>
+      <div class="flex items-center justify-between mt-1.5 px-0.5">
+        <span class="text-[10px] text-text-muted">PII guard active · <span id="pii-model-status">local model loading...</span></span>
+        <span class="text-[10px] text-text-muted font-mono" id="char-count">0 chars</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const input = document.getElementById('chat-input');
+  const charCount = document.getElementById('char-count');
+
+  // Auto-resize textarea
+  input.addEventListener('input', () => {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 192) + 'px';
+    charCount.textContent = input.value.length + ' chars';
+  });
+
+  // Send on Enter (not Shift+Enter)
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+
+  function sendMessage() {
+    const text = input.value.trim();
+    if (!text) return;
+
+    // Hide empty state
+    document.getElementById('empty-state').style.display = 'none';
+
+    // Append user bubble
+    appendMessage('user', text);
+    input.value = '';
+    input.style.height = 'auto';
+    charCount.textContent = '0 chars';
+
+    // TODO: POST to /api/chat/send
+  }
+
+  function appendMessage(role, content) {
+    const msgs = document.getElementById('messages');
+    const div = document.createElement('div');
+    div.className = 'flex ' + (role === 'user' ? 'justify-end' : 'justify-start') + ' fade-in';
+    if (role === 'user') {
+      div.innerHTML = `
+        <div class="max-w-[85%] space-y-2 items-end flex flex-col">
+          <div class="rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-accent text-white">${escHtml(content)}</div>
+          <div class="flex items-center gap-2 text-[10px] text-text-muted px-1">
+            <span>just now</span>
+          </div>
+        </div>`;
+    } else {
+      div.innerHTML = `
+        <div class="max-w-[85%] space-y-2 items-start flex flex-col">
+          <div class="rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-bg-card border border-border-subtle text-text-primary prose-dark">${escHtml(content)}</div>
+          <div class="flex items-center gap-2 text-[10px] text-text-muted px-1">
+            <span class="font-mono">Assistant</span>
+            <span>·</span>
+            <span>just now</span>
+          </div>
+        </div>`;
+    }
+    msgs.appendChild(div);
+    msgs.scrollTop = msgs.scrollHeight;
+    lucide.createIcons();
+  }
+
+  function escHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function newSession() {
+    // TODO: POST to /api/chat/sessions
+    document.getElementById('empty-state').style.display = '';
+  }
+
+  function compactContext() {
+    // TODO: POST to /api/chat/sessions/<id>/compact
+    console.log('compact');
+  }
+
+  function stopGeneration() { /* TODO */ }
+  function unlinkContext() {
+    document.getElementById('context-chip').classList.add('hidden');
+  }
+</script>
+{% endblock %}

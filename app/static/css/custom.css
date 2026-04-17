@@ -1,0 +1,78 @@
+/* Orion's Belt — Custom CSS (ported from ORION design system) */
+
+/* ── Scrollbars ─────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #1a1a1a; }
+::-webkit-scrollbar-thumb { background: #404040; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #6366f1; }
+
+/* ── Animations ─────────────────────────────────────────────── */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.spin-slow { animation: spin-slow 2s linear infinite; }
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fade-in { animation: fade-in 0.15s ease-out; }
+
+/* ── Typography ─────────────────────────────────────────────── */
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+code, pre, .font-mono {
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+}
+
+/* ── Prose (markdown rendered content) ─────────────────────── */
+.prose-dark { color: #c8c8c8; line-height: 1.65; }
+.prose-dark h1, .prose-dark h2, .prose-dark h3 { color: #fff; font-weight: 600; margin: 0.75em 0 0.4em; }
+.prose-dark h1 { font-size: 1.2em; }
+.prose-dark h2 { font-size: 1.05em; }
+.prose-dark h3 { font-size: 0.95em; }
+.prose-dark p { margin: 0.4em 0; }
+.prose-dark ul, .prose-dark ol { padding-left: 1.25em; margin: 0.4em 0; }
+.prose-dark li { margin: 0.2em 0; }
+.prose-dark code { background: #262626; border: 1px solid #2d2d2d; border-radius: 3px; padding: 0.1em 0.35em; font-size: 0.82em; color: #00A7E1; }
+.prose-dark pre { background: #1a1a1a; border: 1px solid #2d2d2d; border-radius: 6px; padding: 0.75em 1em; overflow-x: auto; margin: 0.6em 0; }
+.prose-dark pre code { background: none; border: none; padding: 0; color: #c8c8c8; }
+.prose-dark blockquote { border-left: 2px solid #00A7E1; padding-left: 0.75em; color: #9ca3af; margin: 0.4em 0; }
+.prose-dark a { color: #00A7E1; text-decoration: none; }
+.prose-dark a:hover { text-decoration: underline; }
+.prose-dark hr { border-color: #2d2d2d; margin: 0.75em 0; }
+.prose-dark table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+.prose-dark th { background: #262626; padding: 0.4em 0.6em; text-align: left; border: 1px solid #2d2d2d; color: #fff; }
+.prose-dark td { padding: 0.35em 0.6em; border: 1px solid #2d2d2d; }
+.prose-dark tr:hover td { background: #1e1e1e; }
+
+/* ── Token meter ─────────────────────────────────────────────── */
+.token-meter-bar { transition: width 0.4s ease; }
+
+/* ── HTMX loading indicator ─────────────────────────────────── */
+.htmx-indicator { display: none; }
+.htmx-request .htmx-indicator { display: inline-flex; }
+.htmx-request.htmx-indicator { display: inline-flex; }
+
+/* ── Tier badge colors ───────────────────────────────────────── */
+.tier-0 { background: rgba(4,116,186,0.15); color: #0474BA; border-color: rgba(4,116,186,0.3); }
+.tier-1 { background: rgba(0,167,225,0.10); color: #00A7E1; border-color: rgba(0,167,225,0.25); }
+.tier-2 { background: rgba(255,166,48,0.12); color: #FFA630; border-color: rgba(255,166,48,0.3); }
+.tier-3 { background: rgba(255,166,48,0.15); color: #FFA630; border-color: rgba(255,166,48,0.4); }
+
+/* ── Sidebar collapse transition ─────────────────────────────── */
+.sidebar-collapsed .sidebar-label { display: none; }
+.sidebar-collapsed { width: 48px !important; }
+
+/* ── Focus ring ──────────────────────────────────────────────── */
+*:focus-visible { outline: 2px solid #00A7E1; outline-offset: 2px; }
