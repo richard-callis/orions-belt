@@ -57,7 +57,7 @@ def build_context(
     # Roles that are LLM-safe to include in context
     LLM_ROLES = {"user", "assistant", "system"}
 
-    all_msgs = [m for m in messages if getattr(m, 'role', m.get('role', '')) in LLM_ROLES]
+    all_msgs = [m for m in messages if m.role in LLM_ROLES]
     total = len(all_msgs)
 
     if strategy == "sliding":
