@@ -101,7 +101,11 @@ def list_settings():
 def set_setting(key):
     """Set a single setting value."""
     body = request.get_json() or {}
-    value = body.get("value", "")
+    # Support both { "value": ... } and direct value
+    if isinstance(body, dict):
+        value = body.get("value", "")
+    else:
+        value = body
 
     # llm.providers is stored as JSON
     if key == "llm.providers":
@@ -117,6 +121,9 @@ def set_settings_bulk():
     """Set multiple settings at once."""
     body = request.get_json() or {}
     results = []
+
+    if not isinstance(body, dict):
+        return jsonify({"error": "Expected JSON object"}), 400
 
     for key, value in body.items():
         if key == "llm.providers":
