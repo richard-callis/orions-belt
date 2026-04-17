@@ -568,6 +568,7 @@ async function streamResponse(userPrompt) {
     const streamBody = {
       prompt: userPrompt,
       context_strategy: strategy,
+      skip_pii: window._piiGuardDisabled === true,
     };
     if (cfg.base_url) streamBody.base_url = cfg.base_url;
     if (cfg.model) streamBody.model = cfg.model;

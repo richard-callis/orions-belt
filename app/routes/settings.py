@@ -23,6 +23,25 @@ def index():
     return render_template("settings.html")
 
 
+@bp.route("/api/pii/status")
+def pii_status():
+    """Quick check: is PII Guard operational? Returns within ~100ms."""
+    try:
+        from app.services.pii_guard import get_pii_guard
+        guard = get_pii_guard()
+        # Force initialization so we get accurate stage flags
+        guard._ensure_initialized()
+        available = guard._presidio_ready or guard._ner_ready
+        stages = {
+            "presidio": guard._presidio_ready,
+            "ner": guard._ner_ready,
+            "judge": guard._judge_ready,
+        }
+        return jsonify({"available": available, "stages": stages})
+    except Exception as e:
+        return jsonify({"available": False, "stages": {}, "error": str(e)})
+
+
 @bp.route("/api/health")
 def health():
     """Health check — returns component status without exposing secrets."""

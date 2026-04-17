@@ -255,8 +255,18 @@ def stream_messages(session_id):
     explicit_base_url = body.get("base_url")
     ollama_model = body.get("ollama_model")
 
-    # Detect provider — URL heuristics for Ollama
-    use_ollama = bool(ollama_model) or (llm_base_url and ("/api" in llm_base_url or "11434" in llm_base_url))
+    # Detect provider type.
+    # BUG GUARD: "/api" in "https://api.openai.com/v1" is True because "//api"
+    # contains "/api" as a substring. Parse the URL and check only the path.
+    from urllib.parse import urlparse as _urlparse
+    _parsed = _urlparse(llm_base_url or "")
+    provider_type = (active_provider or {}).get("type", "genai")
+    use_ollama = (
+        bool(ollama_model)
+        or provider_type == "ollama"
+        or "11434" in str(_parsed.port or "")
+        or _parsed.path.startswith("/api")
+    )
     model = explicit_model or (ollama_model or llm_model)
     base_url = explicit_base_url or llm_base_url
     system_prompt = body.get("system_prompt", _get_default_system_prompt())
@@ -266,16 +276,18 @@ def stream_messages(session_id):
     tool_defs = build_tool_definitions(tools)
 
     # ── PII Guard: scan outbound user message ─────────────────────────────────
-    try:
-        from app.services.pii_guard import get_pii_guard
-        guard = get_pii_guard()
-        clean_prompt, pii_found, entity_types = guard.scan(
-            prompt, session_id=session_id, direction="outbound"
-        )
-        if pii_found:
-            prompt = clean_prompt  # send sanitized text to LLM
-    except Exception:
-        pass  # PII guard failure is non-fatal — pass original prompt through
+    skip_pii = body.get("skip_pii", False)
+    if not skip_pii:
+        try:
+            from app.services.pii_guard import get_pii_guard
+            guard = get_pii_guard()
+            clean_prompt, pii_found, entity_types = guard.scan(
+                prompt, session_id=session_id, direction="outbound"
+            )
+            if pii_found:
+                prompt = clean_prompt  # send sanitized text to LLM
+        except Exception:
+            pass  # PII guard failure is non-fatal — pass original prompt through
 
     # ── Memory: inject relevant context into system prompt ────────────────────
     memory_context = ""
