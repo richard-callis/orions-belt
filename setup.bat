@@ -114,44 +114,26 @@ if not exist logs  mkdir logs
 if not exist models mkdir models
 
 REM -- Download HuggingFace models ----------------------------------------------
+REM Pass SSL_BYPASS so the downloader can disable cert verification when the
+REM user has already approved the bypass for this session.
 echo.
 echo [+] Downloading AI models ^(~670MB^)...
 echo     gliner_medium-v2.1        ~400MB   PII detection ^(zero-shot NER^)
 echo     nli-deberta-v3-small      ~180MB   PHI judge
 echo     all-MiniLM-L6-v2          ~90MB    Memory embeddings
 echo.
+set SSL_BYPASS=%SSL_BYPASS%
 python download_models.py
 if errorlevel 1 (
     echo   WARNING: Some models failed. Retry: python download_models.py
 )
-
-REM -- Desktop shortcut ---------------------------------------------------------
-echo.
-echo [+] Creating desktop shortcut...
-python create_icon.py
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$projectDir = '%~dp0'.TrimEnd('\'); " ^
-  "$desktop = [Environment]::GetFolderPath('Desktop'); " ^
-  "$iconPath = Join-Path $projectDir 'app\static\img\icon.ico'; " ^
-  "$vbsPath  = Join-Path $projectDir 'start_silent.vbs'; " ^
-  "$lnk = Join-Path $desktop 'Orions Belt.lnk'; " ^
-  "$shell = New-Object -ComObject WScript.Shell; " ^
-  "$sc = $shell.CreateShortcut($lnk); " ^
-  "$sc.TargetPath = 'wscript.exe'; " ^
-  "$sc.Arguments  = \"\`\"$vbsPath\`\"\"; " ^
-  "$sc.WorkingDirectory = $projectDir; " ^
-  "$sc.Description = 'Orions Belt -- Local AI Workbench'; " ^
-  "if (Test-Path $iconPath) { $sc.IconLocation = $iconPath }; " ^
-  "$sc.Save(); " ^
-  "Write-Host '  Shortcut created: Orions Belt on Desktop'"
 
 echo.
 echo  ==========================================
 echo   Setup complete!
 echo  ==========================================
 echo.
-echo  Double-click "Orions Belt" on your Desktop to launch.
-echo  Or run run.bat from this folder.
+echo  Run: run.bat
 echo.
 pause
 exit /b 0
