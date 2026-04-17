@@ -275,7 +275,7 @@
               : s.regex
               ? `<div class="text-status-warning">● Presidio: failed — regex fallback active (email, phone, SSN, CC)</div>`
               : `<div class="text-status-error">● Presidio (NLP rule-based): failed</div>`,
-            `<div class="${s.ner ? 'text-status-healthy' : 'text-status-error'}">● BERT NER (contextual names/orgs): ${s.ner ? 'OK' : 'failed'}</div>`,
+            `<div class="${s.ner ? 'text-status-healthy' : 'text-status-error'}">● GLiNER (zero-shot NER, any casing): ${s.ner ? 'OK' : 'failed — Stage 2 disabled'}</div>`,
             `<div class="${s.judge ? 'text-status-healthy' : 'text-text-muted'}">● DeBERTa zero-shot judge: ${s.judge ? 'OK' : 'not loaded'}</div>`,
             data.error ? `<div class="text-status-error mt-1">${data.error}</div>` : '',
           ];

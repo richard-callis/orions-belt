@@ -637,13 +637,20 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
                      turn_count, len(turn_text), len(total_text), len(pending_tool_calls))
 
             # ── Non-streaming fallback ────────────────────────────────────────
-            # Some providers (e.g. Gemini Enterprise) send stream=True but return
-            # an empty delta with finish_reason=stop instead of content chunks.
-            # Detect this and retry with stream=False to get message.content.
+            # Some providers (e.g. Gemini Enterprise) return stream=True but
+            # immediately emit finish_reason=stop with an empty delta.
+            #
+            # Fallback 1: retry with stream=False (same body, drops stream_options).
+            # Fallback 2: if still empty AND tools were in the request, drop the
+            #   tools field and retry.  Gemini Enterprise's OpenAI-compat layer
+            #   silently returns empty content when tool definitions are present —
+            #   removing them lets the model answer in plain text instead of
+            #   trying (and failing) to pick a tool call.
             if not turn_text and not pending_tool_calls:
                 log.info("llm.fallback: empty stream, retrying with stream=False")
                 fallback_body = {k: v for k, v in body.items() if k != "stream_options"}
                 fallback_body["stream"] = False
+                fallback_content = ""
                 try:
                     with httpx.Client(timeout=180.0) as fb_client:
                         fb_resp = fb_client.post(url, json=fallback_body, headers=headers)
@@ -654,12 +661,8 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
                             fb_data.get("choices", [{}])[0]
                             .get("message", {})
                             .get("content", "")
-                        )
-                        log.info("llm.fallback content_len=%d", len(fallback_content or ""))
-                        if fallback_content:
-                            turn_text = fallback_content
-                            total_text += fallback_content
-                            yield _sse_format("text", {"content": fallback_content})
+                        ) or ""
+                        log.info("llm.fallback content_len=%d", len(fallback_content))
                     else:
                         err = fb_resp.text[:300]
                         log.warning("llm.fallback error: %s", err)
@@ -667,6 +670,35 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
                         return
                 except Exception as fb_e:
                     log.error("llm.fallback exception: %s", fb_e)
+
+                # Fallback 2: provider rejected tool definitions — drop them and retry
+                if not fallback_content and fallback_body.get("tools"):
+                    log.info("llm.fallback2: still empty with tools present, retrying without tools")
+                    no_tools_body = {k: v for k, v in fallback_body.items() if k != "tools"}
+                    try:
+                        with httpx.Client(timeout=180.0) as fb2_client:
+                            fb2_resp = fb2_client.post(url, json=no_tools_body, headers=headers)
+                        log.info("llm.fallback2 status=%d", fb2_resp.status_code)
+                        if fb2_resp.status_code == 200:
+                            fb2_data = fb2_resp.json()
+                            fallback_content = (
+                                fb2_data.get("choices", [{}])[0]
+                                .get("message", {})
+                                .get("content", "")
+                            ) or ""
+                            log.info("llm.fallback2 content_len=%d", len(fallback_content))
+                        else:
+                            err = fb2_resp.text[:300]
+                            log.warning("llm.fallback2 error: %s", err)
+                            yield _sse_format("error", {"error": f"API fallback2 {fb2_resp.status_code}: {err}"})
+                            return
+                    except Exception as fb2_e:
+                        log.error("llm.fallback2 exception: %s", fb2_e)
+
+                if fallback_content:
+                    turn_text = fallback_content
+                    total_text += fallback_content
+                    yield _sse_format("text", {"content": fallback_content})
 
             if turn_text:
                 messages.append({"role": "assistant", "content": turn_text})
