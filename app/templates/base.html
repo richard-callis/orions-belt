@@ -233,20 +233,32 @@
     document.body.addEventListener('htmx:afterSwap', () => lucide.createIcons());
 
     // ── PII Guard boot check ──────────────────────────────────
-    window._piiGuardDisabled = false;
+    // Restore decision from sessionStorage so navigating between pages doesn't re-ask
+    window._piiGuardDisabled = sessionStorage.getItem('piiGuardDecision') === 'accepted';
+
+    function _applyPiiWarningDot() {
+      const dot = document.querySelector('#pii-status span.rounded-full');
+      if (dot) { dot.classList.remove('bg-border-visible', 'pulse-dot'); dot.classList.add('bg-status-warning'); }
+    }
 
     async function checkPiiGuard() {
+      // If the user already made a decision this session, don't ask again
+      const decision = sessionStorage.getItem('piiGuardDecision');
+      if (decision === 'accepted') {
+        _applyPiiWarningDot();
+        return;
+      }
+
       try {
         const res = await fetch('/api/pii/status');
         const data = await res.json();
 
         // Update status bar dot
         const dot = document.querySelector('#pii-status span.rounded-full');
-        const label = document.getElementById('pii-status');
         if (data.available) {
           if (dot) { dot.classList.remove('bg-border-visible'); dot.classList.add('bg-status-healthy', 'pulse-dot'); }
         } else {
-          if (dot) { dot.classList.remove('bg-border-visible', 'pulse-dot'); dot.classList.add('bg-status-warning'); }
+          _applyPiiWarningDot();
           // Show modal
           const stagesEl = document.getElementById('pii-modal-stages');
           if (stagesEl) {
@@ -268,13 +280,13 @@
 
     function piiModalAccept() {
       window._piiGuardDisabled = true;
+      sessionStorage.setItem('piiGuardDecision', 'accepted');
       document.getElementById('pii-modal').classList.add('hidden');
-      // Update status bar to show disabled
-      const dot = document.querySelector('#pii-status span.rounded-full');
-      if (dot) { dot.classList.remove('bg-border-visible', 'pulse-dot'); dot.classList.add('bg-status-warning'); }
+      _applyPiiWarningDot();
     }
 
     function piiModalDecline() {
+      sessionStorage.removeItem('piiGuardDecision');
       window.close();
       // Fallback if window.close() is blocked (browser tab)
       document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;color:#9ca3af;font-family:monospace;">PII Guard required. Please resolve the issue and restart.</div>';
