@@ -48,6 +48,7 @@ class Epic(db.Model):
     project_id = db.Column(db.String(36), db.ForeignKey("projects.id"), nullable=False)
     title = db.Column(db.String(512), nullable=False)
     description = db.Column(db.Text, nullable=True)
+    plan = db.Column(db.Text, nullable=True)  # AI-generated plan from planning chat
     status = db.Column(db.String(32), default="backlog")  # backlog|in_progress|done
     priority = db.Column(db.Integer, default=0)
     created_at = db.Column(db.DateTime, default=_now)
@@ -63,6 +64,7 @@ class Epic(db.Model):
             "project_id": self.project_id,
             "title": self.title,
             "description": self.description,
+            "plan": self.plan,
             "status": self.status,
             "priority": self.priority,
             "feature_count": len(self.features),
@@ -76,6 +78,7 @@ class Feature(db.Model):
     epic_id = db.Column(db.String(36), db.ForeignKey("epics.id"), nullable=False)
     title = db.Column(db.String(512), nullable=False)
     description = db.Column(db.Text, nullable=True)
+    plan = db.Column(db.Text, nullable=True)  # AI-generated plan from planning chat
     status = db.Column(db.String(32), default="backlog")
     priority = db.Column(db.Integer, default=0)
     created_at = db.Column(db.DateTime, default=_now)
@@ -91,6 +94,7 @@ class Feature(db.Model):
             "epic_id": self.epic_id,
             "title": self.title,
             "description": self.description,
+            "plan": self.plan,
             "status": self.status,
             "priority": self.priority,
             "task_count": len(self.tasks),
@@ -105,6 +109,7 @@ class Task(db.Model):
     title = db.Column(db.String(512), nullable=False)
     description = db.Column(db.Text, nullable=True)
     acceptance_criteria = db.Column(db.Text, nullable=True)
+    plan = db.Column(db.Text, nullable=True)  # AI-generated plan from planning chat
     status = db.Column(db.String(32), default="backlog")  # backlog|in_progress|review|done|blocked
     priority = db.Column(db.Integer, default=0)
     created_at = db.Column(db.DateTime, default=_now)
@@ -125,6 +130,7 @@ class Task(db.Model):
             "title": self.title,
             "description": self.description,
             "acceptance_criteria": self.acceptance_criteria,
+            "plan": self.plan,
             "status": self.status,
             "priority": self.priority,
             "assigned_agent_id": self.assigned_agent_id,

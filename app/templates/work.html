@@ -69,7 +69,7 @@
         <span><span id="stat-features" class="font-bold text-accent">0</span> <span class="text-text-muted">Features</span></span>
         <span class="text-border-visible">|</span>
         <span><span id="stat-tasks" class="font-bold text-text-secondary">0</span> <span class="text-text-muted">Tasks</span></span>
-        <span id="proj-folder" class="hidden text-border-visible">|</span>
+        <span id="proj-folder-sep" class="hidden text-border-visible">|</span>
         <span id="proj-folder-path" class="hidden text-text-muted truncate max-w-xs"></span>
       </div>
 
@@ -105,69 +105,10 @@
         <i data-lucide="x" class="w-4 h-4"></i>
       </button>
     </div>
-    <div id="modal-body" class="px-5 py-4 space-y-3"></div>
+    <div id="modal-body" class="px-5 py-4 space-y-3 max-h-[70vh] overflow-y-auto"></div>
     <div class="flex justify-end gap-2 px-5 pb-4">
       <button onclick="closeModal()" class="px-4 py-1.5 rounded text-sm text-text-muted hover:text-text-primary hover:bg-bg-raised transition-colors">Cancel</button>
       <button id="modal-save" class="px-4 py-1.5 rounded text-sm bg-accent/15 text-accent hover:bg-accent/30 transition-colors font-medium">Save</button>
-    </div>
-  </div>
-</div>
-
-<!-- ── Plan with AI overlay (full-screen chat) ───────────────────────── -->
-<div id="plan-overlay" class="hidden fixed inset-0 z-50 flex flex-col bg-bg-page">
-
-  <!-- Plan header -->
-  <div class="flex items-center px-4 py-3 border-b border-border-subtle bg-bg-sidebar flex-shrink-0">
-    <div class="flex items-center gap-3">
-      <div class="w-7 h-7 rounded-lg bg-accent/10 border border-accent/20 flex items-center justify-center flex-shrink-0">
-        <i data-lucide="brain" class="w-4 h-4 text-accent"></i>
-      </div>
-      <div>
-        <div class="text-sm font-semibold text-text-primary" id="plan-title">Plan with AI</div>
-        <div class="text-xs text-text-muted" id="plan-subtitle"></div>
-      </div>
-    </div>
-    <div class="ml-auto flex items-center gap-2">
-      <button onclick="applyPlan()"
-              id="plan-apply-btn"
-              class="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs bg-status-healthy/10 text-status-healthy border border-status-healthy/30 hover:bg-status-healthy/20 transition-colors font-medium">
-        <i data-lucide="check-circle-2" class="w-3 h-3"></i>
-        Apply Description
-      </button>
-      <button onclick="closePlanModal()" class="p-1.5 rounded hover:bg-bg-raised text-text-muted transition-colors">
-        <i data-lucide="x" class="w-4 h-4"></i>
-      </button>
-    </div>
-  </div>
-
-  <!-- Context banner -->
-  <div id="plan-context" class="px-4 py-2 bg-accent/5 border-b border-accent/20 text-xs text-text-muted flex-shrink-0"></div>
-
-  <!-- Messages -->
-  <div class="flex-1 relative min-h-0">
-    <div id="plan-messages" class="absolute inset-0 overflow-y-auto px-6 py-4 space-y-3"></div>
-  </div>
-
-  <!-- Input area (matches chat.html style exactly) -->
-  <div class="flex-shrink-0 px-4 py-3 border-t border-border-subtle bg-bg-sidebar">
-    <div class="flex items-end gap-2">
-      <textarea id="plan-input"
-                placeholder="Ask about this item… (Shift+Enter for new line)"
-                rows="1"
-                class="flex-1 resize-none rounded-lg border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted text-sm px-3 py-2.5 focus:outline-none focus:border-accent transition-colors min-h-[40px] max-h-48 overflow-y-auto"></textarea>
-      <button id="plan-stop-btn"
-              class="hidden p-2.5 rounded-lg bg-status-error/15 text-status-error hover:bg-status-error/30 transition-colors flex-shrink-0"
-              onclick="stopPlanStream()">
-        <i data-lucide="square" class="w-[18px] h-[18px]"></i>
-      </button>
-      <button id="plan-send-btn"
-              onclick="sendPlanMessage()"
-              class="p-2.5 rounded-lg bg-accent text-white hover:bg-accent/80 transition-colors flex-shrink-0">
-        <i data-lucide="send" class="w-[18px] h-[18px]"></i>
-      </button>
-    </div>
-    <div class="flex items-center justify-between mt-1.5 px-0.5">
-      <span class="text-[10px] text-text-muted font-mono" id="plan-status"></span>
     </div>
   </div>
 </div>
@@ -186,29 +127,9 @@ const S = {
   taskDetail: null,
 };
 
-const planCtx = {
-  itemType: null,
-  itemId: null,
-  itemTitle: '',
-  itemDescription: '',
-  messages: [],
-  streaming: false,
-  abort: null,
-};
-
 // ── Helpers ───────────────────────────────────────────────────────
 function esc(s) {
   return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
-function planFmt(text) {
-  if (!text) return '';
-  let s = esc(text);
-  s = s.replace(/\n/g, '<br>');
-  s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
-  s = s.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
-  s = s.replace(/`([^`\n]+)`/g, '<code class="px-1 rounded bg-bg-raised font-mono text-xs">$1</code>');
-  return s;
 }
 
 const STATUS_CLS = {
@@ -239,6 +160,39 @@ async function api(method, path, body) {
   return data;
 }
 
+// ── Plan with AI ──────────────────────────────────────────────────
+// Matches Orion's pattern: create linked session, store initial context,
+// navigate to /chat?session=<id>. Chat page auto-sends the context and
+// shows a "Save Plan" button that writes back to the item.
+async function planWithAI(itemType, itemId, itemTitle, itemDescription) {
+  const linkField = { epic: 'linked_epic_id', feature: 'linked_feature_id', task: 'linked_task_id' }[itemType];
+  const prefix = { epic: '◆ EPIC · ', feature: '▸ FEAT · ', task: '● TASK · ' }[itemType] || '';
+
+  const initialContext = itemType === 'epic'
+    ? `I want to design a high-level plan for this epic:\n\n**${itemTitle}**\n\n${itemDescription || 'No description yet.'}\n\nHelp me break this down into features and an implementation strategy. Ask me clarifying questions first.`
+    : itemType === 'feature'
+    ? `I want to plan this feature:\n\n**${itemTitle}**\n\n${itemDescription || 'No description yet.'}\n\nHelp me break it down into specific tasks and implementation details. Ask me clarifying questions first.`
+    : `I want to plan this task:\n\n**${itemTitle}**\n\n${itemDescription || 'No description yet.'}\n\nHelp me write a clear implementation plan. Ask me clarifying questions first.`;
+
+  try {
+    const session = await api('POST', '/chat/api/sessions', {
+      name: `${prefix}${itemTitle}`,
+      [linkField]: itemId,
+    });
+    // Store the initial context so chat.html can auto-send it
+    sessionStorage.setItem('planContext', JSON.stringify({
+      sessionId: session.id,
+      initialContext,
+      itemType,
+      itemId,
+      itemTitle,
+    }));
+    window.location.href = `/chat?session=${session.id}`;
+  } catch(e) {
+    alert(`Failed to start planning session: ${e.message}`);
+  }
+}
+
 // ── Projects ─────────────────────────────────────────────────────
 async function loadProjects() {
   const data = await api('GET', '/work/api/projects');
@@ -261,7 +215,8 @@ function renderProjectList(filter = '') {
   }
   el.innerHTML = list.map(p => {
     const active = S.project && S.project.id === p.id;
-    const dotCls = (STATUS_CLS[p.status] || '').match(/text-(\S+)/)?.[1]?.replace('text-','bg-') || 'bg-text-muted';
+    const dotMatch = (STATUS_CLS[p.status] || '').match(/text-([\w-]+)/);
+    const dotCls = dotMatch ? dotMatch[1].replace('text-','bg-') : 'bg-text-muted';
     return `
       <div onclick="selectProject('${esc(p.id)}')"
            class="mx-1 my-0.5 px-3 py-2.5 rounded-lg cursor-pointer hover:bg-bg-raised transition-colors group
@@ -290,7 +245,7 @@ async function selectProject(id) {
   b.className = `px-1.5 py-0.5 rounded text-[10px] font-medium border ${STATUS_CLS[S.project.status] || ''}`;
   b.textContent = (S.project.status || '').replace(/_/g,' ').replace(/\b\w/g, c => c.toUpperCase());
 
-  const sep = document.getElementById('proj-folder');
+  const sep = document.getElementById('proj-folder-sep');
   const fp = document.getElementById('proj-folder-path');
   if (S.project.folder_path) {
     sep.classList.remove('hidden'); fp.classList.remove('hidden');
@@ -366,6 +321,7 @@ function renderEpics() {
 
 function epicHtml(e) {
   const eJson = JSON.stringify(e).replace(/</g,'\\u003c');
+  const hasPlan = !!(e.plan);
   return `
     <div class="rounded-lg border border-border-subtle bg-bg-card overflow-hidden" id="epic-${esc(e.id)}">
       <div class="flex items-center gap-3 px-4 py-3 bg-bg-raised/50 cursor-pointer hover:bg-bg-raised transition-colors"
@@ -375,17 +331,16 @@ function epicHtml(e) {
           <div class="flex items-center gap-2">
             <span class="text-sm font-semibold text-text-primary truncate">${esc(e.title)}</span>
             ${badge(e.status)}
+            ${hasPlan ? '<span class="px-1.5 py-0.5 rounded text-[10px] border bg-accent/5 text-accent border-accent/30">Has Plan</span>' : ''}
           </div>
           ${e.description ? `<p class="text-xs text-text-muted mt-0.5 truncate">${esc(e.description)}</p>` : ''}
         </div>
         <div class="flex items-center gap-1 flex-shrink-0" onclick="event.stopPropagation()">
-          <!-- Plan with AI -->
-          <button onclick="openPlanModal('epic','${esc(e.id)}',${JSON.stringify(e.title).replace(/</g,'\\u003c')},${JSON.stringify(e.description||'').replace(/</g,'\\u003c')})"
+          <button onclick="planWithAI('epic','${esc(e.id)}',${JSON.stringify(e.title).replace(/</g,'\\u003c')},${JSON.stringify(e.description||'').replace(/</g,'\\u003c')})"
                   class="flex items-center gap-1 px-2 py-1 rounded text-[10px] text-accent hover:bg-accent/10 transition-colors" title="Plan with AI">
-            <i data-lucide="brain" class="w-3 h-3"></i>
+            <i data-lucide="message-square" class="w-3 h-3"></i>
             Plan
           </button>
-          <!-- Generate Features -->
           <button onclick="generateFeatures('${esc(e.id)}')"
                   class="generate-features-btn flex items-center gap-1 px-2 py-1 rounded text-[10px] text-text-muted hover:text-accent hover:bg-accent/10 transition-colors" title="Auto-generate features">
             <i data-lucide="sparkles" class="w-3 h-3"></i>
@@ -407,6 +362,10 @@ function epicHtml(e) {
           </button>
         </div>
       </div>
+      ${hasPlan ? `
+      <div class="px-4 py-2 bg-accent/5 border-t border-accent/10 text-xs text-text-muted">
+        <span class="text-accent font-medium">AI Plan:</span> ${esc(e.plan.slice(0,200))}${e.plan.length>200?'…':''}
+      </div>` : ''}
       <div class="epic-body hidden divide-y divide-border-subtle/50" id="epic-body-${esc(e.id)}">
         <div class="py-3 text-center text-text-muted text-xs">Loading…</div>
       </div>
@@ -438,6 +397,12 @@ function openEpicModal(existing) {
       <textarea id="m-desc" rows="2"
                 class="w-full px-2.5 py-1.5 text-sm rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent resize-none">${esc(existing?.description || '')}</textarea>
     </div>
+    ${isEdit && existing?.plan ? `
+    <div>
+      <label class="block text-xs text-accent mb-1">AI Plan</label>
+      <textarea id="m-plan" rows="4"
+                class="w-full px-2.5 py-1.5 text-sm rounded border border-accent/30 bg-accent/5 text-text-primary focus:outline-none focus:border-accent resize-none">${esc(existing.plan)}</textarea>
+    </div>` : ''}
     <div class="grid grid-cols-2 gap-3">
       <div>
         <label class="block text-xs text-text-muted mb-1">Status</label>
@@ -461,6 +426,8 @@ function openEpicModal(existing) {
       status: document.getElementById('m-status').value,
       priority: parseInt(document.getElementById('m-priority').value) || 0,
     };
+    const planEl = document.getElementById('m-plan');
+    if (planEl) body.plan = planEl.value;
     if (isEdit) await api('PATCH', `/work/api/epics/${existing.id}`, body);
     else await api('POST', `/work/api/projects/${S.project.id}/epics`, body);
     closeModal(); await loadEpics();
@@ -488,7 +455,7 @@ function renderFeatures(epicId) {
       <div class="py-3 text-center text-text-muted text-xs">
         No features yet —
         <button onclick="openFeatureModal(null,'${esc(epicId)}')" class="text-accent hover:underline">add one</button>
-        or use <button onclick="generateFeatures('${esc(epicId)}')" class="text-accent hover:underline">Generate Features</button>
+        or <button onclick="generateFeatures('${esc(epicId)}')" class="text-accent hover:underline">generate from AI</button>
       </div>`;
     return;
   }
@@ -498,6 +465,7 @@ function renderFeatures(epicId) {
 
 function featureHtml(f, epicId) {
   const fJson = JSON.stringify(f).replace(/</g,'\\u003c');
+  const hasPlan = !!(f.plan);
   return `
     <div class="pl-6 pr-4" id="feature-${esc(f.id)}">
       <div class="flex items-center gap-2 py-2.5 cursor-pointer hover:bg-bg-raised/30 -mx-4 px-4 transition-colors"
@@ -505,15 +473,14 @@ function featureHtml(f, epicId) {
         <i data-lucide="chevron-right" class="w-3 h-3 text-text-muted flex-shrink-0 feat-chevron transition-transform"></i>
         <i data-lucide="layers" class="w-3.5 h-3.5 text-text-muted flex-shrink-0"></i>
         <span class="text-sm text-text-secondary flex-1 truncate">${esc(f.title)}</span>
+        ${hasPlan ? '<span class="px-1 py-0.5 rounded text-[9px] border bg-accent/5 text-accent border-accent/30">Plan</span>' : ''}
         ${badge(f.status)}
         <div class="flex items-center gap-1 flex-shrink-0 ml-1" onclick="event.stopPropagation()">
-          <!-- Plan with AI -->
-          <button onclick="openPlanModal('feature','${esc(f.id)}',${JSON.stringify(f.title).replace(/</g,'\\u003c')},${JSON.stringify(f.description||'').replace(/</g,'\\u003c')})"
+          <button onclick="planWithAI('feature','${esc(f.id)}',${JSON.stringify(f.title).replace(/</g,'\\u003c')},${JSON.stringify(f.description||'').replace(/</g,'\\u003c')})"
                   class="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] text-accent hover:bg-accent/10 transition-colors" title="Plan with AI">
-            <i data-lucide="brain" class="w-2.5 h-2.5"></i>
+            <i data-lucide="message-square" class="w-2.5 h-2.5"></i>
             Plan
           </button>
-          <!-- Generate Tasks -->
           <button onclick="generateTasks('${esc(f.id)}','${esc(epicId)}')"
                   class="generate-tasks-btn flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] text-text-muted hover:text-accent hover:bg-accent/10 transition-colors" title="Auto-generate tasks">
             <i data-lucide="sparkles" class="w-2.5 h-2.5"></i>
@@ -564,6 +531,12 @@ function openFeatureModal(existing, epicId) {
       <textarea id="m-desc" rows="2"
                 class="w-full px-2.5 py-1.5 text-sm rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent resize-none">${esc(existing?.description || '')}</textarea>
     </div>
+    ${isEdit && existing?.plan ? `
+    <div>
+      <label class="block text-xs text-accent mb-1">AI Plan</label>
+      <textarea id="m-plan" rows="4"
+                class="w-full px-2.5 py-1.5 text-sm rounded border border-accent/30 bg-accent/5 text-text-primary focus:outline-none focus:border-accent resize-none">${esc(existing.plan)}</textarea>
+    </div>` : ''}
     <div class="grid grid-cols-2 gap-3">
       <div>
         <label class="block text-xs text-text-muted mb-1">Status</label>
@@ -587,6 +560,8 @@ function openFeatureModal(existing, epicId) {
       status: document.getElementById('m-status').value,
       priority: parseInt(document.getElementById('m-priority').value) || 0,
     };
+    const planEl = document.getElementById('m-plan');
+    if (planEl) body.plan = planEl.value;
     const eid = existing?.epic_id || epicId;
     if (isEdit) await api('PATCH', `/work/api/features/${existing.id}`, body);
     else await api('POST', `/work/api/epics/${epicId}/features`, body);
@@ -619,7 +594,7 @@ function renderTasks(featureId) {
       <div class="py-2 text-center text-text-muted text-xs">
         No tasks —
         <button onclick="openTaskModal(null,'${esc(featureId)}')" class="text-accent hover:underline">add one</button>
-        or use <button onclick="generateTasks('${esc(featureId)}')" class="text-accent hover:underline">Generate Tasks</button>
+        or <button onclick="generateTasks('${esc(featureId)}')" class="text-accent hover:underline">generate from AI</button>
       </div>`;
     return;
   }
@@ -635,13 +610,13 @@ function taskRowHtml(t, featureId) {
     : t.status === 'blocked'
     ? `<i data-lucide="alert-circle" class="w-3.5 h-3.5 text-status-warning flex-shrink-0"></i>`
     : `<i data-lucide="circle" class="w-3.5 h-3.5 text-text-muted flex-shrink-0"></i>`;
-
   const tJson = JSON.stringify(t).replace(/</g,'\\u003c');
   return `
     <div class="flex items-center gap-3 pl-6 pr-2 py-1.5 rounded-lg hover:bg-bg-raised/40 transition-colors group cursor-pointer"
          onclick="openTaskPanel('${esc(t.id)}','${esc(featureId)}')">
       ${icon}
       <span class="text-xs flex-1 truncate ${t.status==='done'?'text-text-muted line-through':'text-text-secondary group-hover:text-text-primary'}">${esc(t.title)}</span>
+      ${t.plan ? '<span class="text-[9px] px-1 py-0.5 rounded border bg-accent/5 text-accent border-accent/30 flex-shrink-0">Plan</span>' : ''}
       <div class="hidden group-hover:flex items-center gap-1 flex-shrink-0">
         <button onclick="event.stopPropagation(); openTaskModal(${tJson},'${esc(featureId)}')"
                 class="p-1 rounded hover:bg-accent/10 hover:text-accent text-text-muted transition-colors" title="Edit">
@@ -673,6 +648,12 @@ function openTaskModal(existing, featureId) {
       <textarea id="m-ac" rows="2"
                 class="w-full px-2.5 py-1.5 text-sm rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent resize-none">${esc(existing?.acceptance_criteria || '')}</textarea>
     </div>
+    ${isEdit && existing?.plan ? `
+    <div>
+      <label class="block text-xs text-accent mb-1">AI Plan</label>
+      <textarea id="m-plan" rows="4"
+                class="w-full px-2.5 py-1.5 text-sm rounded border border-accent/30 bg-accent/5 text-text-primary focus:outline-none focus:border-accent resize-none">${esc(existing.plan)}</textarea>
+    </div>` : ''}
     <div class="grid grid-cols-2 gap-3">
       <div>
         <label class="block text-xs text-text-muted mb-1">Status</label>
@@ -697,6 +678,8 @@ function openTaskModal(existing, featureId) {
       status: document.getElementById('m-status').value,
       priority: parseInt(document.getElementById('m-priority').value) || 0,
     };
+    const planEl = document.getElementById('m-plan');
+    if (planEl) body.plan = planEl.value;
     const fid = existing?.feature_id || featureId;
     if (isEdit) await api('PATCH', `/work/api/tasks/${existing.id}`, body);
     else await api('POST', `/work/api/features/${fid}/tasks`, body);
@@ -725,10 +708,9 @@ async function openTaskPanel(taskId, featureId) {
 function renderTaskPanel(t, featureId) {
   document.getElementById('task-panel-body').innerHTML = `
     <div class="space-y-3 fade-in">
-      <!-- Plan with AI button at top of panel -->
-      <button onclick="openPlanModal('task','${esc(t.id)}',${JSON.stringify(t.title).replace(/</g,'\\u003c')},${JSON.stringify(t.description||'').replace(/</g,'\\u003c')})"
+      <button onclick="planWithAI('task','${esc(t.id)}',${JSON.stringify(t.title).replace(/</g,'\\u003c')},${JSON.stringify(t.description||'').replace(/</g,'\\u003c')})"
               class="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded text-xs border border-accent/30 bg-accent/5 text-accent hover:bg-accent/15 transition-colors font-medium">
-        <i data-lucide="brain" class="w-3 h-3"></i>
+        <i data-lucide="message-square" class="w-3 h-3"></i>
         Plan with AI
       </button>
       <div>
@@ -751,9 +733,14 @@ function renderTaskPanel(t, featureId) {
       </div>
       <div>
         <label class="block text-xs text-text-muted mb-1">Acceptance Criteria</label>
-        <textarea id="tp-ac" rows="4"
+        <textarea id="tp-ac" rows="3"
                   class="w-full resize-none px-2 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent" placeholder="What does done look like?">${esc(t.acceptance_criteria || '')}</textarea>
       </div>
+      ${t.plan ? `
+      <div>
+        <label class="block text-xs text-accent mb-1">AI Plan</label>
+        <div class="px-2 py-2 rounded border border-accent/30 bg-accent/5 text-xs text-text-secondary whitespace-pre-wrap max-h-40 overflow-y-auto">${esc(t.plan)}</div>
+      </div>` : ''}
       <div class="flex gap-2 pt-1">
         <button onclick="saveTaskPanel('${esc(t.id)}','${esc(featureId)}')"
                 class="flex-1 py-1.5 rounded text-xs bg-accent/15 text-accent hover:bg-accent/30 transition-colors font-medium">Save</button>
@@ -790,6 +777,36 @@ function updateStats() {
   document.getElementById('stat-tasks').textContent = Object.values(S.tasks).flat().length;
 }
 
+// ── Generate Features ─────────────────────────────────────────────
+async function generateFeatures(epicId) {
+  const btn = document.querySelector(`#epic-${epicId} .generate-features-btn`);
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i data-lucide="loader" class="w-3 h-3 spin-slow inline-block"></i> Generating…'; lucide.createIcons(); }
+  try {
+    await api('POST', `/work/api/ai/generate-features/${epicId}`);
+    delete S.features[epicId];
+    const epicBody = document.getElementById(`epic-body-${epicId}`);
+    if (epicBody && !epicBody.classList.contains('hidden')) await loadFeatures(epicId);
+    else await toggleEpic(epicId);
+  } catch(e) {
+    alert(`Generate features failed: ${e.message}`);
+  }
+}
+
+// ── Generate Tasks ────────────────────────────────────────────────
+async function generateTasks(featureId, epicId) {
+  const btn = document.querySelector(`#feature-${featureId} .generate-tasks-btn`);
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i data-lucide="loader" class="w-2.5 h-2.5 spin-slow inline-block"></i>'; lucide.createIcons(); }
+  try {
+    await api('POST', `/work/api/ai/generate-tasks/${featureId}`);
+    delete S.tasks[featureId];
+    const featBody = document.getElementById(`feat-body-${featureId}`);
+    if (featBody && !featBody.classList.contains('hidden')) await loadTasks(featureId);
+    else await toggleFeature(featureId, epicId);
+  } catch(e) {
+    alert(`Generate tasks failed: ${e.message}`);
+  }
+}
+
 // ── CRUD Modal ────────────────────────────────────────────────────
 function showModal(title, bodyHtml, onSave) {
   document.getElementById('modal-title').textContent = title;
@@ -805,270 +822,11 @@ function showModal(title, bodyHtml, onSave) {
   }, 50);
 }
 
-function closeModal() {
-  document.getElementById('modal-overlay').classList.add('hidden');
-}
+function closeModal() { document.getElementById('modal-overlay').classList.add('hidden'); }
 
 document.getElementById('modal-overlay').addEventListener('click', e => {
   if (e.target === document.getElementById('modal-overlay')) closeModal();
 });
-
-// ── Plan with AI ──────────────────────────────────────────────────
-function openPlanModal(itemType, itemId, itemTitle, itemDescription) {
-  planCtx.itemType = itemType;
-  planCtx.itemId = itemId;
-  planCtx.itemTitle = itemTitle;
-  planCtx.itemDescription = itemDescription;
-  planCtx.messages = [];
-  planCtx.streaming = false;
-  planCtx.abort = null;
-
-  const typeLabel = itemType.charAt(0).toUpperCase() + itemType.slice(1);
-  document.getElementById('plan-title').textContent = `Plan: ${itemTitle}`;
-  document.getElementById('plan-subtitle').textContent = typeLabel;
-  document.getElementById('plan-context').innerHTML =
-    `<span class="text-accent font-medium">${esc(typeLabel)}</span>` +
-    (itemDescription
-      ? ` · ${esc(itemDescription.slice(0, 120))}${itemDescription.length > 120 ? '…' : ''}`
-      : ' · No description yet — let\'s write one');
-
-  document.getElementById('plan-messages').innerHTML = '';
-  document.getElementById('plan-input').value = '';
-  document.getElementById('plan-overlay').classList.remove('hidden');
-
-  // Greeting
-  appendPlanMsg('assistant',
-    `I'm here to help plan this **${itemTitle}** ${itemType}. ` +
-    (itemDescription
-      ? `Current description: _${itemDescription}_\n\nWhat would you like to refine or expand?`
-      : `No description yet. Tell me what this ${itemType} is about and I'll help you shape it.`)
-  );
-  lucide.createIcons();
-  setTimeout(() => document.getElementById('plan-input').focus(), 80);
-}
-
-function closePlanModal() {
-  if (planCtx.streaming) stopPlanStream();
-  document.getElementById('plan-overlay').classList.add('hidden');
-}
-
-document.getElementById('plan-overlay').addEventListener('keydown', e => {
-  if (e.key === 'Escape') closePlanModal();
-});
-
-// Send on Enter (Shift+Enter = newline)
-document.getElementById('plan-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendPlanMessage(); }
-});
-document.getElementById('plan-input').addEventListener('input', function() {
-  this.style.height = 'auto';
-  this.style.height = Math.min(this.scrollHeight, 192) + 'px';
-});
-
-async function sendPlanMessage() {
-  const input = document.getElementById('plan-input');
-  const text = input.value.trim();
-  if (!text || planCtx.streaming) return;
-  input.value = ''; input.style.height = 'auto';
-  planCtx.messages.push({ role: 'user', content: text });
-  appendPlanMsg('user', text);
-  await streamPlanResponse();
-}
-
-function stopPlanStream() {
-  if (planCtx.abort) planCtx.abort.abort();
-}
-
-async function streamPlanResponse() {
-  planCtx.streaming = true;
-  planCtx.abort = new AbortController();
-
-  document.getElementById('plan-send-btn').classList.add('hidden');
-  document.getElementById('plan-stop-btn').classList.remove('hidden');
-  document.getElementById('plan-status').textContent = 'Thinking…';
-
-  const msgs = document.getElementById('plan-messages');
-  const assistantDiv = document.createElement('div');
-  assistantDiv.className = 'flex justify-start fade-in';
-  assistantDiv.innerHTML = `
-    <div class="max-w-[85%] items-start flex flex-col">
-      <div class="rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-bg-card border border-border-subtle text-text-primary min-h-[1.5em] js-plan-bubble"></div>
-      <div class="text-[10px] text-text-muted px-1 mt-1 font-mono">Assistant</div>
-    </div>`;
-  msgs.appendChild(assistantDiv);
-  msgs.scrollTop = msgs.scrollHeight;
-
-  const bubble = assistantDiv.querySelector('.js-plan-bubble');
-  let fullText = '';
-
-  try {
-    const res = await fetch('/work/api/ai/plan-stream', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        item_type: planCtx.itemType,
-        item_title: planCtx.itemTitle,
-        item_description: planCtx.itemDescription,
-        messages: planCtx.messages,
-      }),
-      signal: planCtx.abort.signal,
-    });
-
-    if (!res.ok) { const d = await res.json(); throw new Error(d.error || `HTTP ${res.status}`); }
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const parts = buffer.split('\n\n');
-      buffer = parts.pop() || '';
-      for (const part of parts) {
-        if (!part.trim()) continue;
-        let eventType = '', dataStr = '';
-        for (const line of part.split('\n')) {
-          if (line.startsWith('event: ')) eventType = line.slice(7).trim();
-          if (line.startsWith('data: ')) dataStr = line.slice(6);
-        }
-        let data = {};
-        try { data = JSON.parse(dataStr); } catch {}
-        if (eventType === 'text' && data.content) {
-          fullText += data.content;
-          bubble.innerHTML = planFmt(fullText);
-          msgs.scrollTop = msgs.scrollHeight;
-        } else if (eventType === 'error') {
-          bubble.innerHTML = `<span class="text-status-warning">Error: ${esc(data.error || 'Unknown')}</span>`;
-        }
-      }
-    }
-
-    if (fullText) planCtx.messages.push({ role: 'assistant', content: fullText });
-
-  } catch (e) {
-    if (e.name === 'AbortError') {
-      if (fullText) { planCtx.messages.push({ role: 'assistant', content: fullText }); }
-      else { assistantDiv.remove(); }
-    } else {
-      bubble.innerHTML = `<span class="text-status-warning">Error: ${esc(e.message)}</span>`;
-    }
-  } finally {
-    planCtx.streaming = false;
-    planCtx.abort = null;
-    document.getElementById('plan-send-btn').classList.remove('hidden');
-    document.getElementById('plan-stop-btn').classList.add('hidden');
-    document.getElementById('plan-status').textContent = '';
-  }
-}
-
-function appendPlanMsg(role, content) {
-  const msgs = document.getElementById('plan-messages');
-  const div = document.createElement('div');
-  div.className = 'flex ' + (role === 'user' ? 'justify-end' : 'justify-start') + ' fade-in';
-  if (role === 'user') {
-    div.innerHTML = `
-      <div class="max-w-[85%]">
-        <div class="rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-accent text-white">${esc(content)}</div>
-      </div>`;
-  } else {
-    div.innerHTML = `
-      <div class="max-w-[85%] items-start flex flex-col">
-        <div class="rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-bg-card border border-border-subtle text-text-primary">${planFmt(content)}</div>
-        <div class="text-[10px] text-text-muted px-1 mt-1 font-mono">Assistant</div>
-      </div>`;
-  }
-  msgs.appendChild(div);
-  msgs.scrollTop = msgs.scrollHeight;
-}
-
-async function applyPlan() {
-  const userMsgs = planCtx.messages.filter(m => m.role === 'user');
-  if (!userMsgs.length) {
-    appendPlanMsg('assistant', 'Have a conversation first, then I\'ll write a description for you.');
-    return;
-  }
-  const btn = document.getElementById('plan-apply-btn');
-  btn.disabled = true;
-  btn.innerHTML = '<i data-lucide="loader" class="w-3 h-3 spin-slow"></i> Applying…';
-  lucide.createIcons();
-  try {
-    const data = await api('POST', '/work/api/ai/apply-plan', {
-      item_type: planCtx.itemType,
-      item_id: planCtx.itemId,
-      messages: planCtx.messages,
-    });
-    planCtx.itemDescription = data.description;
-    appendPlanMsg('assistant', `✓ Description applied to ${planCtx.itemType}:\n\n${data.description}`);
-    // Update context banner
-    document.getElementById('plan-context').innerHTML =
-      `<span class="text-accent font-medium">${esc(planCtx.itemType.charAt(0).toUpperCase()+planCtx.itemType.slice(1))}</span>` +
-      ` · ${esc(data.description.slice(0,120))}${data.description.length>120?'…':''}`;
-    // Reload the affected level
-    if (planCtx.itemType === 'epic') {
-      await loadEpics();
-    } else if (planCtx.itemType === 'feature') {
-      const epicId = Object.keys(S.features).find(eid => (S.features[eid]||[]).some(f => f.id === planCtx.itemId));
-      if (epicId) { delete S.features[epicId]; await loadFeatures(epicId); }
-    } else if (planCtx.itemType === 'task') {
-      const featureId = Object.keys(S.tasks).find(fid => (S.tasks[fid]||[]).some(t => t.id === planCtx.itemId));
-      if (featureId) { delete S.tasks[featureId]; await loadTasks(featureId); }
-    }
-  } catch(e) {
-    appendPlanMsg('assistant', `Error applying: ${e.message}`);
-  } finally {
-    btn.disabled = false;
-    btn.innerHTML = '<i data-lucide="check-circle-2" class="w-3 h-3"></i> Apply Description';
-    lucide.createIcons();
-  }
-}
-
-// ── Generate Features ─────────────────────────────────────────────
-async function generateFeatures(epicId) {
-  const btn = document.querySelector(`#epic-${epicId} .generate-features-btn`);
-  if (btn) {
-    btn.disabled = true;
-    btn.innerHTML = '<i data-lucide="loader" class="w-3 h-3 spin-slow inline-block"></i> Generating…';
-    lucide.createIcons();
-  }
-  try {
-    const data = await api('POST', `/work/api/ai/generate-features/${epicId}`);
-    delete S.features[epicId];
-    const epicBody = document.getElementById(`epic-body-${epicId}`);
-    if (epicBody && !epicBody.classList.contains('hidden')) {
-      await loadFeatures(epicId);
-    } else {
-      await toggleEpic(epicId);
-    }
-  } catch(e) {
-    alert(`Generate features failed: ${e.message}`);
-  } finally {
-    // Button gets re-rendered with the epic so no need to restore
-  }
-}
-
-// ── Generate Tasks ────────────────────────────────────────────────
-async function generateTasks(featureId, epicId) {
-  const btn = document.querySelector(`#feature-${featureId} .generate-tasks-btn`);
-  if (btn) {
-    btn.disabled = true;
-    btn.innerHTML = '<i data-lucide="loader" class="w-2.5 h-2.5 spin-slow inline-block"></i>';
-    lucide.createIcons();
-  }
-  try {
-    const data = await api('POST', `/work/api/ai/generate-tasks/${featureId}`);
-    delete S.tasks[featureId];
-    const featBody = document.getElementById(`feat-body-${featureId}`);
-    if (featBody && !featBody.classList.contains('hidden')) {
-      await loadTasks(featureId);
-    } else {
-      await toggleFeature(featureId, epicId);
-    }
-  } catch(e) {
-    alert(`Generate tasks failed: ${e.message}`);
-  }
-}
 
 // ── Init ──────────────────────────────────────────────────────────
 loadProjects();

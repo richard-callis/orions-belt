@@ -229,7 +229,7 @@ def update_epic(epic_id):
     if not epic:
         return jsonify({"error": "Epic not found"}), 404
     body = request.get_json() or {}
-    for field in ("title", "description", "status", "priority"):
+    for field in ("title", "description", "plan", "status", "priority"):
         if field in body:
             setattr(epic, field, body[field])
     epic.updated_at = _now()
@@ -287,7 +287,7 @@ def update_feature(feature_id):
     if not feature:
         return jsonify({"error": "Feature not found"}), 404
     body = request.get_json() or {}
-    for field in ("title", "description", "status", "priority"):
+    for field in ("title", "description", "plan", "status", "priority"):
         if field in body:
             setattr(feature, field, body[field])
     feature.updated_at = _now()
@@ -355,7 +355,7 @@ def update_task(task_id):
     if not task:
         return jsonify({"error": "Task not found"}), 404
     body = request.get_json() or {}
-    for field in ("title", "description", "acceptance_criteria", "status", "priority", "assigned_agent_id"):
+    for field in ("title", "description", "plan", "acceptance_criteria", "status", "priority", "assigned_agent_id"):
         if field in body:
             setattr(task, field, body[field])
     task.updated_at = _now()

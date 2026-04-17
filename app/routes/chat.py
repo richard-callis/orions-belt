@@ -81,6 +81,8 @@ def list_sessions():
             "created_at": s.created_at.isoformat() if s.created_at else None,
             "updated_at": s.updated_at.isoformat() if s.updated_at else None,
             "message_count": len(s.messages),
+            "linked_epic_id": s.linked_epic_id,
+            "linked_feature_id": s.linked_feature_id,
             "linked_task_id": s.linked_task_id,
             "context_strategy": s.context_strategy,
         }
@@ -95,6 +97,9 @@ def create_session():
         id=str(uuid.uuid4()),
         name=body.get("name", "New conversation"),
         context_strategy=body.get("context_strategy", "sliding"),
+        linked_epic_id=body.get("linked_epic_id"),
+        linked_feature_id=body.get("linked_feature_id"),
+        linked_task_id=body.get("linked_task_id"),
         created_at=_now(),
         updated_at=_now(),
     )
@@ -103,6 +108,9 @@ def create_session():
     return jsonify({
         "id": session.id,
         "name": session.name,
+        "linked_epic_id": session.linked_epic_id,
+        "linked_feature_id": session.linked_feature_id,
+        "linked_task_id": session.linked_task_id,
         "created_at": session.created_at.isoformat(),
         "updated_at": session.updated_at.isoformat(),
         "message_count": 0,
@@ -136,6 +144,88 @@ def delete_session(session_id):
     session.archived_at = _now()
     db.session.commit()
     return "", 204
+
+
+@bp.route("/api/sessions/<session_id>/save-plan", methods=["POST"])
+def save_plan(session_id):
+    """Extract a plan description from the session conversation and save it to the linked work item."""
+    session = Session.query.get(session_id)
+    if not session:
+        return jsonify({"error": "Session not found"}), 404
+
+    from app.models.work import Epic, Feature, Task as WorkTask
+    if session.linked_task_id:
+        item = WorkTask.query.get(session.linked_task_id)
+        item_type = "task"
+    elif session.linked_feature_id:
+        item = Feature.query.get(session.linked_feature_id)
+        item_type = "feature"
+    elif session.linked_epic_id:
+        item = Epic.query.get(session.linked_epic_id)
+        item_type = "epic"
+    else:
+        return jsonify({"error": "This session is not linked to any work item"}), 400
+
+    if not item:
+        return jsonify({"error": "Linked work item not found"}), 404
+
+    messages = (
+        Message.query.filter_by(session_id=session_id)
+        .filter(Message.role.in_(["user", "assistant"]))
+        .order_by(Message.created_at.asc())
+        .all()
+    )
+    if not messages:
+        return jsonify({"error": "No conversation to save yet"}), 400
+
+    from app.routes.settings import _get_active_provider
+    provider = _get_active_provider()
+    if not provider:
+        return jsonify({"error": "No LLM provider configured"}), 503
+
+    import httpx as _httpx
+    base_url = provider["base_url"].rstrip("/")
+    api_key = provider.get("api_key", "")
+    model = provider["model"]
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    title = getattr(item, "title", "") or ""
+    conv = "\n".join(f"{m.role.upper()}: {m.content}" for m in messages)
+    sys_prompt = "You are a project planning assistant. Write a clear, actionable description."
+    user_msg = (
+        f'Based on this planning conversation about a {item_type} titled "{title}", '
+        "write a concise description (3-5 sentences) capturing the goals, scope, "
+        "and key decisions made. Return ONLY the description text, no preamble.\n\n"
+        f"Conversation:\n{conv}"
+    )
+
+    try:
+        with _httpx.Client(timeout=120.0) as client:
+            resp = client.post(
+                f"{base_url}/chat/completions",
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": user_msg},
+                    ],
+                    "stream": False,
+                },
+                headers=headers,
+            )
+        resp.raise_for_status()
+        description = resp.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    item.plan = description
+    item.updated_at = _now()
+    db.session.commit()
+    log.info("save_plan: session=%s item_type=%s id=%s", session_id, item_type,
+             session.linked_task_id or session.linked_feature_id or session.linked_epic_id)
+    return jsonify({"success": True, "plan": description, "item_type": item_type, "item_title": title})
 
 
 @bp.route("/api/sessions/<session_id>/messages", methods=["GET", "POST"])
@@ -270,6 +360,34 @@ def stream_messages(session_id):
     model = explicit_model or (ollama_model or llm_model)
     base_url = explicit_base_url or llm_base_url
     system_prompt = body.get("system_prompt", _get_default_system_prompt())
+
+    # If the session is linked to a work item, append a planning context block
+    if session.linked_task_id or session.linked_feature_id or session.linked_epic_id:
+        from app.models.work import Epic, Feature, Task as WorkTask
+        if session.linked_task_id:
+            _wi = WorkTask.query.get(session.linked_task_id)
+            _wi_type = "task"
+        elif session.linked_feature_id:
+            _wi = Feature.query.get(session.linked_feature_id)
+            _wi_type = "feature"
+        else:
+            _wi = Epic.query.get(session.linked_epic_id)
+            _wi_type = "epic"
+        if _wi:
+            _wi_title = getattr(_wi, "title", "") or ""
+            _wi_desc = _wi.description or "(none yet)"
+            system_prompt += (
+                f"\n\n=== PLANNING SESSION ===\n"
+                f"You are helping the user plan a {_wi_type}.\n"
+                f"  Title: {_wi_title}\n"
+                f"  Current description: {_wi_desc}\n\n"
+                f"Your job: ask thoughtful clarifying questions about goals, scope, constraints, "
+                f"and success criteria. Guide the conversation so that by the end you have enough "
+                f"detail to write a comprehensive, actionable description that will be saved back "
+                f"to the {_wi_type}. Do not write the final description until the user asks you to "
+                f"or until you have gathered enough information.\n"
+                f"=== END PLANNING CONTEXT ==="
+            )
 
     # Load tools
     tools = MCPTool.query.filter_by(enabled=True).all()

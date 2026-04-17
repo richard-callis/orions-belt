@@ -90,6 +90,15 @@ def _migrate_schema(app):
         "projects": [
             ("folder_path", "VARCHAR(1024)"),
         ],
+        "epics": [
+            ("plan", "TEXT"),
+        ],
+        "features": [
+            ("plan", "TEXT"),
+        ],
+        "tasks": [
+            ("plan", "TEXT"),
+        ],
     }
     with db.engine.connect() as conn:
         for table, additions in cols.items():
