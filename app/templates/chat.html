@@ -335,10 +335,25 @@ async function streamResponse(userPrompt) {
 
   try {
     const strategy = document.getElementById('context-strategy').value;
+
+    // Load current LLM settings from the backend
+    const settingsRes = await fetch('/api/settings');
+    const allSettings = await settingsRes.json();
+    const settingsMap = {};
+    allSettings.forEach(s => settingsMap[s.key] = s.value);
+
+    const streamBody = {
+      prompt: userPrompt,
+      context_strategy: strategy,
+    };
+    if (settingsMap['llm.base_url']) streamBody.base_url = settingsMap['llm.base_url'];
+    if (settingsMap['llm.model']) streamBody.model = settingsMap['llm.model'];
+    if (settingsMap['llm.provider'] === 'ollama') streamBody.ollama_model = settingsMap['llm.model'];
+
     const res = await fetch(`/chat/api/sessions/${currentSessionId}/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: userPrompt, context_strategy: strategy }),
+      body: JSON.stringify(streamBody),
       signal: abortController.signal,
     });
 

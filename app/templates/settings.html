@@ -39,46 +39,57 @@
       <div class="rounded-lg border border-border-subtle bg-bg-card p-5 space-y-4">
         <div>
           <label class="text-xs text-text-muted block mb-1.5">Provider Type</label>
-          <div class="flex gap-2 flex-wrap">
-            {% for name, active in [('OpenAI',True),('Azure OpenAI',False),('llama-server (local)',False),('Custom endpoint',False)] %}
-            <button onclick="selectProvider(this)"
-                    class="px-3 py-1.5 rounded text-xs font-medium border transition-colors
-                           {% if active %}bg-accent/15 text-accent border-accent/40{% else %}bg-bg-raised border-border-subtle text-text-muted hover:border-accent/40 hover:text-accent{% endif %}">
-              {{ name }}
+          <div class="flex gap-2 flex-wrap" id="provider-buttons">
+            <button type="button" data-provider="openai"
+                    class="px-3 py-1.5 rounded text-xs font-medium border transition-colors bg-accent/15 text-accent border-accent/40">
+              OpenAI
             </button>
-            {% endfor %}
+            <button type="button" data-provider="ollama"
+                    class="px-3 py-1.5 rounded text-xs font-medium border transition-colors bg-bg-raised border-border-subtle text-text-muted hover:border-accent/40 hover:text-accent">
+              Ollama (local)
+            </button>
+            <button type="button" data-provider="llama-cpp"
+                    class="px-3 py-1.5 rounded text-xs font-medium border transition-colors bg-bg-raised border-border-subtle text-text-muted hover:border-accent/40 hover:text-accent">
+              llama.cpp / llama-server
+            </button>
+            <button type="button" data-provider="custom"
+                    class="px-3 py-1.5 rounded text-xs font-medium border transition-colors bg-bg-raised border-border-subtle text-text-muted hover:border-accent/40 hover:text-accent">
+              Custom endpoint
+            </button>
           </div>
         </div>
 
         <div>
           <label class="text-xs text-text-muted block mb-1.5">Base URL</label>
-          <input type="url" value="https://api.openai.com/v1" placeholder="https://api.openai.com/v1"
+          <input id="llm-base-url" type="url" placeholder="https://api.openai.com/v1"
                  class="w-full px-3 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent font-mono" />
+          <p class="text-[10px] text-text-muted mt-1">e.g. <code class="text-accent/60">http://10.2.2.9:8080</code> for llama.cpp, <code class="text-accent/60">http://localhost:11434</code> for Ollama</p>
         </div>
 
-        <div>
-          <label class="text-xs text-text-muted block mb-1.5">API Key</label>
+        <div id="llm-key-row">
+          <label class="text-xs text-text-muted block mb-1.5">API Key <span class="text-text-muted/50">(optional for local models)</span></label>
           <div class="flex gap-2">
-            <input type="password" placeholder="sk-..." value="sk-••••••••••••••••••••••••••••••••••••"
+            <input id="llm-api-key" type="password" placeholder="sk-... or leave blank for local"
                    class="flex-1 px-3 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent font-mono" />
-            <button class="px-3 py-2 rounded border border-border-subtle text-xs text-text-muted hover:text-accent hover:border-accent/40 transition-colors">Show</button>
+            <button type="button" id="llm-toggle-key" class="px-3 py-2 rounded border border-border-subtle text-xs text-text-muted hover:text-accent hover:border-accent/40 transition-colors">Show</button>
           </div>
         </div>
 
         <div>
-          <label class="text-xs text-text-muted block mb-1.5">Model</label>
-          <input type="text" value="gpt-4o" placeholder="gpt-4o"
+          <label class="text-xs text-text-muted block mb-1.5">Model ID</label>
+          <input id="llm-model" type="text" placeholder="gpt-4o"
                  class="w-full px-3 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent font-mono" />
+          <p class="text-[10px] text-text-muted mt-1">e.g. <code class="text-accent/60">gpt-4o</code>, <code class="text-accent/60">llama3</code>, <code class="text-accent/60">qwen2.5:7b</code></p>
         </div>
 
         <div class="flex items-center gap-3 pt-2">
-          <button class="px-4 py-2 rounded text-sm bg-accent/15 text-accent hover:bg-accent/30 transition-colors font-medium">
-            Save & Test
+          <button id="llm-save-btn" class="px-4 py-2 rounded text-sm bg-accent/15 text-accent hover:bg-accent/30 transition-colors font-medium">
+            Save
           </button>
-          <div id="llm-test-result" class="hidden items-center gap-1.5 text-xs text-status-healthy">
-            <i data-lucide="check-circle-2" class="w-3.5 h-3.5"></i>
-            Connected · gpt-4o · latency 312ms
-          </div>
+          <button id="llm-test-btn" class="px-4 py-2 rounded text-sm bg-bg-raised border border-border-subtle text-text-muted hover:text-accent hover:border-accent/40 transition-colors">
+            Test
+          </button>
+          <div id="llm-test-result" class="hidden items-center gap-1.5 text-xs"></div>
         </div>
       </div>
     </div>
@@ -193,26 +204,204 @@
 
 {% block scripts %}
 <script>
-  function showSection(id) {
-    document.querySelectorAll('[id^="section-"]').forEach(s => s.classList.add('hidden'));
-    document.getElementById('section-' + id).classList.remove('hidden');
-    document.querySelectorAll('[data-section]').forEach(b => {
-      const active = b.dataset.section === id;
-      b.classList.toggle('bg-accent/10', active);
-      b.classList.toggle('text-accent', active);
-      b.classList.toggle('border-r-2', active);
-      b.classList.toggle('border-accent', active);
-      b.classList.toggle('text-text-secondary', !active);
-    });
+// ── Settings loading ──────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  loadLlmSettings();
+});
+
+function showSection(id) {
+  document.querySelectorAll('[id^="section-"]').forEach(s => s.classList.add('hidden'));
+  document.getElementById('section-' + id).classList.remove('hidden');
+  document.querySelectorAll('[data-section]').forEach(b => {
+    const active = b.dataset.section === id;
+    b.classList.toggle('bg-accent/10', active);
+    b.classList.toggle('text-accent', active);
+    b.classList.toggle('border-r-2', active);
+    b.classList.toggle('border-accent', active);
+    b.classList.toggle('text-text-secondary', !active);
+  });
+}
+
+// ── LLM Settings ──────────────────────────────────────────────────────────────
+
+const baseInputs = ['llm-base-url', 'llm-api-key', 'llm-model'];
+
+function selectProvider(provider) {
+  document.querySelectorAll('#provider-buttons button').forEach(btn => {
+    const isActive = btn.dataset.provider === provider;
+    btn.classList.toggle('bg-accent/15', isActive);
+    btn.classList.toggle('text-accent', isActive);
+    btn.classList.toggle('border-accent/40', isActive);
+    btn.classList.toggle('bg-bg-raised', !isActive);
+    btn.classList.toggle('border-border-subtle', !isActive);
+    btn.classList.toggle('text-text-muted', !isActive);
+  });
+
+  // Update base URL placeholder hints based on provider
+  const baseInput = document.getElementById('llm-base-url');
+  const modelInput = document.getElementById('llm-model');
+  const keyRow = document.getElementById('llm-key-row');
+
+  switch (provider) {
+    case 'openai':
+      baseInput.placeholder = 'https://api.openai.com/v1';
+      modelInput.placeholder = 'gpt-4o';
+      keyRow.style.display = '';
+      keyRow.querySelector('label').innerHTML = 'API Key';
+      keyRow.querySelector('input').placeholder = 'sk-...';
+      break;
+    case 'ollama':
+      baseInput.placeholder = 'http://localhost:11434';
+      modelInput.placeholder = 'llama3';
+      keyRow.style.display = 'none';
+      break;
+    case 'llama-cpp':
+      baseInput.placeholder = 'http://10.2.2.9:8080';
+      modelInput.placeholder = 'qwen2.5:7b';
+      keyRow.style.display = 'none';
+      break;
+    case 'custom':
+      baseInput.placeholder = 'https://your-endpoint/v1';
+      modelInput.placeholder = 'model-name';
+      keyRow.style.display = '';
+      keyRow.querySelector('label').innerHTML = 'API Key';
+      keyRow.querySelector('input').placeholder = 'optional';
+      break;
+  }
+}
+
+// Provider button click handlers
+document.querySelectorAll('#provider-buttons button').forEach(btn => {
+  btn.addEventListener('click', () => selectProvider(btn.dataset.provider));
+});
+
+// Show/hide API key
+document.getElementById('llm-toggle-key').addEventListener('click', function() {
+  const input = document.getElementById('llm-api-key');
+  const isPassword = input.type === 'password';
+  input.type = isPassword ? 'text' : 'password';
+  this.textContent = isPassword ? 'Hide' : 'Show';
+});
+
+async function loadLlmSettings() {
+  try {
+    const [baseRes, keyRes, modelRes, providerRes] = await Promise.all([
+      fetch('/api/settings/llm.base_url'),
+      fetch('/api/settings/llm.api_key'),
+      fetch('/api/settings/llm.model'),
+      fetch('/api/settings/llm.provider'),
+    ]);
+
+    const baseUrl = await baseRes.json();
+    const apiKey = await keyRes.json();
+    const model = await modelRes.json();
+    const provider = await providerRes.json();
+
+    if (baseUrl.data?.value) {
+      document.getElementById('llm-base-url').value = baseUrl.data.value;
+    }
+    if (apiKey.data?.value) {
+      document.getElementById('llm-api-key').value = apiKey.data.value;
+    }
+    if (model.data?.value) {
+      document.getElementById('llm-model').value = model.data.value;
+    }
+    if (provider.data?.value) {
+      selectProvider(provider.data.value);
+    } else {
+      selectProvider('openai');
+    }
+  } catch (e) {
+    console.warn('Failed to load LLM settings:', e);
+    selectProvider('openai');
+  }
+}
+
+async function saveLlmSettings() {
+  const baseUrl = document.getElementById('llm-base-url').value.trim();
+  const apiKey = document.getElementById('llm-api-key').value.trim();
+  const model = document.getElementById('llm-model').value.trim();
+  const provider = document.querySelector('#provider-buttons button.bg-accent/15')?.dataset.provider || 'openai';
+
+  if (!baseUrl || !model) {
+    showTestResult('error', 'Base URL and Model ID are required', true);
+    return;
   }
 
-  function selectProvider(btn) {
-    document.querySelectorAll('[onclick="selectProvider(this)"]').forEach(b => {
-      b.classList.remove('bg-accent/15','text-accent','border-accent/40');
-      b.classList.add('bg-bg-raised','border-border-subtle','text-text-muted');
+  const settings = [
+    { key: 'llm.base_url', value: baseUrl },
+    { key: 'llm.api_key', value: apiKey },
+    { key: 'llm.model', value: model },
+    { key: 'llm.provider', value: provider },
+  ];
+
+  for (const s of settings) {
+    const res = await fetch('/api/settings/' + s.key, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: s.value || '' }),
     });
-    btn.classList.add('bg-accent/15','text-accent','border-accent/40');
-    btn.classList.remove('bg-bg-raised','border-border-subtle','text-text-muted');
+    if (!res.ok) {
+      console.error(`Failed to save ${s.key}`);
+      showTestResult('error', 'Failed to save settings', true);
+      return;
+    }
   }
+
+  showTestResult('success', 'Settings saved');
+}
+
+async function testLlmConnection() {
+  const btn = document.getElementById('llm-test-btn');
+  btn.disabled = true;
+  btn.textContent = 'Testing...';
+
+  try {
+    const baseUrl = document.getElementById('llm-base-url').value.trim();
+    const model = document.getElementById('llm-model').value.trim();
+
+    if (!baseUrl || !model) {
+      showTestResult('error', 'Set Base URL and Model first', true);
+      return;
+    }
+
+    // Test connection with a minimal chat completion
+    const res = await fetch('/api/llm/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base_url: baseUrl, model }),
+    });
+
+    const data = await res.json();
+    if (res.ok) {
+      showTestResult('success', `Connected · ${data.model || model} · ${data.latency_ms}ms`);
+    } else {
+      showTestResult('error', `Connection failed: ${data.error || 'unknown error'}`);
+    }
+  } catch (e) {
+    showTestResult('error', `Connection failed: ${e.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Test';
+  }
+}
+
+function showTestResult(type, message, persist = false) {
+  const el = document.getElementById('llm-test-result');
+  const icon = type === 'success' ? 'check-circle-2' : 'alert-circle';
+  const colorClass = type === 'success' ? 'text-status-healthy' : 'text-status-error';
+
+  el.className = `flex items-center gap-1.5 text-xs ${colorClass}`;
+  el.innerHTML = `<i data-lucide="${icon}" class="w-3.5 h-3.5"></i><span>${message}</span>`;
+  el.classList.remove('hidden');
+  lucide.createIcons();
+
+  if (!persist) {
+    setTimeout(() => el.classList.add('hidden'), 3000);
+  }
+}
+
+document.getElementById('llm-save-btn').addEventListener('click', saveLlmSettings);
+document.getElementById('llm-test-btn').addEventListener('click', testLlmConnection);
 </script>
 {% endblock %}
