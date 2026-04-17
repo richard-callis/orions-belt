@@ -3,6 +3,21 @@
 {% block page_title %}Chat{% endblock %}
 
 {% block header_actions %}
+<!-- Provider pill — lives in the global header next to + New -->
+<div class="relative" id="provider-pill-wrap">
+  <button id="provider-pill"
+          onclick="toggleProviderDropdown()"
+          class="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs border border-border-visible bg-bg-raised text-text-muted hover:border-accent/50 hover:text-accent transition-colors whitespace-nowrap font-mono">
+    <span class="w-1.5 h-1.5 rounded-full bg-accent inline-block flex-shrink-0"></span>
+    <span id="provider-pill-label">Loading…</span>
+    <i data-lucide="chevron-down" class="w-3 h-3 flex-shrink-0"></i>
+  </button>
+  <div id="provider-dropdown"
+       class="hidden absolute right-0 top-full mt-1 w-60 rounded-lg border border-border-subtle bg-bg-card shadow-lg z-50 py-1 text-xs">
+    <!-- populated by loadLlmProviders() -->
+  </div>
+</div>
+
 <button onclick="newSession()"
         class="flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium bg-accent/15 text-accent hover:bg-accent/30 transition-colors">
   <i data-lucide="plus" class="w-3 h-3"></i>
@@ -59,20 +74,6 @@
           Compact
         </button>
 
-        <!-- Provider pill + dropdown -->
-        <div class="relative" id="provider-pill-wrap">
-          <button id="provider-pill"
-                  onclick="toggleProviderDropdown()"
-                  class="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs border border-border-visible bg-bg-raised text-text-muted hover:border-accent/50 hover:text-accent transition-colors whitespace-nowrap">
-            <span class="w-1.5 h-1.5 rounded-full bg-accent inline-block flex-shrink-0"></span>
-            <span id="provider-pill-label">Loading…</span>
-            <i data-lucide="chevron-down" class="w-3 h-3 flex-shrink-0"></i>
-          </button>
-          <div id="provider-dropdown"
-               class="hidden absolute right-0 top-full mt-1 w-56 rounded-lg border border-border-subtle bg-bg-card shadow-lg z-50 py-1 text-xs">
-            <!-- populated by loadLlmProviders() -->
-          </div>
-        </div>
         <!-- Hidden select kept for getActiveProviderConfig() compatibility -->
         <select id="llm-provider-select" class="hidden"></select>
 
