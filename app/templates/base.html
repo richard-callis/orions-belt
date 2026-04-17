@@ -179,35 +179,38 @@
     {% endfor %}
   </nav>
 
-  <!-- ── PII Guard unavailable modal ──────────────────────── -->
+  <!-- ── PII Guard degraded/unavailable modal ─────────────── -->
   <div id="pii-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-    <div class="bg-bg-card border border-border-visible rounded-xl shadow-2xl max-w-md w-full mx-4 p-6">
+    <div class="bg-bg-card border border-border-visible rounded-xl shadow-2xl max-w-lg w-full mx-4 p-6">
       <div class="flex items-start gap-4 mb-4">
         <div class="w-10 h-10 rounded-lg bg-status-warning/15 border border-status-warning/30 flex items-center justify-center flex-shrink-0">
-          <i data-lucide="shield-off" class="w-5 h-5 text-status-warning"></i>
+          <i data-lucide="shield-alert" class="w-5 h-5 text-status-warning"></i>
         </div>
         <div>
-          <h2 class="text-sm font-semibold text-text-primary mb-1">PII Guard Unavailable</h2>
-          <p class="text-xs text-text-muted leading-relaxed">
-            The PII detection pipeline could not be loaded. Sensitive data in your messages
-            (names, emails, phone numbers, etc.) will <strong class="text-text-secondary">not</strong>
-            be anonymised before being sent to the LLM.
+          <h2 class="text-sm font-semibold text-text-primary mb-1" id="pii-modal-title">PII Guard Degraded</h2>
+          <p class="text-xs text-text-muted leading-relaxed" id="pii-modal-desc">
+            One or more PII detection stages failed to load.
           </p>
         </div>
       </div>
 
       <div id="pii-modal-stages" class="mb-4 space-y-1 text-[11px] font-mono text-text-muted bg-bg-raised rounded-lg px-3 py-2"></div>
 
-      <p class="text-xs text-text-muted mb-5">Do you want to continue without PII protection?</p>
+      <div id="pii-modal-fix" class="hidden mb-4 rounded-lg border border-accent/30 bg-accent/5 px-3 py-2.5">
+        <p class="text-[11px] text-accent font-semibold mb-1">Fix: reinstall PyTorch (CPU-only build)</p>
+        <code class="text-[11px] text-text-secondary font-mono break-all" id="pii-modal-fix-cmd"></code>
+      </div>
+
+      <p class="text-xs text-text-muted mb-5" id="pii-modal-question">Do you want to continue?</p>
 
       <div class="flex items-center gap-3 justify-end">
         <button onclick="piiModalDecline()"
                 class="px-4 py-2 rounded text-sm text-text-muted hover:text-text-primary hover:bg-bg-raised transition-colors">
           Exit
         </button>
-        <button onclick="piiModalAccept()"
+        <button onclick="piiModalAccept()" id="pii-modal-accept-btn"
                 class="px-4 py-2 rounded text-sm bg-status-warning/15 text-status-warning hover:bg-status-warning/30 transition-colors font-medium">
-          Continue without PII Guard
+          Continue
         </button>
       </div>
     </div>
@@ -252,27 +255,71 @@
       try {
         const res = await fetch('/api/pii/status');
         const data = await res.json();
-
-        // Update status bar dot
+        const s = data.stages || {};
         const dot = document.querySelector('#pii-status span.rounded-full');
-        if (data.available) {
-          if (dot) { dot.classList.remove('bg-border-visible'); dot.classList.add('bg-status-healthy', 'pulse-dot'); }
-        } else {
-          _applyPiiWarningDot();
-          // Show modal
-          const stagesEl = document.getElementById('pii-modal-stages');
-          if (stagesEl) {
-            const s = data.stages || {};
-            stagesEl.innerHTML = [
-              `<div class="${s.presidio ? 'text-status-healthy' : 'text-status-error'}">● Presidio (rule-based): ${s.presidio ? 'OK' : 'failed'}</div>`,
-              `<div class="${s.ner ? 'text-status-healthy' : 'text-status-error'}">● BERT NER: ${s.ner ? 'OK' : 'failed'}</div>`,
-              `<div class="${s.judge ? 'text-status-healthy' : 'text-text-muted'}">● DeBERTa judge: ${s.judge ? 'OK' : 'not loaded'}</div>`,
-              data.error ? `<div class="text-status-error mt-1">${data.error}</div>` : '',
-            ].join('');
-          }
-          lucide.createIcons();
-          document.getElementById('pii-modal').classList.remove('hidden');
+
+        if (data.available && s.presidio && s.ner && s.judge) {
+          // All three stages healthy — green dot, no modal
+          if (dot) { dot.classList.remove('bg-border-visible', 'bg-status-warning'); dot.classList.add('bg-status-healthy', 'pulse-dot'); }
+          return;
         }
+
+        // Something is degraded or disabled — show modal with details
+        _applyPiiWarningDot();
+
+        const stagesEl = document.getElementById('pii-modal-stages');
+        if (stagesEl) {
+          const rows = [
+            s.presidio
+              ? `<div class="text-status-healthy">● Presidio (NLP rule-based): OK</div>`
+              : s.regex
+              ? `<div class="text-status-warning">● Presidio: failed — regex fallback active (email, phone, SSN, CC)</div>`
+              : `<div class="text-status-error">● Presidio (NLP rule-based): failed</div>`,
+            `<div class="${s.ner ? 'text-status-healthy' : 'text-status-error'}">● BERT NER (contextual names/orgs): ${s.ner ? 'OK' : 'failed'}</div>`,
+            `<div class="${s.judge ? 'text-status-healthy' : 'text-text-muted'}">● DeBERTa zero-shot judge: ${s.judge ? 'OK' : 'not loaded'}</div>`,
+            data.error ? `<div class="text-status-error mt-1">${data.error}</div>` : '',
+          ];
+          stagesEl.innerHTML = rows.join('');
+        }
+
+        // Tailor modal text based on severity
+        const titleEl = document.getElementById('pii-modal-title');
+        const descEl = document.getElementById('pii-modal-desc');
+        const questionEl = document.getElementById('pii-modal-question');
+        const acceptBtn = document.getElementById('pii-modal-accept-btn');
+
+        if (!data.available) {
+          // Completely unavailable
+          if (titleEl) titleEl.textContent = 'PII Guard Unavailable';
+          if (descEl) descEl.textContent = 'The PII detection pipeline could not be loaded. Sensitive data in your messages will not be anonymised before being sent to the LLM.';
+          if (questionEl) questionEl.textContent = 'Do you want to continue without any PII protection?';
+          if (acceptBtn) acceptBtn.textContent = 'Continue without PII Guard';
+        } else if (s.regex && !s.presidio) {
+          // Regex fallback mode
+          if (titleEl) titleEl.textContent = 'PII Guard: Regex Mode';
+          if (descEl) descEl.innerHTML = 'Presidio/NLP could not load (likely a PyTorch DLL issue on Windows). Basic PII patterns <strong class="text-text-secondary">are still protected</strong> (email, phone, SSN, credit card). Named entity detection (people, organisations) is not available until PyTorch is fixed.';
+          if (questionEl) questionEl.textContent = 'Continue with regex-only PII protection?';
+          if (acceptBtn) acceptBtn.textContent = 'Continue with Regex Mode';
+        } else {
+          // Partial — presidio works but NER/judge missing
+          if (titleEl) titleEl.textContent = 'PII Guard: Partial Mode';
+          if (descEl) descEl.textContent = 'Presidio (rule-based) is active. The NER and/or judge models failed to load — contextual entity detection is reduced.';
+          if (questionEl) questionEl.textContent = 'Continue with partial PII protection?';
+          if (acceptBtn) acceptBtn.textContent = 'Continue';
+        }
+
+        // Show the fix hint if torch DLL is the cause
+        if (data.fix_hint) {
+          const fixDiv = document.getElementById('pii-modal-fix');
+          const fixCmd = document.getElementById('pii-modal-fix-cmd');
+          if (fixDiv && fixCmd) {
+            fixCmd.textContent = data.fix_hint;
+            fixDiv.classList.remove('hidden');
+          }
+        }
+
+        lucide.createIcons();
+        document.getElementById('pii-modal').classList.remove('hidden');
       } catch (e) {
         console.warn('PII Guard status check failed:', e);
       }

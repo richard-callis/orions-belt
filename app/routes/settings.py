@@ -31,13 +31,17 @@ def pii_status():
         guard = get_pii_guard()
         # Force initialization so we get accurate stage flags
         guard._ensure_initialized()
-        available = guard._presidio_ready or guard._ner_ready
+        available = guard._presidio_ready or guard._regex_ready or guard._ner_ready
         stages = {
             "presidio": guard._presidio_ready,
+            "regex": guard._regex_ready,
             "ner": guard._ner_ready,
             "judge": guard._judge_ready,
         }
-        return jsonify({"available": available, "stages": stages})
+        fix_hint = None
+        if not guard._presidio_ready and not guard._ner_ready:
+            fix_hint = "pip install torch --index-url https://download.pytorch.org/whl/cpu"
+        return jsonify({"available": available, "stages": stages, "fix_hint": fix_hint})
     except Exception as e:
         return jsonify({"available": False, "stages": {}, "error": str(e)})
 

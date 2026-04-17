@@ -42,11 +42,32 @@ def get_pii_guard() -> "PIIGuard":
     return _instance
 
 
+_TORCH_DLL_FIX = (
+    "Fix: reinstall PyTorch CPU-only build — "
+    "pip install torch --index-url https://download.pytorch.org/whl/cpu"
+)
+
+# ── Pure-regex fallback patterns (no torch, no spaCy) ────────────────────────
+# Used when Presidio/spaCy can't load, giving basic coverage for the most
+# common PII types that appear in enterprise chat (US-focused).
+_REGEX_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("EMAIL_ADDRESS",    re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")),
+    ("PHONE_NUMBER",     re.compile(r"\b(?:\+?1[\s.\-]?)?(?:\(?\d{3}\)?[\s.\-]?)\d{3}[\s.\-]?\d{4}\b")),
+    ("US_SSN",           re.compile(r"\b(?!000|666|9\d\d)\d{3}[- ](?!00)\d{2}[- ](?!0000)\d{4}\b")),
+    ("CREDIT_CARD",      re.compile(r"\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b")),
+    ("IP_ADDRESS",       re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b")),
+    ("DATE_OF_BIRTH",    re.compile(r"\b(?:dob|date of birth|born)[:\s]+\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}\b", re.IGNORECASE)),
+    ("US_PASSPORT",      re.compile(r"\b[A-Z]{1,2}\d{6,9}\b")),
+    ("IBAN_CODE",        re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{4}\d{7}(?:[A-Z0-9]{0,16})?\b")),
+]
+
+
 class PIIGuard:
     """Three-stage PII/PHI detection and hashing pipeline."""
 
     def __init__(self):
         self._presidio_ready = False
+        self._regex_ready = False      # fallback when presidio/spaCy unavailable
         self._ner_ready = False
         self._judge_ready = False
         self._presidio_analyzer = None
@@ -69,16 +90,47 @@ class PIIGuard:
             self._initialized = True
 
     def _init_presidio(self):
+        """Load Presidio with explicit spaCy NLP engine to avoid triggering torch."""
         try:
             from presidio_analyzer import AnalyzerEngine
-            self._presidio_analyzer = AnalyzerEngine()
+            from presidio_analyzer.nlp_engine import NlpEngineProvider
+
+            # Explicitly configure spaCy so presidio never falls through to
+            # a transformer-based engine (which would import torch and fail if
+            # the torch DLL is broken on Windows).
+            nlp_config = {
+                "nlp_engine_name": "spacy",
+                "models": [{"lang_code": "en", "model_name": "en_core_web_sm"}],
+            }
+            try:
+                provider = NlpEngineProvider(nlp_configuration=nlp_config)
+                nlp_engine = provider.create_engine()
+                self._presidio_analyzer = AnalyzerEngine(nlp_engine=nlp_engine)
+            except Exception:
+                # en_core_web_sm not downloaded yet — try default init
+                self._presidio_analyzer = AnalyzerEngine()
+
             self._presidio_ready = True
-            log.info("PII Guard: Presidio analyzer loaded")
+            log.info("PII Guard: Presidio analyzer loaded (Stage 1 active)")
+        except OSError as e:
+            if "1114" in str(e) or "c10.dll" in str(e) or "DLL" in str(e):
+                log.warning(
+                    f"PII Guard: Presidio unavailable — torch DLL failed ({e}). "
+                    f"{_TORCH_DLL_FIX} — falling back to regex scanner"
+                )
+            else:
+                log.warning(f"PII Guard: Presidio unavailable ({e}) — falling back to regex scanner")
+            self._regex_ready = True
+            log.info("PII Guard: Regex fallback scanner active (Stage 1 degraded — common PII patterns only)")
         except Exception as e:
-            log.warning(f"PII Guard: Presidio unavailable ({e}) — Stage 1 disabled")
+            log.warning(f"PII Guard: Presidio unavailable ({e}) — falling back to regex scanner")
+            self._regex_ready = True
+            log.info("PII Guard: Regex fallback scanner active (Stage 1 degraded — common PII patterns only)")
 
     def _init_ner(self):
         try:
+            # Pre-check: import torch first so the DLL error is caught cleanly
+            import torch  # noqa: F401
             from transformers import pipeline as hf_pipeline
             from config import Config
             model_name = getattr(Config, "PII_NER_MODEL", "dslim/bert-base-NER")
@@ -90,11 +142,20 @@ class PIIGuard:
             )
             self._ner_ready = True
             log.info(f"PII Guard: NER pipeline loaded ({model_name})")
+        except OSError as e:
+            if "1114" in str(e) or "c10.dll" in str(e) or "DLL" in str(e):
+                log.warning(
+                    f"PII Guard: NER model unavailable — torch DLL failed. "
+                    f"{_TORCH_DLL_FIX} — Stage 2 disabled"
+                )
+            else:
+                log.warning(f"PII Guard: NER model unavailable ({e}) — Stage 2 disabled")
         except Exception as e:
             log.warning(f"PII Guard: NER model unavailable ({e}) — Stage 2 disabled")
 
     def _init_judge(self):
         try:
+            import torch  # noqa: F401
             from transformers import pipeline as hf_pipeline
             from config import Config
             model_name = getattr(Config, "PII_JUDGE_MODEL", "cross-encoder/nli-deberta-v3-small")
@@ -105,6 +166,14 @@ class PIIGuard:
             )
             self._judge_ready = True
             log.info(f"PII Guard: Judge pipeline loaded ({model_name})")
+        except OSError as e:
+            if "1114" in str(e) or "c10.dll" in str(e) or "DLL" in str(e):
+                log.warning(
+                    f"PII Guard: Judge model unavailable — torch DLL failed. "
+                    f"{_TORCH_DLL_FIX} — Stage 3 disabled"
+                )
+            else:
+                log.warning(f"PII Guard: Judge model unavailable ({e}) — Stage 3 disabled")
         except Exception as e:
             log.warning(f"PII Guard: Judge model unavailable ({e}) — Stage 3 disabled")
 
@@ -133,7 +202,7 @@ class PIIGuard:
         # Collect spans: list of (start, end, entity_type, original, source)
         spans: list[tuple[int, int, str, str, str]] = []
 
-        # Stage 1: Presidio
+        # Stage 1a: Presidio (full NLP-backed detection)
         if self._presidio_ready:
             try:
                 results = self._presidio_analyzer.analyze(text=text, language="en")
@@ -141,6 +210,12 @@ class PIIGuard:
                     spans.append((r.start, r.end, r.entity_type, text[r.start:r.end], "presidio"))
             except Exception as e:
                 log.debug(f"PII Guard: Presidio scan error: {e}")
+
+        # Stage 1b: Regex fallback (runs when Presidio/spaCy can't load, e.g. torch DLL failure)
+        if self._regex_ready and not self._presidio_ready:
+            for entity_type, pattern in _REGEX_PATTERNS:
+                for m in pattern.finditer(text):
+                    spans.append((m.start(), m.end(), entity_type, m.group(), "regex"))
 
         # Stage 2: BERT NER
         if self._ner_ready:
@@ -244,6 +319,8 @@ class PIIGuard:
             if self._ner_ready and self._judge_ready:
                 return "ready"
             return "degraded"
+        if self._regex_ready:
+            return "degraded"  # regex-only mode: basic coverage, no NER/judge
         return "disabled"
 
 
