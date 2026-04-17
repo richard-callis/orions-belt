@@ -78,10 +78,10 @@
       </div>
     </div>
 
-    <!-- Messages -->
-    <div class="flex-1 overflow-y-auto px-4 py-4 space-y-3" id="messages">
-      <!-- Empty state -->
-      <div id="empty-state" class="flex flex-col items-center justify-center h-full text-center py-16">
+    <!-- Messages wrapper: relative so empty-state can overlay it -->
+    <div class="flex-1 relative min-h-0">
+      <!-- Empty state — sits OUTSIDE the scrollable list so innerHTML='' can't remove it -->
+      <div id="empty-state" class="absolute inset-0 flex flex-col items-center justify-center text-center pointer-events-none">
         <div class="flex items-center gap-[4px] mb-4 opacity-30">
           <span class="w-3 h-3 rounded-full bg-accent"></span>
           <span class="w-3 h-3 rounded-full bg-accent"></span>
@@ -90,6 +90,9 @@
         <p class="text-text-muted text-sm mb-1">Start a conversation</p>
         <p class="text-text-muted text-xs opacity-60">PII guard active — your data never leaves this machine unencrypted</p>
       </div>
+
+      <!-- Messages -->
+      <div class="h-full overflow-y-auto px-4 py-4 space-y-3" id="messages"></div>
     </div>
 
     <!-- Input area -->
@@ -365,21 +368,23 @@ async function streamResponse(userPrompt) {
   assistantDiv.className = 'flex justify-start fade-in';
   assistantDiv.innerHTML = `
     <div class="max-w-[85%] space-y-2 items-start flex flex-col">
-      <div class="rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-bg-card border border-border-subtle text-text-primary min-h-[1.5em]" id="assistant-text"></div>
-      <div id="assistant-tool-calls"></div>
+      <div class="rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-bg-card border border-border-subtle text-text-primary min-h-[1.5em] js-assistant-text"></div>
+      <div class="js-assistant-tool-calls"></div>
       <div class="flex items-center gap-2 text-[10px] text-text-muted px-1">
         <span class="font-mono">Assistant</span>
         <span>·</span>
         <span>just now</span>
         <span>·</span>
-        <span id="assistant-tokens">0 tokens</span>
+        <span class="js-assistant-tokens">0 tokens</span>
       </div>
     </div>`;
   msgs.appendChild(assistantDiv);
   msgs.scrollTop = msgs.scrollHeight;
 
-  const assistantText = document.getElementById('assistant-text');
-  const toolCallsContainer = document.getElementById('assistant-tool-calls');
+  // Use class-based selectors on the specific div, not document.getElementById,
+  // so multiple messages don't clobber each other's IDs.
+  const assistantText = assistantDiv.querySelector('.js-assistant-text');
+  const toolCallsContainer = assistantDiv.querySelector('.js-assistant-tool-calls');
   let toolCallCount = 0;
   let totalText = '';
   let lastToolCallDiv = null;
@@ -526,7 +531,7 @@ async function streamResponse(userPrompt) {
 
     // Update token count
     const tokenEst = Math.ceil(totalText.length / 4);
-    const tokenEl = document.getElementById('assistant-tokens');
+    const tokenEl = assistantDiv.querySelector('.js-assistant-tokens');
     if (tokenEl) tokenEl.textContent = `${tokenEst} tokens`;
     document.getElementById('tokens-used').textContent = tokenEst;
   }
