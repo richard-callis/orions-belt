@@ -66,15 +66,21 @@ echo.
 
 REM PyTorch -- always install the CPU-only build on Windows.
 REM The default PyPI torch is a CUDA build whose c10.dll fails to initialise
-REM on machines without a compatible CUDA runtime. Uninstall first so pip
-REM does not skip re-installation if a broken CUDA build is already present.
-echo   Removing any existing torch install...
-pip uninstall torch -y --quiet 2>nul
-echo   Installing PyTorch CPU-only build...
-call :pip_install torch --index-url https://download.pytorch.org/whl/cpu --quiet
+REM on machines without a compatible CUDA runtime.
+REM --force-reinstall ensures we replace an existing CUDA build even if pip
+REM would otherwise consider the version "already satisfied".
+echo   Installing PyTorch CPU-only build ^(this may take a few minutes^)...
+python -m pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cpu
 if errorlevel 1 (
-    echo   WARNING: PyTorch CPU wheel failed. PII Guard stages 2+3 will be disabled.
-    echo   Retry manually: .venv\Scripts\pip install torch --index-url https://download.pytorch.org/whl/cpu
+    echo   SSL or network error -- retrying with trusted-host bypass...
+    python -m pip install --force-reinstall torch ^
+        --index-url https://download.pytorch.org/whl/cpu ^
+        --trusted-host download.pytorch.org ^
+        --trusted-host files.pythonhosted.org
+    if errorlevel 1 (
+        echo   WARNING: PyTorch CPU install failed. PII Guard stages 2+3 will be disabled.
+        echo   Retry manually: .venv\Scripts\python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+    )
 )
 
 call :pip_install transformers sentence-transformers numpy --quiet
