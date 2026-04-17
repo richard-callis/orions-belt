@@ -42,12 +42,12 @@ if exist .venv (
 call .venv\Scripts\activate.bat
 
 REM -- Upgrade pip --------------------------------------------------------------
+REM Must use "python -m pip" to upgrade pip itself on Windows -- calling
+REM "pip install --upgrade pip" is blocked because pip can't overwrite itself.
 echo [2/5] Upgrading pip...
-call :pip_install --upgrade pip --quiet
+python -m pip install --upgrade pip --quiet
 if errorlevel 1 (
-    echo ERROR: pip upgrade failed.
-    pause
-    exit /b 1
+    echo   WARNING: pip upgrade failed -- continuing with existing version.
 )
 
 REM -- Core dependencies --------------------------------------------------------
