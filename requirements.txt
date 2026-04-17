@@ -18,7 +18,8 @@ spacy>=3.7.0            # Required by presidio (pure Python wheel available)
 
 # Transformers-based NER + zero-shot PII judge (no llama.cpp, no CMake)
 transformers>=4.40.0
-torch>=2.0.0            # CPU-only: pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch>=2.0.0,<2.8.0     # CPU-only: pip install torch --index-url https://download.pytorch.org/whl/cpu
+                        # 2.7.1+cpu is known-good on Windows; 2.11.0 has DLL init issues
 # Models downloaded automatically on first use:
 #   NER:   dslim/bert-base-NER          (~400MB)
 #   Judge: cross-encoder/nli-deberta-v3-small  (~180MB, zero-shot PHI classifier)

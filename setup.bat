@@ -69,17 +69,18 @@ REM The default PyPI torch is a CUDA build whose c10.dll fails to initialise
 REM on machines without a compatible CUDA runtime.
 REM --force-reinstall ensures we replace an existing CUDA build even if pip
 REM would otherwise consider the version "already satisfied".
-echo   Installing PyTorch CPU-only build ^(this may take a few minutes^)...
-python -m pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cpu
+REM Pin to 2.7.1+cpu -- newer builds (2.11+) have DLL init failures on Windows
+echo   Installing PyTorch 2.7.1 CPU-only build ^(this may take a few minutes^)...
+python -m pip install --force-reinstall "torch==2.7.1+cpu" --index-url https://download.pytorch.org/whl/cpu
 if errorlevel 1 (
     echo   SSL or network error -- retrying with trusted-host bypass...
-    python -m pip install --force-reinstall torch ^
+    python -m pip install --force-reinstall "torch==2.7.1+cpu" ^
         --index-url https://download.pytorch.org/whl/cpu ^
         --trusted-host download.pytorch.org ^
         --trusted-host files.pythonhosted.org
     if errorlevel 1 (
         echo   WARNING: PyTorch CPU install failed. PII Guard stages 2+3 will be disabled.
-        echo   Retry manually: .venv\Scripts\python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+        echo   Retry manually: .venv\Scripts\python -m pip install "torch==2.7.1+cpu" --index-url https://download.pytorch.org/whl/cpu
     )
 )
 

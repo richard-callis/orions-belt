@@ -102,7 +102,7 @@ pip_install -r requirements.txt
 # PyTorch — CPU-only build (no CUDA runtime needed, avoids DLL issues on Windows via WSL)
 echo "  Installing PyTorch CPU-only build..."
 pip uninstall torch -y --quiet 2>/dev/null || true
-pip_install torch --index-url https://download.pytorch.org/whl/cpu --quiet || {
+pip_install "torch==2.7.1+cpu" --index-url https://download.pytorch.org/whl/cpu --quiet || {
     echo "  WARNING: PyTorch CPU wheel failed. PII Guard stages 2+3 will be disabled."
     echo "  Retry: source .venv/bin/activate && pip install torch --index-url https://download.pytorch.org/whl/cpu"
 }
