@@ -15,7 +15,7 @@ if errorlevel 1 (
 )
 
 REM Create venv
-echo [1/4] Creating virtual environment...
+echo [1/5] Creating virtual environment...
 python -m venv .venv
 if errorlevel 1 (
     echo ERROR: Failed to create virtual environment
@@ -23,18 +23,43 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM Activate and install
-echo [2/4] Installing dependencies...
+REM Activate
 call .venv\Scripts\activate.bat
+
+REM Upgrade pip first
+echo [2/5] Upgrading pip...
 python -m pip install --upgrade pip --quiet
-pip install -r requirements.txt
 
-REM Download spaCy model
-echo [3/4] Downloading spaCy language model...
-python -m spacy download en_core_web_lg
+REM Install core web framework first (fail fast if something is wrong)
+echo [3/5] Installing core dependencies (Flask, SQLAlchemy, openai)...
+pip install flask flask-sqlalchemy flask-migrate sqlalchemy alembic openai requests httpx python-dotenv cryptography python-dateutil humanize bcrypt pillow
+if errorlevel 1 (
+    echo ERROR: Core install failed. Check your internet connection and Python version.
+    pause
+    exit /b 1
+)
 
-REM Create logs directory
-echo [4/4] Creating local directories...
+REM Install ML/NLP stack (CPU torch — no CUDA needed)
+echo [4/5] Installing NLP stack (transformers, spacy, presidio)...
+echo   This may take a few minutes — downloading ~500MB of models...
+pip install torch --index-url https://download.pytorch.org/whl/cpu --quiet
+pip install transformers sentence-transformers numpy
+pip install presidio-analyzer presidio-anonymizer spacy
+
+REM Download spaCy model (small — 12MB)
+echo   Downloading spaCy language model...
+python -m spacy download en_core_web_sm
+if errorlevel 1 (
+    echo WARNING: spaCy model download failed. PII rule-based detection will be limited.
+    echo   You can retry later with: .venv\Scripts\activate ^&^& python -m spacy download en_core_web_sm
+)
+
+REM Install Windows desktop packages
+echo [5/5] Installing desktop launcher (pywebview, pystray) and connectors...
+pip install pywebview pystray
+pip install pywin32 pyodbc
+
+REM Create local dirs
 if not exist logs mkdir logs
 if not exist models mkdir models
 
@@ -42,9 +67,10 @@ echo.
 echo  Setup complete!
 echo.
 echo  To start Orion's Belt:
+echo    Double-click run.bat
+echo.
+echo  Or from terminal:
 echo    .venv\Scripts\activate
 echo    python launch.py
-echo.
-echo  Or just double-click: run.bat
 echo.
 pause

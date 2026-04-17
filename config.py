@@ -13,15 +13,20 @@ class Config:
     SECRET_KEY = os.environ.get("SECRET_KEY", os.urandom(32).hex())
 
     # ── LLM Provider (set via UI on first run) ────────────────
-    LLM_PROVIDER = "openai_compat"   # openai_compat | llamacpp_direct
     LLM_BASE_URL = "https://api.openai.com/v1"
     LLM_API_KEY = ""
     LLM_MODEL = "gpt-4o"
     LLM_MAX_TOKENS = 4096
 
-    # ── Local PII model (llama-cpp-python) ────────────────────
-    PII_MODEL_PATH = ""              # path to .gguf file — empty = skip local judge
-    PII_MODEL_CONTEXT = 2048
+    # ── PII Guard — transformers-based pipeline ───────────────
+    # Stage 1: Presidio rule-based (SSN, email, phone, credit card...)
+    # Stage 2: dslim/bert-base-NER — contextual NER (names, orgs, locations)
+    # Stage 3: cross-encoder/nli-deberta-v3-small — zero-shot PHI classifier
+    # All models downloaded automatically from HuggingFace on first use.
+    # No GGUF, no llama.cpp, no compiler required — pure pip.
+    PII_NER_MODEL = "dslim/bert-base-NER"
+    PII_JUDGE_MODEL = "cross-encoder/nli-deberta-v3-small"
+    PII_JUDGE_THRESHOLD = 0.75       # confidence threshold to flag as PII/PHI
     PII_HASH_SALT = os.environ.get("PII_HASH_SALT", "orions-belt-pii")
 
     # ── Context window management ─────────────────────────────
