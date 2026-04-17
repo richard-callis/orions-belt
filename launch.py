@@ -156,6 +156,7 @@ def main():
             height=900,
             min_size=(1024, 600),
             background_color="#0f0f0f",
+            maximized=True,
         )
 
         # 3. System tray (minimize to tray)

@@ -338,23 +338,32 @@ def stream_messages(session_id):
 
 # ── Sync stream generators (no async/await for Flask compatibility) ──────────
 
+def _run_tool(tool_name, args):
+    """Run an async MCP tool from a synchronous context."""
+    import asyncio
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(execute_tool(tool_name, args))
+    finally:
+        loop.close()
+
+
 def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
                        tool_defs, session_id, run_id, max_turns):
     """Synchronous OpenAI-compatible streaming with tool loop.
 
-    Uses httpx with blocking requests in a thread pool to avoid
-    needing async/await in the Flask generator.
+    Uses httpx streaming so text appears token-by-token as it arrives.
+    SSE lines from the API arrive as b'data: {...}' — the 'data: ' prefix
+    must be stripped before JSON parsing.
     """
     import httpx
 
     messages = [{"role": "system", "content": system_prompt}]
-    # Add existing history (without the user prompt we're about to add)
     for m in history:
         messages.append({"role": m["role"], "content": m["content"]})
 
     turn_count = 0
     total_text = ""
-    pending_tool_calls = []
 
     while turn_count < max_turns:
         turn_count += 1
@@ -370,7 +379,6 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
-        # Log LLM call
         llm_log = LLMLog(
             provider=base_url.split("//")[1].split(":")[0] if "://" in base_url else "custom",
             model=model, session_id=session_id, run_id=run_id,
@@ -379,105 +387,96 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
         db.session.add(llm_log)
 
         try:
+            turn_text = ""
+            pending_tool_calls = {}
+
             with httpx.Client(timeout=180.0) as client:
-                resp = client.post(url, json=body, headers=headers)
+                # Use streaming so tokens arrive in real time
+                with client.stream("POST", url, json=body, headers=headers) as resp:
+                    if resp.status_code != 200:
+                        err = resp.read().decode()[:500]
+                        yield _sse_format("error", {"error": f"API {resp.status_code}: {err}"})
+                        llm_log.success = False
+                        llm_log.error = err
+                        db.session.commit()
+                        return
 
-                if resp.status_code != 200:
-                    yield _sse_format("error", {
-                        "error": f"API {resp.status_code}: {resp.text[:500]}"
-                    })
-                    llm_log.success = False
-                    llm_log.error = resp.text[:500]
-                    db.session.commit()
-                    return
+                    for raw_line in resp.iter_lines():
+                        # SSE lines arrive as "data: {...}" — strip the prefix
+                        line = raw_line.strip()
+                        if not line or not line.startswith("data: "):
+                            continue
+                        payload = line[6:]  # strip "data: "
+                        if payload in ("[DONE]", "[done]"):
+                            break
+                        try:
+                            chunk = json.loads(payload)
+                        except json.JSONDecodeError:
+                            continue
 
-                buf = ""
-                turn_text = ""
-                pending_tool_calls = {}
+                        choices = chunk.get("choices", [])
+                        if not choices:
+                            continue
 
-                for line in resp.iter_lines():
-                    if not line:
-                        continue
-                    if line in (b"data: [DONE]", b"data: [done]"):
-                        continue
-                    buf += line.decode()
-                    try:
-                        chunk = json.loads(buf)
-                    except json.JSONDecodeError:
-                        continue
+                        delta = choices[0].get("delta", {})
 
-                    choices = chunk.get("choices", [])
-                    if not choices:
-                        continue
+                        content = delta.get("content")
+                        if content:
+                            turn_text += content
+                            total_text += content
+                            yield _sse_format("text", {"content": content})
 
-                    delta = choices[0].get("delta", {})
-
-                    # Text
-                    content = delta.get("content")
-                    if content:
-                        turn_text += content
-                        total_text += content
-                        yield _sse_format("text", {"content": content})
-
-                    # Tool calls
-                    tool_calls = delta.get("tool_calls")
-                    if tool_calls:
-                        for tc in tool_calls:
+                        for tc in delta.get("tool_calls") or []:
                             idx = tc.get("index", 0)
                             fn = tc.get("function", {})
-                            name = fn.get("name", "")
-                            args_str = fn.get("arguments", "")
-
                             if idx not in pending_tool_calls:
                                 pending_tool_calls[idx] = {
                                     "id": tc.get("id", f"call_{idx}"),
-                                    "name": name,
+                                    "name": fn.get("name", ""),
                                     "args": "",
                                 }
-                            else:
-                                if name:
-                                    pending_tool_calls[idx]["name"] = name
-                            if args_str:
-                                pending_tool_calls[idx]["args"] += args_str
+                            if fn.get("name"):
+                                pending_tool_calls[idx]["name"] = fn["name"]
+                            if fn.get("arguments"):
+                                pending_tool_calls[idx]["args"] += fn["arguments"]
 
-                # Build assistant message
-                assistant_msg = {}
-                if turn_text:
-                    assistant_msg["content"] = turn_text
-                if pending_tool_calls:
-                    assistant_msg["tool_calls"] = list(pending_tool_calls.values())
-                    messages.append(assistant_msg)
+            # After stream ends — handle tool calls or break
+            if turn_text:
+                messages.append({"role": "assistant", "content": turn_text})
 
-                # Process tool calls
-                if not pending_tool_calls:
-                    break  # Final response
+            if not pending_tool_calls:
+                break  # Final text response — done
 
-                for idx, tc in pending_tool_calls.items():
-                    try:
-                        args = json.loads(tc["args"]) if tc["args"] else {}
-                    except json.JSONDecodeError:
-                        args = {}
+            # Execute each tool call
+            messages.append({
+                "role": "assistant",
+                "content": turn_text or None,
+                "tool_calls": [
+                    {"id": tc["id"], "type": "function",
+                     "function": {"name": tc["name"], "arguments": tc["args"]}}
+                    for tc in pending_tool_calls.values()
+                ],
+            })
 
-                    yield _sse_format("tool_call", {
-                        "tool": tc["name"],
-                        "input": tc["args"],
-                    })
+            for tc in pending_tool_calls.values():
+                try:
+                    args = json.loads(tc["args"]) if tc["args"] else {}
+                except json.JSONDecodeError:
+                    args = {}
 
-                    try:
-                        result = execute_tool(tc["name"], args)
-                    except Exception as e:
-                        result = f"Error: {e}"
+                yield _sse_format("tool_call", {"tool": tc["name"], "input": tc["args"]})
 
-                    yield _sse_format("tool_result", {
-                        "tool": tc["name"],
-                        "output": result,
-                    })
+                try:
+                    result = _run_tool(tc["name"], args)
+                except Exception as e:
+                    result = f"Error: {e}"
 
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc["id"],
-                        "content": result,
-                    })
+                yield _sse_format("tool_result", {"tool": tc["name"], "output": str(result)})
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": str(result),
+                })
 
         except httpx.TimeoutException:
             llm_log.success = False
@@ -498,13 +497,16 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
             yield _sse_format("error", {"error": str(e)})
             return
 
-    # Persist conversation
     _save_assistant_message(session_id, total_text)
 
 
 def _stream_ollama_gen(base_url, model, system_prompt, history,
                        tool_defs, session_id, run_id, max_turns):
-    """Synchronous Ollama streaming with tool loop."""
+    """Synchronous Ollama streaming with tool loop.
+
+    Ollama returns newline-delimited JSON (NDJSON), not SSE.
+    Each line is a complete JSON object — do NOT accumulate across lines.
+    """
     import httpx
 
     messages = [{"role": "system", "content": system_prompt}]
@@ -530,96 +532,71 @@ def _stream_ollama_gen(base_url, model, system_prompt, history,
         db.session.add(llm_log)
 
         try:
+            turn_text = ""
+            pending_tool_calls = {}
+
             with httpx.Client(timeout=180.0) as client:
-                resp = client.post(url, json=body)
+                with client.stream("POST", url, json=body) as resp:
+                    if resp.status_code != 200:
+                        err = resp.read().decode()[:500]
+                        yield _sse_format("error", {"error": f"Ollama {resp.status_code}: {err}"})
+                        llm_log.success = False
+                        llm_log.error = err
+                        db.session.commit()
+                        return
 
-                if resp.status_code != 200:
-                    yield _sse_format("error", {
-                        "error": f"Ollama {resp.status_code}: {resp.text[:500]}"
-                    })
-                    llm_log.success = False
-                    llm_log.error = resp.text[:500]
-                    db.session.commit()
-                    return
+                    for raw_line in resp.iter_lines():
+                        # Ollama sends NDJSON — each line is a complete JSON object
+                        line = raw_line.strip()
+                        if not line:
+                            continue
+                        try:
+                            chunk = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
 
-                buf = ""
-                turn_text = ""
-                pending_tool_calls = {}
+                        done = chunk.get("done", False)
+                        msg = chunk.get("message", {})
 
-                for line in resp.iter_lines():
-                    if not line:
-                        continue
-                    buf += line.decode()
-                    try:
-                        chunk = json.loads(buf)
-                    except json.JSONDecodeError:
-                        continue
+                        content = msg.get("content", "")
+                        if content:
+                            turn_text += content
+                            total_text += content
+                            yield _sse_format("text", {"content": content})
 
-                    done = chunk.get("done", False)
-                    msg = chunk.get("message", {})
-                    if done and msg.get("content") is None:
-                        continue
-
-                    content = msg.get("content", "")
-                    if content:
-                        turn_text += content
-                        total_text += content
-                        yield _sse_format("text", {"content": content})
-
-                    tool_calls = msg.get("tool_calls", [])
-                    if tool_calls:
-                        for tc in tool_calls:
-                            idx_key = len(pending_tool_calls)
+                        for tc in msg.get("tool_calls") or []:
                             fn = tc.get("function", {})
+                            idx_key = len(pending_tool_calls)
+                            args_val = fn.get("arguments", {})
                             pending_tool_calls[idx_key] = {
                                 "name": fn.get("name", ""),
-                                "args": fn.get("arguments", ""),
+                                "args": json.dumps(args_val) if isinstance(args_val, dict) else str(args_val),
                             }
 
-                    if done:
-                        if pending_tool_calls:
-                            # Build assistant message with tool calls
-                            tc_list = []
-                            for idx_key, tc in pending_tool_calls.items():
-                                try:
-                                    args = json.loads(tc["args"]) if tc["args"] else {}
-                                except json.JSONDecodeError:
-                                    args = {}
-                                tc_list.append({
-                                    "name": tc["name"],
-                                    "args": json.dumps(args),
-                                })
-                            messages.append({
-                                "role": "assistant",
-                                "content": turn_text,
-                                "tool_calls": tc_list,
-                            })
+                        if done:
+                            break
 
-                            for tc in pending_tool_calls.values():
-                                try:
-                                    args = json.loads(tc["args"]) if tc["args"] else {}
-                                except json.JSONDecodeError:
-                                    args = {}
+            # After stream — append assistant message and execute any tool calls
+            messages.append({"role": "assistant", "content": turn_text})
 
-                                yield _sse_format("tool_call", {
-                                    "tool": tc["name"],
-                                    "input": tc["args"],
-                                })
+            if not pending_tool_calls:
+                break
 
-                                try:
-                                    result = execute_tool(tc["name"], args)
-                                except Exception as e:
-                                    result = f"Error: {e}"
+            for tc in pending_tool_calls.values():
+                try:
+                    args = json.loads(tc["args"]) if tc["args"] else {}
+                except json.JSONDecodeError:
+                    args = {}
 
-                                yield _sse_format("tool_result", {
-                                    "tool": tc["name"],
-                                    "output": result,
-                                })
+                yield _sse_format("tool_call", {"tool": tc["name"], "input": tc["args"]})
 
-                                messages.append({"role": "tool", "content": result})
-                        else:
-                            messages.append({"role": "assistant", "content": turn_text})
-                        break
+                try:
+                    result = _run_tool(tc["name"], args)
+                except Exception as e:
+                    result = f"Error: {e}"
+
+                yield _sse_format("tool_result", {"tool": tc["name"], "output": str(result)})
+                messages.append({"role": "tool", "content": str(result)})
 
         except httpx.TimeoutException:
             llm_log.success = False
@@ -646,7 +623,7 @@ def _stream_ollama_gen(base_url, model, system_prompt, history,
 
 def _save_assistant_message(session_id, content):
     """Save the assistant's response to the database after stream completes."""
-    if not content.strip():
+    if not content or not content.strip():
         return
 
     # Restore any PII hash tokens back to original values for storage
@@ -665,6 +642,7 @@ def _save_assistant_message(session_id, content):
         token_count=len(content) // 4,
     )
     db.session.add(msg)
+    db.session.commit()
 
 
 # ── Legacy sync generators (for async compat) ─────────────────────────────────
