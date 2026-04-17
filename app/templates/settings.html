@@ -40,17 +40,9 @@
         <div>
           <label class="text-xs text-text-muted block mb-1.5">Provider Type</label>
           <div class="flex gap-2 flex-wrap" id="provider-buttons">
-            <button type="button" data-provider="openai"
+            <button type="button" data-provider="genai"
                     class="px-3 py-1.5 rounded text-xs font-medium border transition-colors bg-accent/15 text-accent border-accent/40">
-              OpenAI
-            </button>
-            <button type="button" data-provider="ollama"
-                    class="px-3 py-1.5 rounded text-xs font-medium border transition-colors bg-bg-raised border-border-subtle text-text-muted hover:border-accent/40 hover:text-accent">
-              Ollama (local)
-            </button>
-            <button type="button" data-provider="llama-cpp"
-                    class="px-3 py-1.5 rounded text-xs font-medium border transition-colors bg-bg-raised border-border-subtle text-text-muted hover:border-accent/40 hover:text-accent">
-              llama.cpp / llama-server
+              GenAI
             </button>
             <button type="button" data-provider="custom"
                     class="px-3 py-1.5 rounded text-xs font-medium border transition-colors bg-bg-raised border-border-subtle text-text-muted hover:border-accent/40 hover:text-accent">
@@ -63,7 +55,7 @@
           <label class="text-xs text-text-muted block mb-1.5">Base URL</label>
           <input id="llm-base-url" type="url" placeholder="https://api.openai.com/v1"
                  class="w-full px-3 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent font-mono" />
-          <p class="text-[10px] text-text-muted mt-1">e.g. <code class="text-accent/60">http://10.2.2.9:8080</code> for llama.cpp, <code class="text-accent/60">http://localhost:11434</code> for Ollama</p>
+          <p class="text-[10px] text-text-muted mt-1">e.g. <code class="text-accent/60">http://10.2.2.9:8080</code> for a local OpenAI-compatible server, <code class="text-accent/60">https://api.openai.com/v1</code> for cloud APIs</p>
         </div>
 
         <div id="llm-key-row">
@@ -79,7 +71,7 @@
           <label class="text-xs text-text-muted block mb-1.5">Model ID</label>
           <input id="llm-model" type="text" placeholder="gpt-4o"
                  class="w-full px-3 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent font-mono" />
-          <p class="text-[10px] text-text-muted mt-1">e.g. <code class="text-accent/60">gpt-4o</code>, <code class="text-accent/60">llama3</code>, <code class="text-accent/60">qwen2.5:7b</code></p>
+          <p class="text-[10px] text-text-muted mt-1">e.g. <code class="text-accent/60">gpt-4o</code>, <code class="text-accent/60">llama3</code></p>
         </div>
 
         <div class="flex items-center gap-3 pt-2">
@@ -243,29 +235,18 @@ function selectProvider(provider) {
   const keyRow = document.getElementById('llm-key-row');
 
   switch (provider) {
-    case 'openai':
+    case 'genai':
       baseInput.placeholder = 'https://api.openai.com/v1';
       modelInput.placeholder = 'gpt-4o';
       keyRow.style.display = '';
       keyRow.querySelector('label').innerHTML = 'API Key';
       keyRow.querySelector('input').placeholder = 'sk-...';
       break;
-    case 'ollama':
-      baseInput.placeholder = 'http://localhost:11434';
-      modelInput.placeholder = 'llama3';
-      keyRow.style.display = 'none';
-      break;
-    case 'llama-cpp':
-      baseInput.placeholder = 'http://10.2.2.9:8080';
-      modelInput.placeholder = 'qwen2.5:7b';
-      keyRow.style.display = 'none';
-      break;
     case 'custom':
-      baseInput.placeholder = 'https://your-endpoint/v1';
+      baseInput.placeholder = 'http://10.2.2.9:8080';
       modelInput.placeholder = 'model-name';
-      keyRow.style.display = '';
-      keyRow.querySelector('label').innerHTML = 'API Key';
-      keyRow.querySelector('input').placeholder = 'optional';
+      keyRow.style.display = 'none';
+      keyRow.querySelector('input').placeholder = '(optional for local models)';
       break;
   }
 }
@@ -309,11 +290,11 @@ async function loadLlmSettings() {
     if (provider.data?.value) {
       selectProvider(provider.data.value);
     } else {
-      selectProvider('openai');
+      selectProvider('genai');
     }
   } catch (e) {
     console.warn('Failed to load LLM settings:', e);
-    selectProvider('openai');
+    selectProvider('genai');
   }
 }
 
@@ -321,7 +302,7 @@ async function saveLlmSettings() {
   const baseUrl = document.getElementById('llm-base-url').value.trim();
   const apiKey = document.getElementById('llm-api-key').value.trim();
   const model = document.getElementById('llm-model').value.trim();
-  const provider = document.querySelector('#provider-buttons button.bg-accent/15')?.dataset.provider || 'openai';
+  const provider = document.querySelector('#provider-buttons button.bg-accent/15')?.dataset.provider || 'genai';
 
   if (!baseUrl || !model) {
     showTestResult('error', 'Base URL and Model ID are required', true);
