@@ -619,6 +619,7 @@ async function streamResponse(userPrompt) {
           data = dataStr ? JSON.parse(dataStr) : {};
         } catch {}
 
+        console.log('[SSE]', eventType, dataStr.slice(0, 120));
         switch (eventType) {
           case 'text':
             if (data.content) {

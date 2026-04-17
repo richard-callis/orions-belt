@@ -435,17 +435,24 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
                         db.session.commit()
                         return
 
+                    line_count = 0
                     for raw_line in resp.iter_lines():
+                        line_count += 1
                         # SSE lines arrive as "data: {...}" — strip the prefix
                         line = raw_line.strip()
-                        if not line or not line.startswith("data: "):
+                        if not line:
+                            continue
+                        log.info("llm.raw[%d]: %s", line_count, line[:200])
+                        if not line.startswith("data: "):
                             continue
                         payload = line[6:]  # strip "data: "
                         if payload in ("[DONE]", "[done]"):
+                            log.info("llm.stream done signal received")
                             break
                         try:
                             chunk = json.loads(payload)
                         except json.JSONDecodeError:
+                            log.warning("llm.json_error payload=%s", payload[:200])
                             continue
 
                         choices = chunk.get("choices", [])
@@ -453,11 +460,15 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
                             continue
 
                         delta = choices[0].get("delta", {})
+                        finish = choices[0].get("finish_reason")
+                        if finish:
+                            log.info("llm.finish_reason=%s", finish)
 
                         content = delta.get("content")
                         if content:
                             turn_text += content
                             total_text += content
+                            log.info("llm.text_chunk len=%d total=%d", len(content), len(total_text))
                             yield _sse_format("text", {"content": content})
 
                         for tc in delta.get("tool_calls") or []:
@@ -475,6 +486,8 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
                                 pending_tool_calls[idx]["args"] += fn["arguments"]
 
             # After stream ends — handle tool calls or break
+            log.info("llm.turn_end turn=%d turn_text=%d total_text=%d tool_calls=%d",
+                     turn_count, len(turn_text), len(total_text), len(pending_tool_calls))
             if turn_text:
                 messages.append({"role": "assistant", "content": turn_text})
 
