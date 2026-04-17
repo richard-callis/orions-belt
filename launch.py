@@ -83,6 +83,9 @@ def _migrate_schema(app):
             ("archived",     "BOOLEAN NOT NULL DEFAULT 0"),
             ("archived_at",  "DATETIME"),
         ],
+        "authorized_directories": [
+            ("enabled", "BOOLEAN NOT NULL DEFAULT 1"),
+        ],
     }
     with db.engine.connect() as conn:
         for table, additions in cols.items():

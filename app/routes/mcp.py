@@ -69,6 +69,7 @@ def list_directories():
             "recursive": d.recursive,
             "read_only": d.read_only,
             "max_tier": d.max_tier,
+            "enabled": d.enabled,
         }
         for d in dirs
     ])
@@ -92,6 +93,19 @@ def add_directory():
     db.session.add(d)
     db.session.commit()
     return jsonify({"success": True, "id": d.id}), 201
+
+
+@bp.route("/api/directories/<dir_id>", methods=["PATCH"])
+def toggle_directory(dir_id):
+    """Enable or disable an authorized directory."""
+    d = AuthorizedDirectory.query.get(dir_id)
+    if not d:
+        return jsonify({"error": "not found"}), 404
+    body = request.get_json() or {}
+    if "enabled" in body:
+        d.enabled = bool(body["enabled"])
+    db.session.commit()
+    return jsonify({"success": True, "enabled": d.enabled})
 
 
 @bp.route("/api/directories/<dir_id>", methods=["DELETE"])

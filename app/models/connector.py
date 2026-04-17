@@ -60,6 +60,7 @@ class AuthorizedDirectory(db.Model):
     recursive = db.Column(db.Boolean, default=True)
     read_only = db.Column(db.Boolean, default=False)    # forces Tier 0 only
     max_tier = db.Column(db.Integer, default=3)         # cap effective tier (0-3)
+    enabled = db.Column(db.Boolean, default=True, nullable=False)
     authorized_at = db.Column(db.DateTime, default=_now)
     expires_at = db.Column(db.DateTime, nullable=True)
     notes = db.Column(db.String(512), nullable=True)
