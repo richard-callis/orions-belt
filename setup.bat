@@ -93,7 +93,9 @@ if errorlevel 1 (
 )
 call :pip_install protobuf --quiet
 
-python -m spacy download en_core_web_sm
+REM Pass SSL_BYPASS state to the helper so it can use pip --trusted-host fallback
+set SSL_BYPASS=%SSL_BYPASS%
+python install_spacy_model.py
 if errorlevel 1 (
     echo   WARNING: spaCy model download failed.
     echo   Retry: .venv\Scripts\activate ^&^& python -m spacy download en_core_web_sm

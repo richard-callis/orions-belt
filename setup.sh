@@ -118,15 +118,14 @@ pip_install gliner --quiet || {
 pip_install protobuf --quiet || true
 
 # 4. spaCy language model
+# en_core_web_sm is what pii_guard/__init__.py loads (Presidio Stage 1).
+# The helper script handles SSL bypass for corporate proxy environments.
 echo "[4/5] Downloading spaCy model..."
-if python -c "import spacy; spacy.load('en_core_web_lg')" 2>/dev/null; then
-    echo "  en_core_web_lg already installed — skipping."
-else
-    python -m spacy download en_core_web_lg || {
-        echo "  WARNING: spaCy model download failed."
-        echo "  Retry later: source .venv/bin/activate && python -m spacy download en_core_web_lg"
-    }
-fi
+export SSL_BYPASS
+python install_spacy_model.py || {
+    echo "  WARNING: spaCy model download failed."
+    echo "  Retry later: source .venv/bin/activate && python -m spacy download en_core_web_sm"
+}
 
 # 5. Local directories
 echo "[5/5] Creating local directories..."
