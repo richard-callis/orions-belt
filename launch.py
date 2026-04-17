@@ -29,6 +29,7 @@ def run_flask():
     app = create_app()
     with app.app_context():
         db.create_all()
+        _migrate_llm_settings(app)
         _seed_builtin_tools(app)
     app.run(host="127.0.0.1", port=PORT, debug=False, use_reloader=False, threaded=True)
 
@@ -57,6 +58,31 @@ def _seed_builtin_tools(app):
         existing = MCPTool.query.filter_by(name=tool_def["name"]).first()
         if not existing:
             db.session.add(MCPTool(source="builtin", **tool_def))
+    db.session.commit()
+
+
+def _migrate_llm_settings(app):
+    """Clean up corrupted LLM provider data from earlier buggy saves."""
+    import json
+    from app.models.settings import Setting
+
+    # Remove old flat keys that are no longer used
+    for key in ("llm.base_url", "llm.api_key", "llm.model", "llm.provider"):
+        row = Setting.query.get(key)
+        if row:
+            db.session.delete(row)
+
+    # Fix corrupted llm.providers
+    row = Setting.query.get("llm.providers")
+    if row:
+        try:
+            providers = json.loads(row.value)
+            if not isinstance(providers, list):
+                raise ValueError("not a list")
+        except (json.JSONDecodeError, ValueError):
+            print("[migrate] removing corrupted llm.providers")
+            db.session.delete(row)
+
     db.session.commit()
 
 
