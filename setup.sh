@@ -99,6 +99,14 @@ pip_install --upgrade pip --quiet
 echo "[3/5] Installing core dependencies..."
 pip_install -r requirements.txt
 
+# PyTorch — CPU-only build (no CUDA runtime needed, avoids DLL issues on Windows via WSL)
+echo "  Installing PyTorch CPU-only build..."
+pip uninstall torch -y --quiet 2>/dev/null || true
+pip_install torch --index-url https://download.pytorch.org/whl/cpu --quiet || {
+    echo "  WARNING: PyTorch CPU wheel failed. PII Guard stages 2+3 will be disabled."
+    echo "  Retry: source .venv/bin/activate && pip install torch --index-url https://download.pytorch.org/whl/cpu"
+}
+
 # 4. spaCy language model
 echo "[4/5] Downloading spaCy model..."
 if python -c "import spacy; spacy.load('en_core_web_lg')" 2>/dev/null; then

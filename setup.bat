@@ -64,11 +64,17 @@ echo [4/5] Installing NLP stack ^(PyTorch, transformers, presidio, spaCy^)...
 echo   NOTE: Models download on first launch, cached in models\ ^(~670MB^).
 echo.
 
-REM PyTorch CPU-only first, fall back to default index
+REM PyTorch — always install the CPU-only build on Windows.
+REM The default PyPI torch is a CUDA build whose c10.dll fails to initialise
+REM on machines without a compatible CUDA runtime. Uninstall first so pip
+REM doesn't skip re-installation if a broken CUDA build is already present.
+echo   Removing any existing torch install...
+pip uninstall torch -y --quiet 2>nul
+echo   Installing PyTorch CPU-only build...
 call :pip_install torch --index-url https://download.pytorch.org/whl/cpu --quiet
 if errorlevel 1 (
-    echo   PyTorch CPU wheel failed — trying default index...
-    call :pip_install torch --quiet
+    echo   WARNING: PyTorch CPU wheel failed. PII Guard stages 2+3 will be disabled.
+    echo   Retry manually: .venv\Scripts\pip install torch --index-url https://download.pytorch.org/whl/cpu
 )
 
 call :pip_install transformers sentence-transformers numpy --quiet
