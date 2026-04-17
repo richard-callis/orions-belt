@@ -34,6 +34,10 @@ class Session(db.Model):
     total_tokens_used = db.Column(db.Integer, default=0)
     is_agent_session = db.Column(db.Boolean, default=False)  # agent run sessions
 
+    # Soft-delete — archived sessions are hidden from the UI but kept in the DB
+    archived = db.Column(db.Boolean, default=False, nullable=False)
+    archived_at = db.Column(db.DateTime, nullable=True)
+
     messages = db.relationship("Message", back_populates="session",
                                 cascade="all, delete-orphan", order_by="Message.created_at")
     compactions = db.relationship("ContextCompaction", back_populates="session",

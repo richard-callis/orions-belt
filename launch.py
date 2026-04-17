@@ -30,6 +30,7 @@ def run_flask():
     with app.app_context():
         db.create_all()
         _migrate_llm_settings(app)
+        _migrate_schema(app)
         _seed_builtin_tools(app)
     app.run(host="127.0.0.1", port=PORT, debug=False, use_reloader=False, threaded=True)
 
@@ -59,6 +60,31 @@ def _seed_builtin_tools(app):
         if not existing:
             db.session.add(MCPTool(source="builtin", **tool_def))
     db.session.commit()
+
+
+def _migrate_schema(app):
+    """Add columns introduced after initial release (idempotent)."""
+    from app import db
+    cols = {
+        "sessions": [
+            ("archived",     "BOOLEAN NOT NULL DEFAULT 0"),
+            ("archived_at",  "DATETIME"),
+        ],
+    }
+    with db.engine.connect() as conn:
+        for table, additions in cols.items():
+            # Fetch existing column names
+            existing = {
+                row[1]
+                for row in conn.execute(db.text(f"PRAGMA table_info({table})"))
+            }
+            for col_name, col_def in additions:
+                if col_name not in existing:
+                    conn.execute(db.text(
+                        f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}"
+                    ))
+                    print(f"[migrate] added {table}.{col_name}")
+        conn.commit()
 
 
 def _migrate_llm_settings(app):

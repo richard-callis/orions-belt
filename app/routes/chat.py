@@ -64,7 +64,13 @@ def index():
 
 @bp.route("/api/sessions", methods=["GET"])
 def list_sessions():
-    sessions = Session.query.order_by(Session.updated_at.desc()).limit(50).all()
+    sessions = (
+        Session.query
+        .filter_by(archived=False)
+        .order_by(Session.updated_at.desc())
+        .limit(50)
+        .all()
+    )
     return jsonify([
         {
             "id": s.id,
@@ -119,11 +125,12 @@ def update_session(session_id):
 
 @bp.route("/api/sessions/<session_id>", methods=["DELETE"])
 def delete_session(session_id):
+    """Soft-delete: mark archived so it disappears from the UI but stays in the DB."""
     session = Session.query.get(session_id)
     if not session:
         return jsonify({"error": "Session not found"}), 404
-    Message.query.filter_by(session_id=session_id).delete()
-    db.session.delete(session)
+    session.archived = True
+    session.archived_at = _now()
     db.session.commit()
     return "", 204
 
