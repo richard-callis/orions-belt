@@ -41,19 +41,21 @@ _DEFAULT_PROVIDERS = [
 
 
 def _get_providers():
-    raw = Setting.get("llm.providers")
-    if not raw:
+    row = Setting.query.get("llm.providers")
+    if not row or not row.value:
         return _DEFAULT_PROVIDERS
-    if isinstance(raw, str):
-        try:
-            return json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            return _DEFAULT_PROVIDERS
-    return raw
+    try:
+        parsed = json.loads(row.value)
+        if isinstance(parsed, list):
+            return parsed
+    except Exception:
+        pass
+    return _DEFAULT_PROVIDERS
 
 
 def _get_active_provider_id():
-    return Setting.get("llm.active_provider")
+    row = Setting.query.get("llm.active_provider")
+    return row.value if row else None
 
 
 def _get_active_provider():
@@ -61,7 +63,7 @@ def _get_active_provider():
     providers = _get_providers()
     active_id = _get_active_provider_id()
 
-    # If no active set, use the first provider
+    # If no active set or invalid, use the first provider
     if not active_id or not any(p.get("id") == active_id for p in providers):
         active_id = providers[0]["id"] if providers else None
 
@@ -138,6 +140,25 @@ def set_settings_bulk():
 
 
 # ── LLM Provider endpoints ────────────────────────────────────────────────────
+
+@bp.route("/api/llm/debug", methods=["GET"])
+def debug_providers():
+    """Debug: show raw and parsed provider data."""
+    raw = Setting.get("llm.providers")
+    providers = _get_providers()
+    active_id = _get_active_provider_id()
+    # Also try direct query
+    row = Setting.query.get("llm.providers")
+    row_value = row.value if row else None
+    row_type = row.value_type if row else None
+    return jsonify({
+        "raw": raw,
+        "providers": providers,
+        "active_id": active_id,
+        "row_value": row_value,
+        "row_value_type": row_type,
+    })
+
 
 @bp.route("/api/llm/providers", methods=["GET"])
 def get_llm_providers():
