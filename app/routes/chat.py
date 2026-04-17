@@ -76,13 +76,32 @@ def _get_planning_suffix() -> str:
 
 
 def _build_system_prompt(tools: list) -> str:
-    """Assemble the full base system prompt with active MCP tools appended."""
+    """Assemble the full base system prompt with active MCP tools appended.
+
+    In addition to the function-definition objects sent in the request body,
+    we embed a text-based invocation format in the system prompt.  This acts
+    as a fallback for providers (e.g. Gemini Enterprise) whose OpenAI-compat
+    layer silently drops the `tools` field — the model still knows what tools
+    exist and how to call them via the <tool_call> block format.
+    """
     prompt = _get_base_system_prompt()
     if tools:
         tool_lines = "\n".join(
-            f"  - {t.name} (tier {t.tier}): {t.description}" for t in tools
+            f"  - {t.name}: {t.description}" for t in tools
         )
-        prompt += f"\n\nAvailable MCP tools you can call:\n{tool_lines}"
+        prompt += f"\n\n## Local MCP Tools\nYou have these tools available:\n{tool_lines}"
+        prompt += (
+            "\n\n## Calling a tool"
+            "\nIf the function-calling mechanism is not available, invoke a tool by"
+            " including a call block in your response (on its own line):\n"
+            "<tool_call>{\"name\": \"TOOL_NAME\", \"args\": {\"PARAM\": \"VALUE\"}}</tool_call>\n"
+            "The system executes the tool and returns the result in the next message.\n"
+            "Rules:\n"
+            "- Always use tools when the user asks about local files, directories, or data.\n"
+            "- Never fabricate file contents — call read_file and use the actual content.\n"
+            "- One tool call per block; chain multiple calls across turns if needed.\n"
+            "- Do NOT say you cannot access local files — you have tools for this."
+        )
     return prompt
 
 
@@ -520,6 +539,47 @@ def _run_tool(tool_name, args):
         loop.close()
 
 
+import re as _re
+
+def _extract_text_tool_calls(text: str) -> dict:
+    """Parse <tool_call>{...}</tool_call> blocks embedded in a text response.
+
+    Used as a fallback when the provider doesn't support native function
+    calling (e.g. Gemini Enterprise drops the tools field silently).  The
+    model is instructed via the system prompt to use this format instead.
+
+    Returns a pending_tool_calls dict keyed by index, same shape as the
+    native tool-call accumulator so the existing execution path handles both.
+    """
+    calls = {}
+    for m in _re.finditer(r'<tool_call>(.*?)</tool_call>', text, _re.DOTALL):
+        try:
+            payload = json.loads(m.group(1).strip())
+            name = payload.get("name", "")
+            if not name:
+                continue
+            idx = len(calls)
+            calls[idx] = {
+                "id": f"txt_{idx}_{str(uuid.uuid4())[:8]}",
+                "name": name,
+                "args": json.dumps(payload.get("args", {})),
+            }
+        except (json.JSONDecodeError, KeyError):
+            pass
+    return calls
+
+
+def _strip_tool_call_blocks(text: str) -> str:
+    """Remove <tool_call>...</tool_call> blocks from text sent back to the LLM.
+
+    The blocks are execution instructions, not conversational content.  Tool
+    results come back as separate tool-role messages, so the assistant message
+    stored in context should contain only the surrounding prose.
+    """
+    cleaned = _re.sub(r'\s*<tool_call>.*?</tool_call>\s*', ' ', text, flags=_re.DOTALL)
+    return cleaned.strip()
+
+
 def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
                        tool_defs, session_id, run_id, max_turns):
     """Synchronous OpenAI-compatible streaming with tool loop.
@@ -700,22 +760,44 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
                     total_text += fallback_content
                     yield _sse_format("text", {"content": fallback_content})
 
+            # ── Text-based tool call fallback ─────────────────────────────────
+            # If the provider doesn't support native function calling (e.g.
+            # Gemini Enterprise drops the tools field silently), the model
+            # may use the <tool_call>{...}</tool_call> format from the system
+            # prompt instead.  Parse those blocks and treat them exactly like
+            # native tool calls so the same execution path handles both.
+            if turn_text and not pending_tool_calls:
+                text_calls = _extract_text_tool_calls(turn_text)
+                if text_calls:
+                    log.info("llm.text_tool_calls found=%d", len(text_calls))
+                    pending_tool_calls = text_calls
+
+            # Store the assistant turn; strip <tool_call> blocks from context
+            # (the blocks are execution directives, not conversational content —
+            # tool results arrive as separate tool-role messages).
             if turn_text:
-                messages.append({"role": "assistant", "content": turn_text})
+                clean_turn = _strip_tool_call_blocks(turn_text) if pending_tool_calls else turn_text
+                messages.append({"role": "assistant", "content": clean_turn})
 
             if not pending_tool_calls:
                 break  # Final text response — done
 
-            # Execute each tool call
-            messages.append({
-                "role": "assistant",
-                "content": turn_text or None,
-                "tool_calls": [
-                    {"id": tc["id"], "type": "function",
-                     "function": {"name": tc["name"], "arguments": tc["args"]}}
-                    for tc in pending_tool_calls.values()
-                ],
-            })
+            # ── Execute tool calls ────────────────────────────────────────────
+            # For native tool calls: append the standard assistant+tool_calls
+            # message so the provider tracks the call/result pair correctly.
+            # For text-based calls: the assistant message was already appended
+            # above (with blocks stripped); no extra tool_calls entry needed.
+            is_native = any(not tc["id"].startswith("txt_") for tc in pending_tool_calls.values())
+            if is_native:
+                messages.append({
+                    "role": "assistant",
+                    "content": turn_text or None,
+                    "tool_calls": [
+                        {"id": tc["id"], "type": "function",
+                         "function": {"name": tc["name"], "arguments": tc["args"]}}
+                        for tc in pending_tool_calls.values()
+                    ],
+                })
 
             for tc in pending_tool_calls.values():
                 try:
@@ -739,11 +821,23 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
                                    tool_name=tc["name"], tool_call_id=tc["id"])
 
                 yield _sse_format("tool_result", {"tool": tc["name"], "output": str(result)})
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": str(result),
-                })
+
+                # Native tool calls use the `tool` role so the provider can
+                # track call/result pairs.  Text-based calls use `user` role
+                # because providers that dropped the tools field will reject
+                # messages with role="tool" (they don't know about tool calls).
+                is_text_call = tc["id"].startswith("txt_")
+                if is_text_call:
+                    messages.append({
+                        "role": "user",
+                        "content": f"[Tool result for {tc['name']}]\n{result}",
+                    })
+                else:
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": str(result),
+                    })
 
         except httpx.TimeoutException:
             llm_log.success = False
