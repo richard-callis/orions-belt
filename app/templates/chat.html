@@ -316,7 +316,7 @@ async function createNewSession(name) {
     const session = await res.json();
     currentSessionId = session.id;
     document.getElementById('session-name').textContent = session.name;
-    document.getElementById('empty-state').style.display = 'none';
+    document.getElementById('empty-state').style.display = '';
     document.getElementById('messages').innerHTML = '';
     await loadSessions();
     return session.id;
