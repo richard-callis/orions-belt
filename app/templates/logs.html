@@ -18,12 +18,15 @@
       {% endfor %}
     </div>
     <div class="flex items-center gap-2 py-2">
-      <input type="text" placeholder="Filter..."
+      <input id="log-filter" type="text" placeholder="Filter..."
              class="px-2.5 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent w-40" />
-      <select class="px-2 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-muted focus:outline-none focus:border-accent">
-        <option>Last 1h</option><option>Last 24h</option><option>Last 7d</option><option>All time</option>
+      <select id="log-range" class="px-2 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-muted focus:outline-none focus:border-accent">
+        <option value="1h">Last 1h</option>
+        <option value="24h" selected>Last 24h</option>
+        <option value="7d">Last 7d</option>
+        <option value="all">All time</option>
       </select>
-      <button class="p-1.5 rounded border border-border-subtle text-text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Export">
+      <button id="export-btn" class="p-1.5 rounded border border-border-subtle text-text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Export">
         <i data-lucide="download" class="w-3.5 h-3.5"></i>
       </button>
     </div>
@@ -33,58 +36,29 @@
   <div class="flex-1 overflow-auto">
     <table class="w-full text-xs">
       <thead class="sticky top-0 bg-bg-raised border-b border-border-subtle z-10">
-        <tr class="text-text-muted font-mono">
-          <th class="text-left px-4 py-2.5 font-medium w-36">Time</th>
-          <th class="text-left px-4 py-2.5 font-medium">Tool / Event</th>
-          <th class="text-left px-4 py-2.5 font-medium w-16">Tier</th>
-          <th class="text-left px-4 py-2.5 font-medium">Caller</th>
-          <th class="text-left px-4 py-2.5 font-medium w-24">Outcome</th>
-          <th class="text-left px-4 py-2.5 font-medium">Detail</th>
-        </tr>
+        <tr id="log-thead" class="text-text-muted font-mono"></tr>
       </thead>
       <tbody class="divide-y divide-border-subtle/40" id="log-table-body">
-        {% set log_rows = [
-          ('14:32:01','read_file',0,'Design Agent','auto','Read C:\\projects\\palette.json'),
-          ('14:31:58','search_files',0,'Design Agent','auto','Pattern *.css in /projects'),
-          ('14:31:40','call_connector',1,'Design Agent','auto','GET /design-tokens → 200 OK'),
-          ('14:30:12','modify_file',2,'Code Agent','approved','C:\\projects\\styles.css (user approved after 4s)'),
-          ('14:28:55','delete_file',3,'Code Agent','rejected','C:\\projects\\old-theme.css — user rejected'),
-          ('14:25:11','run_sql_query',1,'Data Agent','auto','SELECT * FROM v_monthly_kpi LIMIT 100'),
-          ('14:22:04','read_file',0,'Research Agent','auto','Read C:\\documents\\brief.docx'),
-          ('14:20:33','create_file',1,'Code Agent','auto','Created C:\\projects\\theme-v2.css'),
-        ] %}
-        {% for time, tool, tier, caller, outcome, detail in log_rows %}
-        <tr class="hover:bg-bg-raised/30 transition-colors group">
-          <td class="px-4 py-2.5 font-mono text-text-muted whitespace-nowrap">{{ time }}</td>
-          <td class="px-4 py-2.5 font-mono text-text-primary">{{ tool }}</td>
-          <td class="px-4 py-2.5">
-            <span class="px-1.5 py-0.5 rounded border text-[10px] tier-{{ tier }}">{{ tier }}</span>
-          </td>
-          <td class="px-4 py-2.5 text-text-secondary">{{ caller }}</td>
-          <td class="px-4 py-2.5">
-            <span class="px-1.5 py-0.5 rounded text-[10px] font-medium
-              {% if outcome == 'auto' %}text-status-healthy bg-status-healthy/10
-              {% elif outcome == 'approved' %}text-accent bg-accent/10
-              {% elif outcome == 'blocked' %}text-status-error bg-status-error/10
-              {% else %}text-status-warning bg-status-warning/10{% endif %}">
-              {{ outcome }}
-            </span>
-          </td>
-          <td class="px-4 py-2.5 text-text-muted truncate max-w-xs">{{ detail }}</td>
+        <tr id="log-loading">
+          <td colspan="6" class="px-4 py-8 text-center text-text-muted">Loading…</td>
         </tr>
-        {% endfor %}
       </tbody>
     </table>
+    <div id="log-empty" class="hidden flex flex-col items-center justify-center py-16 text-text-muted">
+      <i data-lucide="inbox" class="w-8 h-8 mb-3 opacity-40"></i>
+      <p class="text-xs">No log entries for this time range.</p>
+    </div>
   </div>
 
   <!-- Footer stats -->
   <div class="flex items-center gap-6 px-5 py-2 border-t border-border-subtle bg-bg-sidebar flex-shrink-0 text-[10px] font-mono text-text-muted">
-    <span>{{ log_rows|length if log_rows is defined else 8 }} entries shown</span>
-    <span class="flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-status-healthy"></span>6 auto</span>
-    <span class="flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-accent"></span>1 approved</span>
-    <span class="flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-status-warning"></span>1 rejected</span>
-    <span class="ml-auto opacity-60">Live tail: paused</span>
-    <button class="text-accent hover:text-accent/70 transition-colors">Resume</button>
+    <span id="stat-total">0 entries shown</span>
+    <span class="flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-status-healthy"></span><span id="stat-auto">0</span> auto</span>
+    <span class="flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-accent"></span><span id="stat-approved">0</span> approved</span>
+    <span class="flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-status-warning"></span><span id="stat-rejected">0</span> rejected</span>
+    <span class="flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-status-error"></span><span id="stat-blocked">0</span> blocked</span>
+    <span class="ml-auto opacity-60">Live tail: <span id="tail-status">paused</span></span>
+    <button id="tail-btn" class="text-accent hover:text-accent/70 transition-colors">Resume</button>
   </div>
 
 </div>
@@ -92,15 +66,180 @@
 
 {% block scripts %}
 <script>
-  function switchTab(tab, btn) {
-    // Update tab styling
-    document.querySelectorAll('[onclick^="switchTab"]').forEach(b => {
-      b.classList.remove('border-accent','text-accent');
-      b.classList.add('border-transparent','text-text-muted');
-    });
-    btn.classList.add('border-accent','text-accent');
-    btn.classList.remove('border-transparent','text-text-muted');
-    // TODO: fetch /api/logs?stream=tab
+(function () {
+  const HEADERS = {
+    audit: ['Time','Tool / Event','Tier','Caller','Outcome','Detail'],
+    pii:   ['Time','Session','Direction','Entities','Types','Sources'],
+    agent: ['Time','Run ID','Agent','Event','Detail','Tokens'],
+    llm:   ['Time','Provider','Model','In / Out Tokens','Latency','Cost / Status'],
+  };
+
+  let currentTab = 'audit';
+  let currentRange = '24h';
+  let currentFilter = '';
+  let tailTimer = null;
+  let debounceTimer = null;
+
+  function renderHeaders(tab) {
+    const thead = document.getElementById('log-thead');
+    thead.innerHTML = HEADERS[tab].map(h =>
+      `<th class="text-left px-4 py-2.5 font-medium">${h}</th>`
+    ).join('');
   }
+
+  function outcomeClass(outcome) {
+    if (outcome === 'auto')     return 'text-status-healthy bg-status-healthy/10';
+    if (outcome === 'approved') return 'text-accent bg-accent/10';
+    if (outcome === 'blocked')  return 'text-status-error bg-status-error/10';
+    return 'text-status-warning bg-status-warning/10';
+  }
+
+  function badge(text, cls) {
+    return `<span class="px-1.5 py-0.5 rounded text-[10px] font-medium ${cls}">${text}</span>`;
+  }
+
+  function tierBadge(tier) {
+    return `<span class="px-1.5 py-0.5 rounded border text-[10px] tier-${tier}">${tier}</span>`;
+  }
+
+  function fmt(isoStr) {
+    if (!isoStr) return '—';
+    return new Date(isoStr).toLocaleTimeString();
+  }
+
+  function truncate(str, n = 60) {
+    if (!str) return '—';
+    return str.length > n ? str.slice(0, n) + '…' : str;
+  }
+
+  function rowHtml(tab, e) {
+    if (tab === 'audit') {
+      return `<td class="px-4 py-2.5 font-mono text-text-muted whitespace-nowrap">${fmt(e.time)}</td>
+              <td class="px-4 py-2.5 font-mono text-text-primary">${e.tool}</td>
+              <td class="px-4 py-2.5">${tierBadge(e.tier)}</td>
+              <td class="px-4 py-2.5 text-text-secondary">${e.caller}</td>
+              <td class="px-4 py-2.5">${badge(e.outcome, outcomeClass(e.outcome))}</td>
+              <td class="px-4 py-2.5 text-text-muted truncate max-w-xs">${truncate(e.detail)}</td>`;
+    }
+    if (tab === 'pii') {
+      const countCls = e.entities_found > 0 ? 'text-status-warning bg-status-warning/10' : 'text-text-muted bg-bg-raised';
+      return `<td class="px-4 py-2.5 font-mono text-text-muted whitespace-nowrap">${fmt(e.time)}</td>
+              <td class="px-4 py-2.5 font-mono text-text-secondary">${e.session_id.slice(0,8) || '—'}</td>
+              <td class="px-4 py-2.5 text-text-secondary">${e.direction}</td>
+              <td class="px-4 py-2.5">${badge(e.entities_found, countCls)}</td>
+              <td class="px-4 py-2.5 text-text-muted">${truncate(e.entity_types, 40)}</td>
+              <td class="px-4 py-2.5 text-text-muted">${e.detection_sources || '—'}</td>`;
+    }
+    if (tab === 'agent') {
+      const eventCls = e.event === 'failed' ? 'text-status-error bg-status-error/10' : 'text-status-healthy bg-status-healthy/10';
+      return `<td class="px-4 py-2.5 font-mono text-text-muted whitespace-nowrap">${fmt(e.time)}</td>
+              <td class="px-4 py-2.5 font-mono text-text-secondary">${e.run_id.slice(0,8) || '—'}</td>
+              <td class="px-4 py-2.5 text-text-primary">${e.agent_name || '—'}</td>
+              <td class="px-4 py-2.5">${badge(e.event, eventCls)}</td>
+              <td class="px-4 py-2.5 text-text-muted truncate max-w-xs">${truncate(e.detail)}</td>
+              <td class="px-4 py-2.5 text-text-muted">${e.tokens_used}</td>`;
+    }
+    if (tab === 'llm') {
+      const successCls = e.success ? 'text-status-healthy bg-status-healthy/10' : 'text-status-error bg-status-error/10';
+      const successLabel = e.success ? 'ok' : 'err';
+      const cost = e.estimated_cost_usd != null ? '$' + e.estimated_cost_usd.toFixed(4) : '—';
+      return `<td class="px-4 py-2.5 font-mono text-text-muted whitespace-nowrap">${fmt(e.time)}</td>
+              <td class="px-4 py-2.5 text-text-secondary">${e.provider || '—'}</td>
+              <td class="px-4 py-2.5 font-mono text-text-primary">${e.model || '—'}</td>
+              <td class="px-4 py-2.5 text-text-muted">${e.tokens_in} / ${e.tokens_out}</td>
+              <td class="px-4 py-2.5 text-text-muted">${e.latency_ms}ms</td>
+              <td class="px-4 py-2.5">${badge(successLabel, successCls)} <span class="text-text-muted ml-1">${cost}</span></td>`;
+    }
+    return '';
+  }
+
+  function updateStats(stats) {
+    document.getElementById('stat-total').textContent = (stats.total ?? 0) + ' entries shown';
+    document.getElementById('stat-auto').textContent = stats.auto ?? 0;
+    document.getElementById('stat-approved').textContent = stats.approved ?? 0;
+    document.getElementById('stat-rejected').textContent = stats.rejected ?? 0;
+    document.getElementById('stat-blocked').textContent = stats.blocked ?? 0;
+  }
+
+  function showLoading() {
+    document.getElementById('log-loading').style.display = '';
+    document.getElementById('log-empty').classList.add('hidden');
+  }
+
+  function fetchLogs() {
+    const params = new URLSearchParams({ stream: currentTab, range: currentRange });
+    if (currentFilter) params.set('q', currentFilter);
+    showLoading();
+    fetch('/logs/api/logs?' + params)
+      .then(r => r.json())
+      .then(data => {
+        const tbody = document.getElementById('log-table-body');
+        document.getElementById('log-loading').style.display = 'none';
+        if (!data.entries || data.entries.length === 0) {
+          tbody.innerHTML = '';
+          document.getElementById('log-empty').classList.remove('hidden');
+        } else {
+          document.getElementById('log-empty').classList.add('hidden');
+          tbody.innerHTML = data.entries.map(e =>
+            `<tr class="hover:bg-bg-raised/30 transition-colors group">${rowHtml(currentTab, e)}</tr>`
+          ).join('');
+        }
+        if (data.stats) updateStats(data.stats);
+        if (typeof lucide !== 'undefined') lucide.createIcons();
+      })
+      .catch(() => {
+        document.getElementById('log-loading').style.display = 'none';
+      });
+  }
+
+  window.switchTab = function(tab, btn) {
+    currentTab = tab;
+    document.querySelectorAll('[onclick^="switchTab"]').forEach(b => {
+      b.classList.remove('border-accent', 'text-accent');
+      b.classList.add('border-transparent', 'text-text-muted');
+    });
+    btn.classList.add('border-accent', 'text-accent');
+    btn.classList.remove('border-transparent', 'text-text-muted');
+    renderHeaders(tab);
+    fetchLogs();
+  };
+
+  document.getElementById('log-filter').addEventListener('input', function () {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      currentFilter = this.value.trim();
+      fetchLogs();
+    }, 300);
+  });
+
+  document.getElementById('log-range').addEventListener('change', function () {
+    currentRange = this.value;
+    fetchLogs();
+  });
+
+  document.getElementById('export-btn').addEventListener('click', function () {
+    const params = new URLSearchParams({ stream: currentTab, range: currentRange });
+    if (currentFilter) params.set('q', currentFilter);
+    window.location.href = '/logs/api/logs/export?' + params;
+  });
+
+  const tailBtn = document.getElementById('tail-btn');
+  const tailStatus = document.getElementById('tail-status');
+  tailBtn.addEventListener('click', function () {
+    if (tailTimer) {
+      clearInterval(tailTimer);
+      tailTimer = null;
+      tailStatus.textContent = 'paused';
+      tailBtn.textContent = 'Resume';
+    } else {
+      tailTimer = setInterval(fetchLogs, 5000);
+      tailStatus.textContent = 'live';
+      tailBtn.textContent = 'Pause';
+    }
+  });
+
+  renderHeaders('audit');
+  fetchLogs();
+})();
 </script>
 {% endblock %}

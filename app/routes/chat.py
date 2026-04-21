@@ -565,8 +565,8 @@ def _extract_text_tool_calls(text: str) -> dict:
                 "name": name,
                 "args": json.dumps(payload.get("args", {})),
             }
-        except (json.JSONDecodeError, KeyError):
-            pass
+        except (json.JSONDecodeError, KeyError) as e:
+            log.debug("_parse_text_tool_calls: skipping malformed block: %s — %s", m.group(1).strip()[:200], e)
     return calls
 
 
@@ -1017,8 +1017,8 @@ def _save_assistant_message(session_id, content):
     try:
         from app.services.pii_guard import get_pii_guard
         content = get_pii_guard().restore(content)
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("_save_assistant_message: PII restoration failed, raw tokens will be stored in DB: %s", e)
 
     msg = Message(
         id=str(uuid.uuid4()),

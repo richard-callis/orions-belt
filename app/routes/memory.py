@@ -2,7 +2,11 @@
 Orion's Belt — Memory Routes
 REST API for persistent cross-session memory management.
 """
+import logging
+
 from flask import Blueprint, jsonify, render_template, request
+
+log = logging.getLogger("orions-belt")
 
 from app import db
 from app.models.memory import Memory
@@ -87,8 +91,8 @@ def update_memory(memory_id):
             new_embedding = svc._embed(mem.content)
             if new_embedding:
                 mem.embedding = new_embedding
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("memory update: embedding re-generation failed, search recall may degrade: %s", e)
     if "pinned" in body:
         mem.pinned = bool(body["pinned"])
     if "memory_type" in body:

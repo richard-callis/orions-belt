@@ -437,8 +437,8 @@ def plan_stream():
                             if content:
                                 full_text += content
                                 yield _sse("text", {"content": content})
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            log.debug("plan stream: chunk parse failure (common at stream boundaries): %s", e)
 
             # Non-streaming fallback for APIs that don't stream (e.g. Gemini Enterprise)
             if not full_text:

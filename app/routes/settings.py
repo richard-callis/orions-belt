@@ -96,8 +96,8 @@ def _get_providers():
         parsed = json.loads(row.value)
         if isinstance(parsed, list):
             return parsed
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("_get_providers: JSON parse failed, falling back to defaults — value=%r, error=%s", (row.value or "")[:200], e)
     return _DEFAULT_PROVIDERS
 
 
@@ -159,8 +159,8 @@ def list_settings():
                         "value_type": r.value_type,
                     })
                     continue
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("list_settings: JSON parse failed for llm.providers, returning raw value: %s", e)
         result.append({"key": r.key, "value": r.value, "value_type": r.value_type})
     return jsonify(result)
 
