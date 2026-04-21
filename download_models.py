@@ -17,6 +17,7 @@ Subsequent runs skip already-cached models.
 """
 import os
 import sys
+import time
 from pathlib import Path
 
 # ── SSL bypass — must be set BEFORE any HuggingFace import ───────────────────
@@ -26,8 +27,6 @@ SSL_BYPASS = (
 )
 if SSL_BYPASS:
     os.environ["HF_HUB_DISABLE_SSL_VERIFICATION"] = "1"
-    # huggingface_hub uses requests; this env var makes it skip cert checks.
-    # REQUESTS_CA_BUNDLE="" alone is not enough — the HF flag is the right hook.
     print("  SSL bypass enabled — certificate verification disabled for HF Hub.")
 
 # ── Cache dirs — set before any HuggingFace import ───────────────────────────
@@ -39,27 +38,27 @@ os.environ["TRANSFORMERS_CACHE"] = str(BASE_DIR / "models" / "hub")
 MODELS = [
     {
         "id": "urchade/gliner_medium-v2.1",
-        "type": "gliner",
+        "size_mb": 400,
         "size": "~400MB",
         "purpose": "Zero-shot NER — detects PII/PHI regardless of capitalization or format",
     },
     {
         "id": "cross-encoder/nli-deberta-v3-small",
-        "type": "pipeline",
-        "task": "zero-shot-classification",
+        "size_mb": 180,
         "size": "~180MB",
         "purpose": "PHI judge — classifies ambiguous text as PII/PHI/safe",
     },
     {
         "id": "sentence-transformers/all-MiniLM-L6-v2",
-        "type": "sentence_transformer",
+        "size_mb": 90,
         "size": "~90MB",
         "purpose": "Memory embeddings — similarity recall across sessions",
     },
 ]
 
-# ── Download helpers ──────────────────────────────────────────────────────────
+TOTAL_MB = sum(m["size_mb"] for m in MODELS)
 
+# ── Error hint templates ──────────────────────────────────────────────────────
 _DLL_HINT = (
     "DLL initialization failed — the C++ runtime or onnxruntime is broken.\n"
     "  Fix 1: install Microsoft Visual C++ 2015-2022 Redistributable (x64)\n"
@@ -88,55 +87,82 @@ def _is_ssl_error(exc: Exception) -> bool:
     return any(k in msg for k in ("ssl", "certificate", "certificate_verify_failed"))
 
 
-def download_gliner(model_id: str):
-    from gliner import GLiNER
-    model = GLiNER.from_pretrained(model_id)
-    del model
+# ── Cache check ───────────────────────────────────────────────────────────────
+
+def _is_cached(model_id: str) -> bool:
+    """Return True if the model snapshot is already in the local HF cache."""
+    folder = "models--" + model_id.replace("/", "--")
+    # A completed snapshot has a refs/main pointer written by snapshot_download
+    marker = BASE_DIR / "models" / "hub" / folder / "refs" / "main"
+    return marker.exists()
 
 
-def download_pipeline(model_id: str, task: str):
-    from transformers import pipeline
-    pipe = pipeline(task, model=model_id)
-    del pipe
+# ── Formatting helpers ────────────────────────────────────────────────────────
+
+def _fmt_duration(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    m, s = divmod(int(seconds), 60)
+    return f"{m}m {s:02d}s"
 
 
-def download_sentence_transformer(model_id: str):
-    from sentence_transformers import SentenceTransformer
-    model = SentenceTransformer(model_id)
-    del model
+def _fmt_eta(elapsed_s: float, done_mb: float, remaining_mb: float) -> str:
+    if elapsed_s <= 0 or done_mb <= 0:
+        return "—"
+    speed = done_mb / elapsed_s          # MB/s
+    eta_s = remaining_mb / speed
+    return f"~{_fmt_duration(eta_s)}"
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    from huggingface_hub import snapshot_download
+
     print()
     print("  Orion's Belt — Model Downloader")
     print("  ================================")
-    print(f"  Cache: {BASE_DIR / 'models'}")
+    print(f"  Cache : {BASE_DIR / 'models'}")
+    print(f"  Total : {TOTAL_MB} MB across {len(MODELS)} models")
     if SSL_BYPASS:
-        print("  Mode:  SSL bypass active")
+        print("  Mode  : SSL bypass active")
     print()
 
     total = len(MODELS)
     failed = []
     had_ssl_error = False
+    session_start = time.monotonic()
+    completed_mb = 0.0
 
     for i, m in enumerate(MODELS, 1):
-        print(f"  [{i}/{total}] {m['id']}")
-        print(f"         {m['purpose']}")
-        print(f"         Size: {m['size']}", end=" ", flush=True)
+        print(f"  ─── [{i}/{total}] {m['id']} ({m['size']}) ───")
+        print(f"       {m['purpose']}")
+
+        if _is_cached(m["id"]):
+            print("       ✓  Already cached — skipping\n")
+            completed_mb += m["size_mb"]
+            continue
+
+        model_start = time.monotonic()
+        print("       Downloading...\n", flush=True)
 
         try:
-            if m["type"] == "gliner":
-                download_gliner(m["id"])
-            elif m["type"] == "sentence_transformer":
-                download_sentence_transformer(m["id"])
-            else:
-                download_pipeline(m["id"], m["task"])
-            print("✓ done")
+            snapshot_download(m["id"])   # tqdm per-file bars shown here
+
+            elapsed = time.monotonic() - model_start
+            completed_mb += m["size_mb"]
+
+            remaining_mb = sum(m2["size_mb"] for m2 in MODELS[i:])
+            total_elapsed = time.monotonic() - session_start
+            eta = _fmt_eta(total_elapsed, completed_mb, remaining_mb)
+
+            status = f"  ✓  Done in {_fmt_duration(elapsed)}"
+            if remaining_mb > 0:
+                status += f"   |   remaining: {eta}"
+            print(f"\n{status}\n")
 
         except Exception as e:
-            print(f"✗ FAILED: {e}")
+            print(f"\n  ✗  FAILED: {e}\n")
 
             if _is_dll_error(e):
                 for line in _DLL_HINT.splitlines():
@@ -148,11 +174,13 @@ def main():
                         print(f"  {line}")
 
             failed.append(m["id"])
+            print()
 
-        print()
+    total_elapsed = time.monotonic() - session_start
+    print(f"  {'─' * 46}")
 
     if failed:
-        print(f"  WARNING: {len(failed)} model(s) failed:")
+        print(f"  WARNING: {len(failed)} model(s) failed to download:")
         for f in failed:
             print(f"    - {f}")
         print("  The app will attempt to download them on first use.")
@@ -163,7 +191,8 @@ def main():
         print()
         sys.exit(1)
     else:
-        print("  All models downloaded successfully.")
+        cached_count = sum(1 for m in MODELS if _is_cached(m["id"]))
+        print(f"  All {total} models ready  ({_fmt_duration(total_elapsed)} total)")
         print("  Run: python launch.py")
         print()
 
