@@ -103,7 +103,7 @@ static void print_setup_banner() {
            C_RESET "\n");
 
     printf("  This only runs once. Estimated time: "
-           C_YELLOW "10\xe2\x80\x9340 min" C_RESET
+           C_YELLOW "10\xe2\x80\x94" "40 min" C_RESET
            "  (network speed varies)\n\n");
 
     printf("  Steps:\n");
