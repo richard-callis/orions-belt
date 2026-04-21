@@ -17,7 +17,7 @@ def create_app(config_object="config.Config"):
     # Register models (ensures they're known to SQLAlchemy)
     with app.app_context():
         from app.models import (  # noqa: F401
-            chat, work, agent, connector, mcp_tool, memory, logs, pii, settings
+            chat, work, agent, connector, mcp_tool, memory, logs, pii, settings, nova
         )
 
     # Register blueprints
@@ -30,6 +30,7 @@ def create_app(config_object="config.Config"):
     from app.routes.logs import bp as logs_bp
     from app.routes.settings import bp as settings_bp
     from app.routes.first_run import bp as first_run_bp
+    from app.routes.nova import bp as nova_bp
 
     app.register_blueprint(chat_bp)
     app.register_blueprint(work_bp)
@@ -40,6 +41,7 @@ def create_app(config_object="config.Config"):
     app.register_blueprint(logs_bp)
     app.register_blueprint(settings_bp)
     app.register_blueprint(first_run_bp)
+    app.register_blueprint(nova_bp)
 
     # Root redirect
     from flask import redirect, url_for

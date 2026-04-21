@@ -49,6 +49,7 @@ def run_flask():
         _migrate_llm_settings(app)
         _migrate_schema(app)
         _seed_builtin_tools(app)
+        _seed_novas(app)
         _ensure_projects_dir(app)
     app.run(host="127.0.0.1", port=PORT, debug=False, use_reloader=False, threaded=True)
 
@@ -228,6 +229,639 @@ def _seed_builtin_tools(app):
             # Patch tools created by the old schema-less seeder
             existing.input_schema = tool_def["input_schema"]
             existing.description = tool_def["description"]
+    db.session.commit()
+
+
+def _seed_novas(app):
+    """Seed bundled Nova templates. Safe to call on every startup — skips existing names."""
+    import json
+    from app.models.nova import Nova
+    from app import db
+
+    bundled = [
+        # ── Agent Novas ───────────────────────────────────────────────────────
+        dict(
+            name="code_reviewer",
+            display_name="Code Reviewer",
+            nova_type="agent",
+            category="DevOps",
+            description="Reviews code for bugs, security issues, style problems, and test coverage gaps. Reads files and produces structured feedback.",
+            tags=["code", "review", "quality", "security"],
+            config={
+                "system_prompt": (
+                    "You are a senior code reviewer. When given a file or set of files:\n"
+                    "1. Check for bugs, logic errors, and edge cases\n"
+                    "2. Flag security vulnerabilities (injection, hardcoded secrets, unsafe deserialization)\n"
+                    "3. Note style and readability issues\n"
+                    "4. Identify missing test coverage\n"
+                    "5. Suggest concrete improvements with code examples\n\n"
+                    "Be specific — cite file names and line numbers. Prioritize critical issues first."
+                ),
+                "allowed_tools": ["read_file", "list_directory", "search_files"],
+                "max_iterations": 15,
+            },
+        ),
+        dict(
+            name="sql_analyst",
+            display_name="SQL Analyst",
+            nova_type="agent",
+            category="Data",
+            description="Queries SQL databases, interprets results, and produces clear summaries and insights. Works with any configured SQL connector.",
+            tags=["sql", "database", "analysis", "reporting"],
+            config={
+                "system_prompt": (
+                    "You are a SQL data analyst. Your job is to:\n"
+                    "1. Understand the user's data question\n"
+                    "2. Write safe, read-only SELECT queries to answer it\n"
+                    "3. Interpret the results clearly — use plain language, not raw data dumps\n"
+                    "4. Highlight anomalies, trends, or surprising findings\n"
+                    "5. Suggest follow-up queries if the answer raises new questions\n\n"
+                    "Always use LIMIT clauses. Never run UPDATE, DELETE, INSERT, or DDL statements."
+                ),
+                "allowed_tools": ["run_sql_query", "call_connector"],
+                "max_iterations": 20,
+            },
+        ),
+        dict(
+            name="documentation_writer",
+            display_name="Documentation Writer",
+            nova_type="agent",
+            category="Writing",
+            description="Reads source code and existing docs, then writes or updates clear technical documentation in Markdown.",
+            tags=["docs", "writing", "markdown", "technical"],
+            config={
+                "system_prompt": (
+                    "You are a technical writer specializing in developer documentation.\n"
+                    "When asked to document something:\n"
+                    "1. Read the relevant source files to understand the actual implementation\n"
+                    "2. Write clear, concise Markdown documentation\n"
+                    "3. Include: purpose, parameters/fields, return values, usage examples\n"
+                    "4. Keep it accurate — document what the code does, not what it should do\n"
+                    "5. Use consistent headings, code fences, and formatting\n\n"
+                    "Prefer updating existing docs over creating new files when possible."
+                ),
+                "allowed_tools": ["read_file", "list_directory", "search_files", "create_file", "modify_file"],
+                "max_iterations": 20,
+            },
+        ),
+        dict(
+            name="bug_triager",
+            display_name="Bug Triager",
+            nova_type="agent",
+            category="DevOps",
+            description="Analyzes bug reports, reproduces issues by reading code, identifies root causes, and suggests fixes.",
+            tags=["bugs", "debugging", "triage", "root-cause"],
+            config={
+                "system_prompt": (
+                    "You are a debugging specialist. When given a bug report:\n"
+                    "1. Read the relevant source files to understand the code path\n"
+                    "2. Identify the root cause — be specific about what line or logic is wrong\n"
+                    "3. Assess severity (critical/high/medium/low) and explain why\n"
+                    "4. Propose a fix with a code snippet\n"
+                    "5. Identify any related code that might have the same bug\n\n"
+                    "Always read the code before forming a hypothesis. Do not guess."
+                ),
+                "allowed_tools": ["read_file", "list_directory", "search_files"],
+                "max_iterations": 20,
+            },
+        ),
+        dict(
+            name="research_assistant",
+            display_name="Research Assistant",
+            nova_type="agent",
+            category="Research",
+            description="Gathers information from files, databases, and notes to compile thorough research reports.",
+            tags=["research", "synthesis", "reports", "analysis"],
+            config={
+                "system_prompt": (
+                    "You are a research assistant. When given a research question:\n"
+                    "1. Identify what information sources are available (files, databases, notes)\n"
+                    "2. Systematically gather relevant information\n"
+                    "3. Synthesize findings into a structured report\n"
+                    "4. Cite your sources (file names, query results)\n"
+                    "5. Distinguish between confirmed facts and inferences\n"
+                    "6. End with a clear summary and any open questions\n\n"
+                    "Be thorough but concise. Quality over quantity."
+                ),
+                "allowed_tools": ["read_file", "list_directory", "search_files", "run_sql_query"],
+                "max_iterations": 25,
+            },
+        ),
+        dict(
+            name="project_planner",
+            display_name="Project Planner",
+            nova_type="agent",
+            category="Productivity",
+            description="Breaks down a high-level goal into a structured plan with epics, features, and actionable tasks.",
+            tags=["planning", "project management", "breakdown", "tasks"],
+            config={
+                "system_prompt": (
+                    "You are a project planning specialist. When given a goal or feature request:\n"
+                    "1. Clarify scope and success criteria\n"
+                    "2. Identify major work streams (Epics)\n"
+                    "3. Break each Epic into Features (functional chunks)\n"
+                    "4. Break each Feature into concrete Tasks with clear acceptance criteria\n"
+                    "5. Flag dependencies and risks\n"
+                    "6. Estimate relative complexity (S/M/L/XL)\n\n"
+                    "Output a clean hierarchical plan. Be realistic about scope — "
+                    "prefer smaller, shippable increments over big-bang deliveries."
+                ),
+                "allowed_tools": ["read_file", "search_files"],
+                "max_iterations": 15,
+            },
+        ),
+
+        # ── Connector Novas ───────────────────────────────────────────────────
+        dict(
+            name="connector_github",
+            display_name="GitHub REST API",
+            nova_type="connector",
+            category="DevTools",
+            description="GitHub REST API v3. Access repos, issues, pull requests, commits, and actions. Requires a Personal Access Token.",
+            tags=["github", "git", "repos", "issues", "ci"],
+            config={
+                "connector_type": "rest_api",
+                "base_url": "https://api.github.com",
+                "auth_type": "bearer",
+                "headers": {
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+                "notes": "Set Authorization header to 'Bearer <your_pat>'",
+            },
+        ),
+        dict(
+            name="connector_jira",
+            display_name="Jira REST API",
+            nova_type="connector",
+            category="DevTools",
+            description="Jira Cloud REST API v3. Query issues, sprints, projects, and boards. Requires Atlassian API token.",
+            tags=["jira", "issues", "sprints", "atlassian", "project management"],
+            config={
+                "connector_type": "rest_api",
+                "base_url": "https://your-domain.atlassian.net/rest/api/3",
+                "auth_type": "basic",
+                "headers": {
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                },
+                "notes": "Replace 'your-domain' with your Atlassian domain. Use email:api_token as Basic auth.",
+            },
+        ),
+        dict(
+            name="connector_linear",
+            display_name="Linear API",
+            nova_type="connector",
+            category="DevTools",
+            description="Linear GraphQL API. Access issues, cycles, projects, and teams. Requires a Linear API key.",
+            tags=["linear", "issues", "project management", "graphql"],
+            config={
+                "connector_type": "rest_api",
+                "base_url": "https://api.linear.app/graphql",
+                "auth_type": "bearer",
+                "headers": {
+                    "Content-Type": "application/json",
+                },
+                "notes": "All requests are POST with a 'query' JSON body. Set Authorization to your Linear API key.",
+            },
+        ),
+        dict(
+            name="connector_slack",
+            display_name="Slack Web API",
+            nova_type="connector",
+            category="Messaging",
+            description="Slack Web API. Post messages, read channels, search messages. Requires a Slack Bot Token (xoxb-).",
+            tags=["slack", "messaging", "notifications", "chat"],
+            config={
+                "connector_type": "rest_api",
+                "base_url": "https://slack.com/api",
+                "auth_type": "bearer",
+                "headers": {
+                    "Content-Type": "application/json; charset=utf-8",
+                },
+                "notes": "Set Authorization to 'Bearer xoxb-your-bot-token'",
+            },
+        ),
+        dict(
+            name="connector_postgres",
+            display_name="PostgreSQL Database",
+            nova_type="connector",
+            category="Database",
+            description="PostgreSQL database connector template. Update the connection string with your host, port, database, and credentials.",
+            tags=["postgresql", "sql", "database", "postgres"],
+            config={
+                "connector_type": "sql_server",
+                "driver": "postgresql",
+                "host": "localhost",
+                "port": 5432,
+                "database": "your_database",
+                "notes": "Fill in host, port, database, username, and password in the connector config.",
+            },
+        ),
+
+        # ── MCP Tool Novas ────────────────────────────────────────────────────
+        dict(
+            name="mcp_web_fetcher",
+            display_name="Web Fetcher",
+            nova_type="mcp_tool",
+            category="Web",
+            description="Adds a fetch_url tool — agents can retrieve content from any HTTP/HTTPS URL and return the response body.",
+            tags=["web", "http", "scraping", "fetch"],
+            config={
+                "tools": [
+                    {
+                        "name": "fetch_url",
+                        "description": "Fetch the content of an HTTP/HTTPS URL and return the response body as text",
+                        "tier": 1,
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "url": {"type": "string", "description": "The full URL to fetch (http or https)"},
+                                "method": {"type": "string", "description": "HTTP method: GET (default) or POST"},
+                                "headers": {"type": "object", "description": "Optional HTTP headers as key-value pairs"},
+                                "body": {"type": "string", "description": "Optional request body (for POST)"},
+                                "timeout": {"type": "integer", "description": "Timeout in seconds (default 30)"},
+                            },
+                            "required": ["url"],
+                        },
+                    },
+                ],
+            },
+        ),
+        dict(
+            name="mcp_python_runner",
+            display_name="Python Runner",
+            nova_type="mcp_tool",
+            category="Code Execution",
+            description="Adds a run_python tool — agents can execute Python snippets in a sandboxed subprocess and capture stdout/stderr.",
+            tags=["python", "code execution", "scripting", "compute"],
+            config={
+                "tools": [
+                    {
+                        "name": "run_python",
+                        "description": "Execute a Python code snippet in a subprocess and return stdout and stderr",
+                        "tier": 2,
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "code": {"type": "string", "description": "Python source code to execute"},
+                                "timeout": {"type": "integer", "description": "Execution timeout in seconds (default 30, max 120)"},
+                            },
+                            "required": ["code"],
+                        },
+                    },
+                ],
+            },
+        ),
+        dict(
+            name="mcp_shell_runner",
+            display_name="Shell Command Runner",
+            nova_type="mcp_tool",
+            category="Shell",
+            description="Adds a run_shell tool — agents can execute shell commands. Tier 3: requires explicit human approval before each run.",
+            tags=["shell", "bash", "cli", "commands", "system"],
+            config={
+                "tools": [
+                    {
+                        "name": "run_shell",
+                        "description": "Execute a shell command and return stdout and stderr. Requires explicit approval (Tier 3).",
+                        "tier": 3,
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "command": {"type": "string", "description": "The shell command to execute"},
+                                "working_dir": {"type": "string", "description": "Working directory for the command (default: project root)"},
+                                "timeout": {"type": "integer", "description": "Timeout in seconds (default 60, max 300)"},
+                            },
+                            "required": ["command"],
+                        },
+                    },
+                ],
+            },
+        ),
+        dict(
+            name="mcp_http_request",
+            display_name="HTTP Request",
+            nova_type="mcp_tool",
+            category="Web",
+            description="Adds an http_request tool — full-featured HTTP client with header control, body, and response inspection.",
+            tags=["http", "api", "rest", "request"],
+            config={
+                "tools": [
+                    {
+                        "name": "http_request",
+                        "description": "Make an HTTP request with full control over method, headers, and body",
+                        "tier": 1,
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "url":     {"type": "string",  "description": "Full URL"},
+                                "method":  {"type": "string",  "description": "HTTP method: GET, POST, PUT, PATCH, DELETE"},
+                                "headers": {"type": "object",  "description": "Request headers"},
+                                "body":    {"type": "string",  "description": "Request body (JSON string or plain text)"},
+                                "timeout": {"type": "integer", "description": "Timeout seconds (default 30)"},
+                            },
+                            "required": ["url", "method"],
+                        },
+                    },
+                ],
+            },
+        ),
+
+        # ── Workflow Novas ────────────────────────────────────────────────────
+        dict(
+            name="workflow_software_release",
+            display_name="Software Feature Release",
+            nova_type="workflow",
+            category="Software",
+            description="End-to-end workflow for shipping a new software feature: design, build, test, and release.",
+            tags=["release", "software", "feature", "deployment"],
+            config={
+                "epics": [
+                    {
+                        "title": "Design & Planning",
+                        "description": "Define scope, design the solution, and plan the work",
+                        "features": [
+                            {
+                                "title": "Requirements & Acceptance Criteria",
+                                "tasks": [
+                                    {"title": "Document feature requirements"},
+                                    {"title": "Define acceptance criteria"},
+                                    {"title": "Get stakeholder sign-off"},
+                                ],
+                            },
+                            {
+                                "title": "Technical Design",
+                                "tasks": [
+                                    {"title": "Design data model changes"},
+                                    {"title": "Design API contract"},
+                                    {"title": "Review design with team"},
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "title": "Build",
+                        "description": "Implement the feature",
+                        "features": [
+                            {
+                                "title": "Backend Implementation",
+                                "tasks": [
+                                    {"title": "Implement data model / migrations"},
+                                    {"title": "Implement business logic"},
+                                    {"title": "Implement API endpoints"},
+                                ],
+                            },
+                            {
+                                "title": "Frontend Implementation",
+                                "tasks": [
+                                    {"title": "Build UI components"},
+                                    {"title": "Wire up API integration"},
+                                    {"title": "Handle error and loading states"},
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "title": "Quality Assurance",
+                        "description": "Test, review, and harden the implementation",
+                        "features": [
+                            {
+                                "title": "Testing",
+                                "tasks": [
+                                    {"title": "Write unit tests"},
+                                    {"title": "Write integration tests"},
+                                    {"title": "Manual QA against acceptance criteria"},
+                                ],
+                            },
+                            {
+                                "title": "Code Review & Hardening",
+                                "tasks": [
+                                    {"title": "Code review"},
+                                    {"title": "Address review feedback"},
+                                    {"title": "Security review"},
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "title": "Release",
+                        "description": "Ship and monitor the feature",
+                        "features": [
+                            {
+                                "title": "Deployment",
+                                "tasks": [
+                                    {"title": "Deploy to staging"},
+                                    {"title": "Smoke test staging"},
+                                    {"title": "Deploy to production"},
+                                ],
+                            },
+                            {
+                                "title": "Post-Release",
+                                "tasks": [
+                                    {"title": "Monitor error rates and performance"},
+                                    {"title": "Update documentation"},
+                                    {"title": "Close feature ticket and notify stakeholders"},
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
+        ),
+        dict(
+            name="workflow_bug_fix",
+            display_name="Bug Fix Sprint",
+            nova_type="workflow",
+            category="Software",
+            description="Structured workflow for triaging, fixing, and verifying a bug from report to production.",
+            tags=["bug", "fix", "debugging", "hotfix"],
+            config={
+                "epics": [
+                    {
+                        "title": "Triage & Reproduce",
+                        "features": [
+                            {
+                                "title": "Bug Investigation",
+                                "tasks": [
+                                    {"title": "Reproduce the bug locally"},
+                                    {"title": "Identify root cause"},
+                                    {"title": "Assess severity and impact"},
+                                    {"title": "Document reproduction steps"},
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "title": "Fix",
+                        "features": [
+                            {
+                                "title": "Implementation",
+                                "tasks": [
+                                    {"title": "Implement the fix"},
+                                    {"title": "Write regression test"},
+                                    {"title": "Check for related bugs in same code path"},
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "title": "Verify & Ship",
+                        "features": [
+                            {
+                                "title": "Verification",
+                                "tasks": [
+                                    {"title": "Verify fix resolves the bug"},
+                                    {"title": "Run full test suite"},
+                                    {"title": "Code review"},
+                                    {"title": "Deploy and confirm in production"},
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
+        ),
+        dict(
+            name="workflow_data_analysis",
+            display_name="Data Analysis Project",
+            nova_type="workflow",
+            category="Data",
+            description="End-to-end data analysis workflow: collect, clean, analyse, and report findings.",
+            tags=["data", "analysis", "reporting", "insights"],
+            config={
+                "epics": [
+                    {
+                        "title": "Data Collection",
+                        "features": [
+                            {
+                                "title": "Source Identification & Access",
+                                "tasks": [
+                                    {"title": "Identify data sources"},
+                                    {"title": "Set up connector / access credentials"},
+                                    {"title": "Perform initial data pull"},
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "title": "Data Preparation",
+                        "features": [
+                            {
+                                "title": "Cleaning & Validation",
+                                "tasks": [
+                                    {"title": "Profile data — check nulls, types, ranges"},
+                                    {"title": "Handle missing values"},
+                                    {"title": "Remove duplicates and outliers"},
+                                    {"title": "Validate against business rules"},
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "title": "Analysis",
+                        "features": [
+                            {
+                                "title": "Exploratory Analysis",
+                                "tasks": [
+                                    {"title": "Compute summary statistics"},
+                                    {"title": "Identify trends and patterns"},
+                                    {"title": "Test hypotheses"},
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "title": "Reporting",
+                        "features": [
+                            {
+                                "title": "Output & Communication",
+                                "tasks": [
+                                    {"title": "Write findings summary"},
+                                    {"title": "Create visualizations or tables"},
+                                    {"title": "Document methodology"},
+                                    {"title": "Present findings to stakeholders"},
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
+        ),
+        dict(
+            name="workflow_api_integration",
+            display_name="API Integration Project",
+            nova_type="workflow",
+            category="Software",
+            description="Workflow for integrating an external API: explore, build, test, and document the integration.",
+            tags=["api", "integration", "connector", "REST"],
+            config={
+                "epics": [
+                    {
+                        "title": "Exploration",
+                        "features": [
+                            {
+                                "title": "API Discovery",
+                                "tasks": [
+                                    {"title": "Review API documentation"},
+                                    {"title": "Obtain API credentials / keys"},
+                                    {"title": "Test API manually with sample calls"},
+                                    {"title": "Identify rate limits and constraints"},
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "title": "Build Integration",
+                        "features": [
+                            {
+                                "title": "Connector Setup",
+                                "tasks": [
+                                    {"title": "Configure connector in Orion's Belt"},
+                                    {"title": "Implement authentication flow"},
+                                    {"title": "Build required API calls"},
+                                ],
+                            },
+                            {
+                                "title": "Business Logic",
+                                "tasks": [
+                                    {"title": "Map API data to internal models"},
+                                    {"title": "Handle errors and retries"},
+                                    {"title": "Implement data transformation"},
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "title": "Testing & Documentation",
+                        "features": [
+                            {
+                                "title": "Validation",
+                                "tasks": [
+                                    {"title": "Write integration tests"},
+                                    {"title": "Test error handling and edge cases"},
+                                    {"title": "Document connector usage"},
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
+        ),
+    ]
+
+    for nova_def in bundled:
+        tags   = nova_def.pop("tags",   [])
+        config = nova_def.pop("config", {})
+        existing = Nova.query.filter_by(name=nova_def["name"]).first()
+        if not existing:
+            db.session.add(Nova(
+                id=str(__import__("uuid").uuid4()),
+                source="bundled",
+                tags=json.dumps(tags),
+                config=json.dumps(config),
+                **nova_def,
+            ))
     db.session.commit()
 
 
