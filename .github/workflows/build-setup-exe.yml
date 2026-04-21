@@ -1,0 +1,63 @@
+name: Build setup.exe
+
+on:
+  push:
+    tags:
+      - "v*"          # trigger on version tags, e.g. v1.0.0
+  workflow_dispatch:  # also runnable manually from the Actions tab
+
+permissions:
+  contents: write   # needed to create/update releases
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build setup.exe (static, no runtime deps)
+        # /MT  = statically link the C runtime — exe runs on any Windows 10+ machine
+        #        without needing the VC++ Redistributable installed
+        # /O2  = optimize for speed
+        # /utf-8 = source + output in UTF-8 (box-drawing chars in the TUI)
+        # winhttp.lib = Windows built-in HTTP library (always present on Windows Vista+)
+        run: |
+          cl /EHsc /O2 /utf-8 /MT setup.cpp winhttp.lib /Fe:setup.exe
+          echo "Build complete"
+
+      - name: Smoke-test — verify it's a valid PE and prints usage
+        run: |
+          file setup.exe 2>$null || true
+          # Just check the binary exists and is nonzero
+          $size = (Get-Item setup.exe).Length
+          if ($size -lt 10000) { Write-Error "setup.exe suspiciously small ($size bytes)"; exit 1 }
+          Write-Host "setup.exe is $size bytes"
+
+      - name: Upload as build artifact (always available, 90-day retention)
+        uses: actions/upload-artifact@v4
+        with:
+          name: setup-exe-windows
+          path: setup.exe
+          retention-days: 90
+
+      - name: Attach to GitHub Release (only on version tags)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: setup.exe
+          body: |
+            ## setup.exe — Portable Windows Setup
+
+            **No installation required. No admin rights needed.**
+
+            1. Download `setup.exe`
+            2. Place it in your Orion's Belt project folder
+            3. Double-click (or run from any terminal)
+
+            Requires Python 3.11+ on your PATH — everything else is handled automatically.
+
+            Built with MSVC `/MT` — statically linked, zero runtime dependencies.

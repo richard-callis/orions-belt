@@ -136,10 +136,26 @@ def start_run(agent_id):
         return jsonify({"error": str(e)}), 500
 
 
+@bp.route("/api/tasks", methods=["GET"])
+def list_tasks_flat():
+    """Flat task search for the agent run picker."""
+    from app.models.work import Task
+    q_str = (request.args.get("q") or "").strip()
+    q = Task.query
+    if q_str:
+        q = q.filter(Task.title.ilike(f"%{q_str}%"))
+    tasks = q.order_by(Task.created_at.desc()).limit(30).all()
+    return jsonify([{"id": t.id, "title": t.title, "status": t.status} for t in tasks])
+
+
 @bp.route("/api/agent-runs", methods=["GET"])
 def list_runs():
-    """List recent agent runs."""
-    runs = AgentRun.query.order_by(AgentRun.created_at.desc()).limit(50).all()
+    """List recent agent runs, optionally filtered by agent_id."""
+    agent_id = request.args.get("agent_id")
+    q = AgentRun.query
+    if agent_id:
+        q = q.filter_by(agent_id=agent_id)
+    runs = q.order_by(AgentRun.created_at.desc()).limit(50).all()
     return jsonify([r.to_dict() for r in runs])
 
 
@@ -150,11 +166,14 @@ def get_run(run_id):
     if not run:
         return jsonify({"error": "Run not found"}), 404
     data = run.to_dict()
+    from app.models.mcp_tool import MCPTool
+    tool_tier = {t.name: t.tier for t in MCPTool.query.all()}
     data["steps"] = [
         {
             "id": s.id,
             "step_number": s.step_number,
             "tool_name": s.tool_name,
+            "tier": tool_tier.get(s.tool_name),
             "tool_input": json.loads(s.tool_input) if s.tool_input else None,
             "tool_output": s.tool_output,
             "required_approval": s.required_approval,

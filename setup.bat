@@ -11,6 +11,16 @@ setlocal EnableDelayedExpansion
 echo.
 echo  * * *  Orion's Belt Setup  * * *
 echo.
+echo  Estimated total time: 10-40 min  (network speed varies)
+echo.
+echo  Steps:
+echo    [1/6] Create virtual environment      ~10s
+echo    [2/6] Upgrade pip                     ~15s
+echo    [3/6] Install core dependencies       ~1-3 min
+echo    [4/6] Install NLP stack               ~5-15 min
+echo    [5/6] Install desktop launcher        ~30s
+echo    [6/6] Download AI models  ~670MB      ~5-30 min
+echo.
 
 REM -- SSL bypass state (0 = not yet approved, 1 = approved for this session) --
 set SSL_BYPASS=0
@@ -24,7 +34,7 @@ if errorlevel 1 (
 )
 
 REM -- Create venv --------------------------------------------------------------
-echo [1/5] Creating virtual environment...
+echo [1/6] Creating virtual environment...
 if exist .venv (
     echo   .venv already exists -- reusing it.
     echo   To start fresh, run in PowerShell:
@@ -44,14 +54,14 @@ call .venv\Scripts\activate.bat
 REM -- Upgrade pip --------------------------------------------------------------
 REM Must use "python -m pip" to upgrade pip itself on Windows -- calling
 REM "pip install --upgrade pip" is blocked because pip can't overwrite itself.
-echo [2/5] Upgrading pip...
+echo [2/6] Upgrading pip...
 python -m pip install --upgrade pip --quiet
 if errorlevel 1 (
     echo   WARNING: pip upgrade failed -- continuing with existing version.
 )
 
 REM -- Core dependencies --------------------------------------------------------
-echo [3/5] Installing core dependencies...
+echo [3/6] Installing core dependencies...
 call :pip_install -r requirements.txt
 if errorlevel 1 (
     echo ERROR: Core install failed.
@@ -60,7 +70,7 @@ if errorlevel 1 (
 )
 
 REM -- ML / NLP stack -----------------------------------------------------------
-echo [4/5] Installing NLP stack ^(PyTorch, transformers, presidio, spaCy^)...
+echo [4/6] Installing NLP stack ^(PyTorch, transformers, presidio, spaCy^)...
 echo   NOTE: Models download on first launch, cached in models\ ^(~670MB^).
 echo.
 
@@ -102,7 +112,7 @@ if errorlevel 1 (
 )
 
 REM -- Desktop launcher + optional Windows connectors --------------------------
-echo [5/5] Installing desktop launcher and connectors...
+echo [5/6] Installing desktop launcher and connectors...
 call :pip_install pywebview pystray --quiet
 call :pip_install pywin32 pyodbc --quiet
 if errorlevel 1 (
@@ -117,7 +127,7 @@ REM -- Download HuggingFace models ---------------------------------------------
 REM Pass SSL_BYPASS so the downloader can disable cert verification when the
 REM user has already approved the bypass for this session.
 echo.
-echo [+] Downloading AI models ^(~670MB^)...
+echo [6/6] Downloading AI models ^(~670MB^)...
 echo     gliner_medium-v2.1        ~400MB   PII detection ^(zero-shot NER^)
 echo     nli-deberta-v3-small      ~180MB   PHI judge
 echo     all-MiniLM-L6-v2          ~90MB    Memory embeddings

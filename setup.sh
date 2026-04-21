@@ -7,6 +7,16 @@ set -euo pipefail
 echo ""
 echo " * * *  Orion's Belt Setup  * * *"
 echo ""
+echo " Estimated total time: 10-40 min  (network speed varies)"
+echo ""
+echo " Steps:"
+echo "   [1/6] Create virtual environment      ~10s"
+echo "   [2/6] Upgrade pip                     ~15s"
+echo "   [3/6] Install core dependencies       ~1-3 min"
+echo "   [4/6] Install NLP stack               ~5-15 min"
+echo "   [5/6] Download spaCy model            ~30s"
+echo "   [6/6] Download AI models  ~670MB      ~5-30 min"
+echo ""
 
 # ── SSL-aware pip helper ──────────────────────────────────────────────────────
 # Usage: pip_install [extra pip flags] -- <packages>
@@ -82,7 +92,7 @@ pip_install() {
 # ─────────────────────────────────────────────────────────────────────────────
 
 # 1. Virtual environment
-echo "[1/5] Creating virtual environment..."
+echo "[1/6] Creating virtual environment..."
 if [ -d ".venv" ]; then
     echo "  .venv already exists — reusing it."
     echo "  To start fresh: rm -rf .venv && bash setup.sh"
@@ -92,11 +102,11 @@ fi
 source .venv/bin/activate
 
 # 2. Upgrade pip itself
-echo "[2/5] Upgrading pip..."
+echo "[2/6] Upgrading pip..."
 pip_install --upgrade pip --quiet
 
 # 3. Core dependencies
-echo "[3/5] Installing core dependencies..."
+echo "[3/6] Installing core dependencies..."
 pip_install -r requirements.txt
 
 # PyTorch — CPU-only build (no CUDA runtime needed, avoids DLL issues on Windows via WSL)
@@ -118,18 +128,27 @@ pip_install gliner --quiet || {
 pip_install protobuf --quiet || true
 
 # 4. spaCy language model
-# en_core_web_sm is what pii_guard/__init__.py loads (Presidio Stage 1).
-# The helper script handles SSL bypass for corporate proxy environments.
-echo "[4/5] Downloading spaCy model..."
+echo "[5/6] Downloading spaCy model..."
 export SSL_BYPASS
 python install_spacy_model.py || {
     echo "  WARNING: spaCy model download failed."
     echo "  Retry later: source .venv/bin/activate && python -m spacy download en_core_web_sm"
 }
 
-# 5. Local directories
-echo "[5/5] Creating local directories..."
+# 5. Local directories (no echo — part of step 5 flow)
 mkdir -p logs models
+
+# 6. Download AI models
+echo "[6/6] Downloading AI models (~670MB)..."
+echo "    gliner_medium-v2.1        ~400MB   PII detection"
+echo "    nli-deberta-v3-small      ~180MB   PHI judge"
+echo "    all-MiniLM-L6-v2          ~90MB    Memory embeddings"
+echo ""
+export SSL_BYPASS
+python download_models.py
+if [ $? -ne 0 ]; then
+    echo "  WARNING: Some models failed. Retry: python download_models.py"
+fi
 
 echo ""
 echo " =========================================="
