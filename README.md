@@ -182,9 +182,17 @@ Directories must be authorized in Settings before any file operation can proceed
 
 ## Requirements
 
+### Windows — single exe (no installation needed)
+- **~1.5 GB disk space** (models download next to the exe on first launch)
+- **RAM**: 4 GB minimum; 8 GB recommended
+- **Network**: Required for LLM API calls; model download on first run only
+
+No Python, no admin rights, no install step. Download `OrionsBelt.exe` from the [latest release](https://github.com/richard-callis/orions-belt/releases/latest) and run it.
+
+### Linux / macOS — from source
 - **Python 3.11+**
 - **~1.5 GB disk space** for HuggingFace models (downloaded once on first run):
-  - `dslim/bert-base-NER` (~400 MB)
+  - `urchade/gliner_medium-v2.1` (~400 MB)
   - `cross-encoder/nli-deberta-v3-small` (~180 MB)
   - `sentence-transformers/all-MiniLM-L6-v2` (~90 MB)
 - **RAM**: 4 GB minimum; 8 GB recommended (models run on CPU)
@@ -214,7 +222,15 @@ python launch.py
 
 On first launch, the app opens in a native window. Configure your LLM provider in **Settings** before starting a chat.
 
-### Windows
+### Windows — exe (recommended)
+
+1. Download `OrionsBelt.exe` from the [latest release](https://github.com/richard-callis/orions-belt/releases/latest)
+2. Put it anywhere (Desktop, a folder — your choice)
+3. Double-click it
+
+On first launch a setup screen downloads the AI models (~670 MB). After that it opens straight to the app every time. No Python, no install, no admin rights required.
+
+### Windows — from source
 
 ```cmd
 REM Double-click setup.bat OR run in cmd:
