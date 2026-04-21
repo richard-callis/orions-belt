@@ -11,8 +11,12 @@ import logging
 import logging.handlers
 from pathlib import Path
 
-# Ensure the project root is on sys.path regardless of where launch.py is called from
-PROJECT_ROOT = Path(__file__).resolve().parent
+# Resolve project root: exe parent when frozen (PyInstaller), else script parent.
+if getattr(sys, "frozen", False):
+    PROJECT_ROOT = Path(sys.executable).parent
+else:
+    PROJECT_ROOT = Path(__file__).resolve().parent
+
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 os.chdir(PROJECT_ROOT)
@@ -377,13 +381,19 @@ def main():
 
     log.info(f"Flask ready at {URL}")
 
-    # 2. Open native window
+    # 2. Determine start URL — show first-run page if models not yet downloaded
+    from app.routes.first_run import models_ready
+    start_url = URL if models_ready(PROJECT_ROOT) else f"{URL}/first-run"
+    if start_url != URL:
+        log.info("Models not cached — opening first-run setup page")
+
+    # 3. Open native window
     try:
         import webview
 
         window = webview.create_window(
             title="Orion's Belt",
-            url=URL,
+            url=start_url,
             width=1400,
             height=900,
             min_size=(1024, 600),

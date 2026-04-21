@@ -1,8 +1,14 @@
 import os
+import sys
 import secrets
 from pathlib import Path
 
-BASE_DIR = Path(__file__).parent
+# When running as a PyInstaller bundle sys.frozen is True and the exe lives
+# next to the user's data dirs (models/, logs/, etc.).  In dev, __file__ works.
+if getattr(sys, "frozen", False):
+    BASE_DIR = Path(sys.executable).parent
+else:
+    BASE_DIR = Path(__file__).parent
 
 # ── HuggingFace model cache — store inside project/models/ ────
 # Models download once on first use, then served from cache.

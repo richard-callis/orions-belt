@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Orion's Belt — First Run Setup</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: #0f0f0f;
+    color: #e0e0e0;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .card {
+    background: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 12px;
+    padding: 48px 56px;
+    width: 560px;
+    max-width: 95vw;
+  }
+
+  .logo {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 32px;
+  }
+  .star { width: 10px; height: 10px; border-radius: 50%; background: #00A7E1; }
+
+  h1 { font-size: 1.4rem; font-weight: 600; color: #fff; margin-bottom: 6px; }
+  .subtitle { font-size: 0.875rem; color: #888; margin-bottom: 32px; }
+
+  .model-list {
+    list-style: none;
+    margin-bottom: 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .model-list li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.875rem;
+    color: #aaa;
+  }
+  .model-list li .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #2a2a2a;
+    flex-shrink: 0;
+    transition: background 0.3s;
+  }
+  .model-list li.done .dot   { background: #22c55e; }
+  .model-list li.active .dot { background: #00A7E1; animation: pulse 1s infinite; }
+  .model-list li.done   { color: #e0e0e0; }
+  .model-list li.active { color: #e0e0e0; }
+
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  .progress-wrap {
+    background: #111;
+    border-radius: 6px;
+    height: 6px;
+    overflow: hidden;
+    margin-bottom: 10px;
+  }
+  .progress-bar {
+    height: 100%;
+    background: #00A7E1;
+    border-radius: 6px;
+    transition: width 0.4s ease;
+    width: 0%;
+  }
+
+  .status-text {
+    font-size: 0.8rem;
+    color: #666;
+    min-height: 1.2em;
+  }
+
+  .error-box {
+    display: none;
+    margin-top: 20px;
+    padding: 14px;
+    background: #1f0a0a;
+    border: 1px solid #7f1d1d;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    color: #fca5a5;
+    word-break: break-word;
+  }
+
+  .done-msg {
+    display: none;
+    margin-top: 24px;
+    text-align: center;
+    font-size: 0.9rem;
+    color: #22c55e;
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">
+    <div class="star"></div>
+    <div class="star"></div>
+    <div class="star"></div>
+  </div>
+
+  <h1>Downloading AI Models</h1>
+  <p class="subtitle">First-time setup — this happens once. Total: ~670 MB</p>
+
+  <ul class="model-list" id="modelList">
+    {% for m in models %}
+    <li id="model-{{ loop.index0 }}" data-id="{{ m.id }}">
+      <span class="dot"></span>
+      <span>{{ m.label }} <span style="color:#555">{{ m.size }}</span></span>
+    </li>
+    {% endfor %}
+  </ul>
+
+  <div class="progress-wrap">
+    <div class="progress-bar" id="progressBar"></div>
+  </div>
+  <div class="status-text" id="statusText">Starting download…</div>
+
+  <div class="error-box" id="errorBox"></div>
+  <div class="done-msg" id="doneMsg">&#10003; All models ready — launching Orion's Belt…</div>
+</div>
+
+<script>
+(function () {
+  const total = {{ models | length }};
+  let pollTimer = null;
+
+  function setProgress(pct) {
+    document.getElementById('progressBar').style.width = pct + '%';
+  }
+
+  function applyState(state) {
+    const done = state.models_done || [];
+    const activeIdx = state.current_index - 1;  // 0-based
+
+    document.querySelectorAll('#modelList li').forEach((li, i) => {
+      const id = li.dataset.id;
+      li.className = '';
+      if (done.includes(id))        li.className = 'done';
+      else if (i === activeIdx)     li.className = 'active';
+    });
+
+    const pct = total > 0 ? Math.round((done.length / total) * 100) : 0;
+    setProgress(pct);
+
+    if (state.error) {
+      document.getElementById('statusText').textContent = 'Download failed.';
+      document.getElementById('errorBox').style.display = 'block';
+      document.getElementById('errorBox').textContent = state.error;
+      clearInterval(pollTimer);
+      return;
+    }
+
+    if (state.done) {
+      setProgress(100);
+      document.querySelectorAll('#modelList li').forEach(li => li.className = 'done');
+      document.getElementById('statusText').textContent = '';
+      document.getElementById('doneMsg').style.display = 'block';
+      clearInterval(pollTimer);
+      setTimeout(() => { window.location.href = '/'; }, 1500);
+      return;
+    }
+
+    if (state.current_model) {
+      document.getElementById('statusText').textContent =
+        `Downloading ${state.current_model}…`;
+    }
+  }
+
+  async function poll() {
+    try {
+      const r = await fetch('/api/first-run/status');
+      const state = await r.json();
+      applyState(state);
+    } catch (_) {}
+  }
+
+  async function init() {
+    await fetch('/api/first-run/start', { method: 'POST' });
+    pollTimer = setInterval(poll, 500);
+    poll();
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>
