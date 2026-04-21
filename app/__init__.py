@@ -29,6 +29,7 @@ def create_app(config_object="config.Config"):
     from app.routes.memory import bp as memory_bp
     from app.routes.logs import bp as logs_bp
     from app.routes.settings import bp as settings_bp
+    from app.routes.first_run import bp as first_run_bp
 
     app.register_blueprint(chat_bp)
     app.register_blueprint(work_bp)
@@ -38,6 +39,7 @@ def create_app(config_object="config.Config"):
     app.register_blueprint(memory_bp)
     app.register_blueprint(logs_bp)
     app.register_blueprint(settings_bp)
+    app.register_blueprint(first_run_bp)
 
     # Root redirect
     from flask import redirect, url_for

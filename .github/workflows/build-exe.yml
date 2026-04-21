@@ -1,0 +1,72 @@
+name: Build OrionsBelt.exe
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # ── Core dependencies ──────────────────────────────────────────────────
+      - name: Install core requirements
+        run: pip install -r requirements.txt --quiet
+
+      # CPU-only torch — avoids ~2 GB CUDA download in CI
+      - name: Install PyTorch (CPU)
+        run: |
+          pip uninstall torch -y 2>$null || true
+          pip install "torch==2.7.1+cpu" --index-url https://download.pytorch.org/whl/cpu --quiet
+
+      - name: Install GLiNER
+        run: pip install gliner --quiet
+
+      - name: Install protobuf
+        run: pip install protobuf --quiet
+
+      # spaCy model installed as a package so PyInstaller can collect it
+      - name: Install spaCy model
+        run: python -m spacy download en_core_web_sm
+
+      # ── PyInstaller ────────────────────────────────────────────────────────
+      - name: Install PyInstaller
+        run: pip install pyinstaller --quiet
+
+      - name: Build exe
+        run: pyinstaller orions_belt.spec
+
+      - name: Verify exe exists
+        run: |
+          if (!(Test-Path "dist\OrionsBelt.exe")) {
+            Write-Error "OrionsBelt.exe not found in dist\"
+            exit 1
+          }
+          $size = (Get-Item "dist\OrionsBelt.exe").length / 1MB
+          Write-Host "OrionsBelt.exe size: $([math]::Round($size, 1)) MB"
+        shell: pwsh
+
+      # ── Artifacts ─────────────────────────────────────────────────────────
+      - name: Upload artifact (90 days)
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrionsBelt-exe
+          path: dist/OrionsBelt.exe
+          retention-days: 90
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/OrionsBelt.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
