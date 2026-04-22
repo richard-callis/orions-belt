@@ -28,25 +28,40 @@
 {% block content %}
 <div class="flex h-full">
 
-  <!-- ── Session list ─────────────────────────────────────── -->
+  <!-- ── Sidebar: Chats + Chat Rooms ──────────────────────── -->
   <aside class="hidden lg:flex flex-col w-60 border-r border-border-subtle bg-bg-sidebar flex-shrink-0">
-    <div class="px-3 py-2.5 border-b border-border-subtle flex items-center justify-between">
-      <span class="text-xs font-semibold text-text-muted uppercase tracking-wider">Sessions</span>
+
+    <!-- Chats section -->
+    <div class="px-3 py-2.5 border-b border-border-subtle flex items-center justify-between flex-shrink-0">
+      <span class="text-xs font-semibold text-text-muted uppercase tracking-wider">Chats</span>
       <button onclick="loadSessions()" title="Refresh" class="text-text-muted hover:text-accent">
         <i data-lucide="refresh-cw" class="w-3 h-3"></i>
       </button>
     </div>
-
-    <div class="flex-1 overflow-y-auto py-1" id="session-list">
-      <div class="mx-1 my-0.5 px-3 py-2.5 rounded-lg cursor-pointer hover:bg-bg-raised transition-colors group">
+    <div class="overflow-y-auto py-1 flex-shrink-0 border-b border-border-subtle" style="max-height:45%" id="session-list">
+      <div class="mx-1 my-0.5 px-3 py-2.5 rounded-lg transition-colors group">
         <div class="text-sm text-text-muted">No sessions yet</div>
       </div>
     </div>
 
+    <!-- Chat Rooms section -->
+    <div class="px-3 py-2.5 border-b border-border-subtle flex items-center justify-between flex-shrink-0">
+      <span class="text-xs font-semibold text-text-muted uppercase tracking-wider">Chat Rooms</span>
+      <button onclick="openCreateRoomModal()" title="New room" class="text-text-muted hover:text-accent">
+        <i data-lucide="plus" class="w-3 h-3"></i>
+      </button>
+    </div>
+    <div class="flex-1 overflow-y-auto py-1" id="room-list">
+      <div class="mx-1 my-0.5 px-3 py-2.5 text-xs text-text-muted">No rooms yet</div>
+    </div>
+
   </aside>
 
-  <!-- ── Chat area ────────────────────────────────────────── -->
+  <!-- ── Main area (chat or room) ─────────────────────────── -->
   <div class="flex flex-col flex-1 min-w-0">
+
+    <!-- Chat mode -->
+    <div id="chat-mode" class="flex flex-col flex-1 min-w-0">
 
     <!-- Session header bar -->
     <div class="flex items-center justify-between px-4 py-2.5 border-b border-border-subtle bg-bg-sidebar flex-shrink-0">
@@ -153,9 +168,151 @@
         <span class="text-[10px] text-text-muted" id="stream-status"></span>
       </div>
     </div>
-  </div>
+    </div><!-- /chat-mode -->
 
+    <!-- Room mode ─────────────────────────────────────────── -->
+    <div id="room-mode" class="hidden flex-col flex-1 min-w-0">
+
+      <!-- Room header -->
+      <div class="flex items-center gap-3 px-4 py-2.5 border-b border-border-subtle bg-bg-sidebar flex-shrink-0">
+        <button onclick="switchToChat()" class="text-text-muted hover:text-text-primary transition-colors">
+          <i data-lucide="arrow-left" class="w-4 h-4"></i>
+        </button>
+        <div class="flex items-center gap-2 flex-1 min-w-0">
+          <span class="font-medium text-text-primary text-sm truncate" id="room-name">Room</span>
+          <span id="room-type-badge" class="text-[10px] px-2 py-0.5 rounded-full bg-bg-raised text-text-muted flex-shrink-0">General</span>
+        </div>
+        <div class="flex items-center gap-1.5">
+          <button onclick="openAddMemberModal()"
+                  class="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs border border-border-subtle text-text-secondary hover:text-text-primary hover:border-border-visible transition-colors">
+            <i data-lucide="user-plus" class="w-3 h-3"></i>
+            <span>Add Agent</span>
+          </button>
+          <button onclick="deleteCurrentRoom()"
+                  class="p-1.5 rounded-lg text-text-muted hover:text-red-400 hover:bg-red-400/10 transition-colors">
+            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- Members strip -->
+      <div class="flex items-center gap-2 px-4 py-2 border-b border-border-subtle bg-bg-sidebar flex-shrink-0 overflow-x-auto">
+        <span class="text-[10px] text-text-muted uppercase tracking-wider flex-shrink-0">Members:</span>
+        <div class="flex items-center gap-1.5 flex-shrink-0">
+          <!-- You (the human) always in the room -->
+          <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-accent/10 border border-accent/20 text-xs text-accent flex-shrink-0">
+            <i data-lucide="user" class="w-3 h-3"></i>
+            <span>You</span>
+          </div>
+        </div>
+        <div id="room-members-strip" class="flex items-center gap-1.5"></div>
+      </div>
+
+      <!-- Messages -->
+      <div class="flex-1 relative min-h-0">
+        <div id="room-empty-state"
+             class="absolute inset-0 flex flex-col items-center justify-center text-center pointer-events-none z-0">
+          <i data-lucide="message-circle" class="w-10 h-10 text-text-muted opacity-20 mb-3"></i>
+          <p class="text-text-muted text-sm">No messages yet</p>
+          <p class="text-text-muted text-xs opacity-60 mt-1">Start the conversation</p>
+        </div>
+        <div class="absolute inset-0 overflow-y-auto px-4 py-4 space-y-3 z-10" id="room-messages"></div>
+      </div>
+
+      <!-- Room input -->
+      <div class="flex-shrink-0 px-4 py-3 border-t border-border-subtle bg-bg-sidebar">
+        <div class="flex items-end gap-2">
+          <textarea id="room-input"
+                    placeholder="Message the room… (Shift+Enter for new line)"
+                    rows="1"
+                    class="flex-1 resize-none rounded-lg border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted text-sm px-3 py-2.5 focus:outline-none focus:border-accent transition-colors min-h-[40px] max-h-40 overflow-y-auto"></textarea>
+          <button onclick="sendRoomMessage()"
+                  class="p-2.5 rounded-lg bg-accent text-white hover:bg-accent/80 transition-colors flex-shrink-0">
+            <i data-lucide="send" class="w-[18px] h-[18px]"></i>
+          </button>
+        </div>
+      </div>
+
+    </div><!-- /room-mode -->
+
+  </div><!-- /main area -->
+
+</div><!-- /flex h-full -->
+
+<!-- ── Create Room Modal ──────────────────────────────────────────────────── -->
+<div id="create-room-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick="closeCreateRoomModal()"></div>
+  <div class="relative bg-bg-card border border-border-subtle rounded-xl shadow-2xl w-full max-w-md">
+    <div class="flex items-center justify-between px-5 py-4 border-b border-border-subtle">
+      <h2 class="font-semibold text-text-primary text-sm">New Chat Room</h2>
+      <button onclick="closeCreateRoomModal()" class="text-text-muted hover:text-text-primary">
+        <i data-lucide="x" class="w-4 h-4"></i>
+      </button>
+    </div>
+    <div class="p-5 space-y-4">
+      <div>
+        <label class="block text-xs text-text-muted mb-1">Room Name *</label>
+        <input id="new-room-name" type="text" placeholder="e.g. Sprint Planning"
+               class="w-full px-3 py-2 text-sm bg-bg-raised border border-border-subtle rounded-lg text-text-primary focus:outline-none focus:border-accent">
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="block text-xs text-text-muted mb-1">Type</label>
+          <select id="new-room-type"
+                  class="w-full px-3 py-2 text-sm bg-bg-raised border border-border-subtle rounded-lg text-text-primary focus:outline-none focus:border-accent">
+            <option value="general">General</option>
+            <option value="task">Task</option>
+            <option value="planning">Planning</option>
+            <option value="ops">Ops</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs text-text-muted mb-1">Description</label>
+          <input id="new-room-desc" type="text" placeholder="Optional"
+                 class="w-full px-3 py-2 text-sm bg-bg-raised border border-border-subtle rounded-lg text-text-primary focus:outline-none focus:border-accent">
+        </div>
+      </div>
+      <div>
+        <label class="block text-xs text-text-muted mb-1">Add Agents <span class="text-text-muted">(Ctrl/Cmd+click for multiple)</span></label>
+        <select id="room-agent-select" multiple
+                class="w-full px-3 py-2 text-sm bg-bg-raised border border-border-subtle rounded-lg text-text-primary focus:outline-none focus:border-accent h-28">
+        </select>
+      </div>
+    </div>
+    <div class="flex justify-end gap-2 px-5 py-4 border-t border-border-subtle">
+      <button onclick="closeCreateRoomModal()"
+              class="px-4 py-1.5 text-sm rounded-lg border border-border-subtle text-text-secondary hover:text-text-primary">Cancel</button>
+      <button onclick="submitCreateRoom()"
+              class="px-4 py-1.5 text-sm rounded-lg bg-accent text-white font-medium hover:bg-accent/90">Create Room</button>
+    </div>
+  </div>
 </div>
+
+<!-- ── Add Member Modal ───────────────────────────────────────────────────── -->
+<div id="add-member-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick="closeAddMemberModal()"></div>
+  <div class="relative bg-bg-card border border-border-subtle rounded-xl shadow-2xl w-full max-w-sm">
+    <div class="flex items-center justify-between px-5 py-4 border-b border-border-subtle">
+      <h2 class="font-semibold text-text-primary text-sm">Add Agent to Room</h2>
+      <button onclick="closeAddMemberModal()" class="text-text-muted hover:text-text-primary">
+        <i data-lucide="x" class="w-4 h-4"></i>
+      </button>
+    </div>
+    <div class="p-5">
+      <label class="block text-xs text-text-muted mb-2">Select Agent</label>
+      <select id="add-member-agent-select"
+              class="w-full px-3 py-2 text-sm bg-bg-raised border border-border-subtle rounded-lg text-text-primary focus:outline-none focus:border-accent">
+      </select>
+    </div>
+    <div class="flex justify-end gap-2 px-5 py-4 border-t border-border-subtle">
+      <button onclick="closeAddMemberModal()"
+              class="px-4 py-1.5 text-sm rounded-lg border border-border-subtle text-text-secondary hover:text-text-primary">Cancel</button>
+      <button onclick="submitAddMember()"
+              class="px-4 py-1.5 text-sm rounded-lg bg-accent text-white font-medium hover:bg-accent/90">Add to Room</button>
+    </div>
+  </div>
+</div>
+
 {% endblock %}
 
 {% block scripts %}
@@ -974,5 +1131,300 @@ function timeAgo(dateStr) {
 function unlinkContext() {
   document.getElementById('context-chip').classList.add('hidden');
 }
+
+// ── Chat Rooms ────────────────────────────────────────────────────────────────
+
+let currentRoom   = null;
+let viewMode      = 'chat';
+let roomPollTimer = null;
+let lastMsgTime   = null;
+
+const ROOM_COLORS = {
+  general:  { bg: 'bg-text-muted/10',  text: 'text-text-muted',  label: 'General'  },
+  task:     { bg: 'bg-sky-500/10',      text: 'text-sky-400',     label: 'Task'     },
+  planning: { bg: 'bg-violet-500/10',   text: 'text-violet-400',  label: 'Planning' },
+  ops:      { bg: 'bg-orange-500/10',   text: 'text-orange-400',  label: 'Ops'      },
+};
+
+async function loadRooms() {
+  try {
+    const rooms = await fetch('/api/chat-rooms').then(r => r.json());
+    const list = document.getElementById('room-list');
+    list.innerHTML = '';
+    if (!rooms.length) {
+      list.innerHTML = '<div class="mx-1 my-0.5 px-3 py-2.5 text-xs text-text-muted">No rooms yet</div>';
+      return;
+    }
+    rooms.forEach(r => {
+      const meta = ROOM_COLORS[r.room_type] || ROOM_COLORS.general;
+      const isActive = currentRoom && currentRoom.id === r.id;
+      const div = document.createElement('div');
+      div.className = `mx-1 my-0.5 px-3 py-2 rounded-lg cursor-pointer transition-colors group ${
+        isActive ? 'bg-accent/10 border border-accent/20' : 'hover:bg-bg-raised'
+      }`;
+      div.onclick = () => switchToRoom(r.id);
+      div.innerHTML = `
+        <div class="flex items-center gap-2 mb-0.5">
+          <span class="text-sm font-medium truncate flex-1 ${isActive ? 'text-accent' : 'text-text-primary'}">${escHtml(r.name)}</span>
+          <span class="text-[10px] px-1.5 py-0.5 rounded-full flex-shrink-0 ${meta.bg} ${meta.text}">${meta.label}</span>
+        </div>
+        <div class="text-[10px] text-text-muted">${r.member_count} agents · ${r.message_count} msgs</div>`;
+      list.appendChild(div);
+    });
+  } catch (e) { console.error('Failed to load rooms:', e); }
+}
+
+async function switchToRoom(roomId) {
+  stopRoomPoll();
+  if (isStreaming) stopGeneration();
+
+  const room = await fetch(`/api/chat-rooms/${roomId}`).then(r => r.json());
+  currentRoom = room;
+  viewMode = 'room';
+
+  document.getElementById('chat-mode').classList.add('hidden');
+  document.getElementById('chat-mode').classList.remove('flex');
+  document.getElementById('room-mode').classList.remove('hidden');
+  document.getElementById('room-mode').classList.add('flex');
+
+  renderRoomHeader(room);
+  renderRoomMessages(room.messages || []);
+
+  const msgs = room.messages || [];
+  lastMsgTime = msgs.length ? msgs[msgs.length - 1].created_at : null;
+
+  roomPollTimer = setInterval(pollRoomMessages, 3000);
+  loadRooms(); // refresh sidebar highlight
+
+  // Wire room input keyboard shortcut
+  const input = document.getElementById('room-input');
+  input.onkeydown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendRoomMessage(); }
+  };
+  input.oninput = () => {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 160) + 'px';
+  };
+}
+
+function switchToChat() {
+  stopRoomPoll();
+  currentRoom = null;
+  viewMode = 'chat';
+  document.getElementById('room-mode').classList.add('hidden');
+  document.getElementById('room-mode').classList.remove('flex');
+  document.getElementById('chat-mode').classList.remove('hidden');
+  document.getElementById('chat-mode').classList.add('flex');
+  loadRooms();
+}
+
+function stopRoomPoll() {
+  if (roomPollTimer) { clearInterval(roomPollTimer); roomPollTimer = null; }
+}
+
+async function pollRoomMessages() {
+  if (!currentRoom) return;
+  try {
+    const url = lastMsgTime
+      ? `/api/chat-rooms/${currentRoom.id}/messages?after=${encodeURIComponent(lastMsgTime)}`
+      : `/api/chat-rooms/${currentRoom.id}/messages?limit=5`;
+    const newMsgs = await fetch(url).then(r => r.json());
+    if (newMsgs.length) {
+      newMsgs.forEach(m => appendRoomMessage(m));
+      lastMsgTime = newMsgs[newMsgs.length - 1].created_at;
+    }
+  } catch (e) {}
+}
+
+function renderRoomHeader(room) {
+  const meta = ROOM_COLORS[room.room_type] || ROOM_COLORS.general;
+  document.getElementById('room-name').textContent = room.name;
+  const badge = document.getElementById('room-type-badge');
+  badge.textContent = meta.label;
+  badge.className = `text-[10px] px-2 py-0.5 rounded-full font-medium flex-shrink-0 ${meta.bg} ${meta.text}`;
+
+  const strip = document.getElementById('room-members-strip');
+  strip.innerHTML = '';
+  (room.members || []).forEach(m => {
+    const chip = document.createElement('div');
+    chip.className = 'flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-bg-raised border border-border-subtle text-xs text-text-secondary flex-shrink-0 group relative';
+    chip.innerHTML = `
+      <i data-lucide="bot" class="w-3 h-3 text-violet-400"></i>
+      <span>${escHtml(m.agent_name || 'Agent')}</span>
+      ${m.role === 'lead' ? '<i data-lucide="star" class="w-2.5 h-2.5 text-amber-400"></i>' : ''}
+      <button onclick="removeMember('${escHtml(m.agent_id || '')}')"
+              class="hidden group-hover:inline-flex items-center text-text-muted hover:text-red-400 transition-colors ml-0.5"
+              title="Remove">
+        <i data-lucide="x" class="w-2.5 h-2.5"></i>
+      </button>`;
+    strip.appendChild(chip);
+  });
+  lucide.createIcons();
+}
+
+function renderRoomMessages(messages) {
+  const container = document.getElementById('room-messages');
+  container.innerHTML = '';
+  const empty = document.getElementById('room-empty-state');
+  if (!messages.length) { empty.classList.remove('hidden'); return; }
+  empty.classList.add('hidden');
+  messages.forEach(m => appendRoomMessage(m, false));
+  container.scrollTop = container.scrollHeight;
+}
+
+function appendRoomMessage(msg, scroll = true) {
+  const container = document.getElementById('room-messages');
+  document.getElementById('room-empty-state').classList.add('hidden');
+
+  const div = document.createElement('div');
+
+  if (msg.sender_type === 'system') {
+    div.className = 'flex justify-center py-1';
+    div.innerHTML = `<span class="text-[10px] text-text-muted italic px-3 py-0.5 bg-bg-raised rounded-full">${escHtml(msg.content)}</span>`;
+
+  } else if (msg.sender_type === 'human') {
+    div.className = 'flex justify-end';
+    div.innerHTML = `
+      <div class="max-w-[75%] flex flex-col items-end gap-1">
+        <div class="rounded-2xl rounded-br-sm px-4 py-2.5 text-sm bg-accent text-white leading-relaxed">${escHtml(msg.content)}</div>
+        <span class="text-[10px] text-text-muted px-1">${timeAgo(msg.created_at)}</span>
+      </div>`;
+
+  } else if (msg.sender_type === 'agent') {
+    div.className = 'flex justify-start gap-2.5';
+    div.innerHTML = `
+      <div class="w-7 h-7 rounded-full bg-violet-500/20 border border-violet-500/30 flex items-center justify-center flex-shrink-0 mt-1">
+        <i data-lucide="bot" class="w-3.5 h-3.5 text-violet-400"></i>
+      </div>
+      <div class="max-w-[75%] flex flex-col gap-1">
+        <span class="text-[10px] text-violet-400 font-medium px-1">${escHtml(msg.agent_name || 'Agent')}</span>
+        <div class="rounded-2xl rounded-tl-sm px-4 py-2.5 text-sm bg-bg-card border border-border-subtle text-text-primary leading-relaxed">${escHtml(msg.content)}</div>
+        <span class="text-[10px] text-text-muted px-1">${timeAgo(msg.created_at)}</span>
+      </div>`;
+  }
+
+  container.appendChild(div);
+  lucide.createIcons({ nodes: [div] });
+  if (scroll) container.scrollTop = container.scrollHeight;
+}
+
+async function sendRoomMessage() {
+  if (!currentRoom) return;
+  const input = document.getElementById('room-input');
+  const content = input.value.trim();
+  if (!content) return;
+  input.value = '';
+  input.style.height = 'auto';
+
+  try {
+    const res = await fetch(`/api/chat-rooms/${currentRoom.id}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    const msg = await res.json();
+    appendRoomMessage(msg);
+    lastMsgTime = msg.created_at;
+  } catch (e) { console.error('Failed to send room message:', e); }
+}
+
+async function deleteCurrentRoom() {
+  if (!currentRoom || !confirm(`Delete "${currentRoom.name}"? This cannot be undone.`)) return;
+  await fetch(`/api/chat-rooms/${currentRoom.id}`, { method: 'DELETE' });
+  switchToChat();
+  loadRooms();
+}
+
+async function removeMember(agentId) {
+  if (!currentRoom || !agentId) return;
+  await fetch(`/api/chat-rooms/${currentRoom.id}/members/${agentId}`, { method: 'DELETE' });
+  const room = await fetch(`/api/chat-rooms/${currentRoom.id}`).then(r => r.json());
+  currentRoom = room;
+  renderRoomHeader(room);
+}
+
+// ── Create Room Modal ─────────────────────────────────────────────────────────
+
+async function openCreateRoomModal() {
+  try {
+    const agents = await fetch('/agents/api/agents').then(r => r.json());
+    const sel = document.getElementById('room-agent-select');
+    sel.innerHTML = agents.length
+      ? agents.map(a => `<option value="${escHtml(a.id)}">${escHtml(a.name)}</option>`).join('')
+      : '<option disabled>No agents configured yet</option>';
+  } catch (e) {}
+
+  document.getElementById('new-room-name').value = '';
+  document.getElementById('new-room-desc').value = '';
+  document.getElementById('new-room-type').value = 'general';
+  document.getElementById('create-room-modal').classList.remove('hidden');
+}
+
+function closeCreateRoomModal() {
+  document.getElementById('create-room-modal').classList.add('hidden');
+}
+
+async function submitCreateRoom() {
+  const name = document.getElementById('new-room-name').value.trim();
+  if (!name) return;
+
+  const sel = document.getElementById('room-agent-select');
+  const agentIds = [...sel.selectedOptions].map(o => o.value);
+
+  try {
+    const res = await fetch('/api/chat-rooms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        description: document.getElementById('new-room-desc').value.trim(),
+        room_type: document.getElementById('new-room-type').value,
+        agent_ids: agentIds,
+      }),
+    });
+    const room = await res.json();
+    closeCreateRoomModal();
+    await loadRooms();
+    switchToRoom(room.id);
+  } catch (e) { console.error('Failed to create room:', e); }
+}
+
+// ── Add Member Modal ──────────────────────────────────────────────────────────
+
+async function openAddMemberModal() {
+  try {
+    const agents = await fetch('/agents/api/agents').then(r => r.json());
+    const memberIds = new Set((currentRoom?.members || []).map(m => m.agent_id));
+    const available = agents.filter(a => !memberIds.has(a.id));
+    const sel = document.getElementById('add-member-agent-select');
+    sel.innerHTML = available.length
+      ? available.map(a => `<option value="${escHtml(a.id)}">${escHtml(a.name)}</option>`).join('')
+      : '<option disabled>All agents are already members</option>';
+  } catch (e) {}
+  document.getElementById('add-member-modal').classList.remove('hidden');
+}
+
+function closeAddMemberModal() {
+  document.getElementById('add-member-modal').classList.add('hidden');
+}
+
+async function submitAddMember() {
+  const sel = document.getElementById('add-member-agent-select');
+  const agentId = sel.value;
+  if (!agentId || !currentRoom) return;
+
+  await fetch(`/api/chat-rooms/${currentRoom.id}/members`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agent_id: agentId }),
+  });
+  closeAddMemberModal();
+  const room = await fetch(`/api/chat-rooms/${currentRoom.id}`).then(r => r.json());
+  currentRoom = room;
+  renderRoomHeader(room);
+}
+
+// Load rooms on page load alongside sessions
+document.addEventListener('DOMContentLoaded', () => { loadRooms(); });
 </script>
 {% endblock %}
