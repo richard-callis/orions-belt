@@ -5,56 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{% block title %}Orion's Belt{% endblock %} — Orion's Belt</title>
 
-  <!-- Fonts -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-
-  <!-- Tailwind CDN with ORION color system -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          colors: {
-            bg: {
-              page:    '#0f0f0f',
-              sidebar: '#1a1a1a',
-              card:    '#1e1e1e',
-              raised:  '#262626',
-            },
-            border: {
-              subtle:  '#2d2d2d',
-              visible: '#404040',
-            },
-            text: {
-              primary:   '#ffffff',
-              secondary: '#c8c8c8',
-              muted:     '#9ca3af',
-            },
-            status: {
-              healthy: '#0474BA',
-              warning: '#FFA630',
-              error:   '#FF4444',
-              info:    '#0474BA',
-            },
-            accent: '#00A7E1',
-          },
-          fontFamily: {
-            sans: ['Inter', 'system-ui', 'sans-serif'],
-            mono: ['JetBrains Mono', 'Fira Code', 'ui-monospace', 'monospace'],
-          },
-        }
-      }
-    }
-  </script>
+  <!-- Tailwind CSS (self-contained) -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/tailwind.css') }}" />
 
   <!-- HTMX -->
-  <script src="https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js"></script>
+  <script src="{{ url_for('static', filename='js/htmx.min.js') }}"></script>
 
   <!-- Lucide icons -->
-  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+  <script src="{{ url_for('static', filename='js/lucide.min.js') }}"></script>
 
-  <!-- Custom CSS -->
+  <!-- Custom CSS (fonts loaded via tailwind.css @font-face) -->
   <link rel="stylesheet" href="{{ url_for('static', filename='css/custom.css') }}" />
 
   {% block head %}{% endblock %}

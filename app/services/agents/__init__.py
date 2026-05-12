@@ -28,8 +28,6 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-import httpx
-
 log = logging.getLogger("orions-belt.agents")
 
 TIER_WARN = 2     # requires countdown confirmation
@@ -58,7 +56,7 @@ def run_agent(agent_id: str, task_id: str) -> "AgentRun":
     from app.models.work import Task
     from app.models.mcp_tool import MCPTool
     from app.models.settings import Setting
-    from app.services.llm import build_tool_definitions
+    from app.services.llm import build_tool_definitions, retry_with_recovery
     from app.services.mcp.tools import execute_tool, TIER_HARD_STOP as MCP_HARD_STOP
     from config import Config
 
@@ -108,7 +106,7 @@ def _execute_run(run, agent, task):
     from app.models.agent import AgentStep
     from app.models.mcp_tool import MCPTool
     from app.models.settings import Setting
-    from app.services.llm import build_tool_definitions
+    from app.services.llm import build_tool_definitions, retry_with_recovery
     from app.services.mcp.tools import execute_tool
     from config import Config
 
@@ -170,8 +168,8 @@ def _execute_run(run, agent, task):
     for iteration in range(max_iter):
         run.iterations_used = iteration + 1
 
-        # LLM call
-        response_text, tool_calls, tokens_used = _call_llm(
+        # LLM call (with error recovery from harness spec)
+        response_text, tool_calls, tokens_used = retry_with_recovery(
             base_url, api_key, model, messages, tool_defs
         )
         total_tokens += tokens_used
@@ -251,67 +249,6 @@ def _execute_run(run, agent, task):
     db.session.commit()
 
 
-def _call_llm(
-    base_url: str,
-    api_key: str,
-    model: str,
-    messages: list,
-    tool_defs: list,
-) -> tuple[str, list, int]:
-    """Make a synchronous LLM call and return (response_text, tool_calls, tokens).
-
-    Returns:
-        response_text: The assistant's text response (may be empty if tool calls)
-        tool_calls: List of {"id": ..., "name": ..., "args": ...} dicts
-        tokens: Total tokens used
-    """
-    url = f"{base_url.rstrip('/')}/chat/completions"
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-
-    body = {
-        "model": model,
-        "messages": messages,
-        "stream": False,
-    }
-    if tool_defs:
-        body["tools"] = tool_defs
-
-    try:
-        with httpx.Client(timeout=120.0) as client:
-            resp = client.post(url, json=body, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-    except httpx.HTTPStatusError as e:
-        raise RuntimeError(f"LLM API error {e.response.status_code}: {e.response.text[:300]}")
-    except Exception as e:
-        raise RuntimeError(f"LLM call failed: {e}")
-
-    choice = data.get("choices", [{}])[0]
-    msg = choice.get("message", {})
-    response_text = msg.get("content") or ""
-
-    raw_tool_calls = msg.get("tool_calls", [])
-    tool_calls = []
-    for tc in raw_tool_calls:
-        fn = tc.get("function", {})
-        try:
-            args = json.loads(fn.get("arguments", "{}"))
-        except json.JSONDecodeError:
-            args = {}
-        tool_calls.append({
-            "id": tc.get("id", str(uuid.uuid4())),
-            "name": fn.get("name", ""),
-            "args": args,
-        })
-
-    usage = data.get("usage", {})
-    tokens = usage.get("total_tokens", 0)
-
-    return response_text, tool_calls, tokens
-
-
 def approve_step(step_id: str, approved: bool = True) -> bool:
     """Approve or reject a pending Tier 3 agent step.
 
@@ -341,6 +278,11 @@ def approve_step(step_id: str, approved: bool = True) -> bool:
 
     db.session.commit()
     return True
+
+
+# ── Error recovery types — re-exported from llm service ───────────────────────
+
+from app.services.llm import RecoveryError, TransientError, RoleOrderError, ContextTooLargeError
 
 
 def cancel_run(run_id: str) -> bool:

@@ -1,6 +1,11 @@
 """
 Orion's Belt — MCP Tool Execution Service
 Executes tools with tier-based authorization and path safety checks.
+
+Mirrors the harness spec with:
+- Tool result caching (LRU + TTL for read-only tools)
+- Structured error types (for retry logic)
+- Tool availability checks (filtered at prompt-build time)
 """
 import glob as glob_mod
 import json
@@ -10,6 +15,7 @@ import re
 import shutil
 import tempfile
 import time
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +26,35 @@ from app.models.logs import AuditLog
 from app.models.pii import PIIHashEntry
 
 log = logging.getLogger("orions-belt")
+
+
+# ── Structured errors (from harness spec) ─────────────────────────────────────
+
+class ToolErrorCategory(str, Enum):
+    """Structured error categories for tool execution."""
+    NOT_FOUND = "TOOL_NOT_FOUND"
+    SCHEMA_ERROR = "SCHEMA_ERROR"
+    PERMISSION_DENIED = "PERMISSION_DENIED"
+    TIMEOUT = "TIMEOUT"
+    EXECUTION = "EXECUTION_ERROR"
+    RATE_LIMITED = "RATE_LIMITED"
+
+
+class ToolError(Exception):
+    """Structured tool error with category and retry info.
+
+    Tools raise ToolError instead of returning "Error: ...".
+    The caller inspects category and retryable to decide retry vs. fail.
+    """
+    def __init__(self, category: ToolErrorCategory, message: str, retryable: bool = False):
+        self.category = category
+        self.retryable = retryable
+        self.message = message
+        super().__init__(message)
+
+
+# Tier 0 read tools that are cacheable
+CACHEABLE_TOOLS = {"read_file", "list_directory", "search_files", "run_sql_query"}
 
 
 # ── Tier system ───────────────────────────────────────────────────────────────
@@ -109,11 +144,24 @@ async def execute_tool(tool_name: str, args: dict) -> str:
     """Execute a tool by name with the given args.
 
     Returns the result as a string. Used by the LLM service's agentic loop.
+
+    Integrates:
+    - Tool result caching (cacheable read-only tools skip execution on hit)
+    - Structured error handling (ToolError exceptions propagate)
     """
+    # Check tool exists
     tool = MCPTool.query.filter_by(name=tool_name, enabled=True).first()
     if not tool:
         log.warning("mcp.execute: unknown or disabled tool=%r", tool_name)
         return f"Error: unknown tool '{tool_name}'"
+
+    # Check cache for cacheable tools
+    if tool_name in CACHEABLE_TOOLS:
+        from app.services.mcp.cache import get_tool_cache
+        cached = get_tool_cache().get(tool_name, args)
+        if cached is not None:
+            log.info("mcp.cache HIT tool=%s", tool_name)
+            return cached if isinstance(cached, str) else str(cached)
 
     # Route to the appropriate handler
     handlers = {
@@ -137,8 +185,18 @@ async def execute_tool(tool_name: str, args: dict) -> str:
 
     handler = handlers.get(tool_name)
     if not handler:
-        log.warning("mcp.execute: no handler for tool=%r", tool_name)
-        return f"Error: tool '{tool_name}' has no handler"
+        # Fall back to plugin-registered handlers
+        try:
+            from app.services.plugins import get_plugin_manager
+            plugin_handler = get_plugin_manager().get_tool_handler(tool_name)
+            if plugin_handler:
+                handler = plugin_handler
+            else:
+                log.warning("mcp.execute: unknown or disabled tool=%r", tool_name)
+                return f"Error: unknown tool '{tool_name}'"
+        except Exception:
+            log.warning("mcp.execute: unknown or disabled tool=%r", tool_name)
+            return f"Error: unknown tool '{tool_name}'"
 
     # Sanitise args for logging — truncate large values
     args_preview = json.dumps(
@@ -152,6 +210,12 @@ async def execute_tool(tool_name: str, args: dict) -> str:
     try:
         result = await handler(tool_name, args)
         elapsed_ms = int((time.time() - t0) * 1000)
+
+        # Cache successful results for cacheable tools
+        if tool_name in CACHEABLE_TOOLS and not (isinstance(result, str) and result.startswith("Error:")):
+            from app.services.mcp.cache import get_tool_cache
+            get_tool_cache().set(tool_name, args, result)
+
         is_error = isinstance(result, str) and result.startswith("Error:")
         if is_error:
             log.warning("mcp.result tool=%s elapsed=%dms result=%s", tool_name, elapsed_ms, result[:300])
@@ -160,6 +224,12 @@ async def execute_tool(tool_name: str, args: dict) -> str:
             log.info("mcp.result tool=%s elapsed=%dms preview=%s", tool_name, elapsed_ms, preview)
         _log_audit(tool_name, TIER_READ if tool.tier <= TIER_READ else tool.tier, "auto", None, None, result)
         return result
+    except ToolError as e:
+        elapsed_ms = int((time.time() - t0) * 1000)
+        log.warning("mcp.error  tool=%s elapsed=%dms category=%s %s",
+                     tool_name, elapsed_ms, e.category, e.message)
+        _log_audit(tool_name, tool.tier, "auto", None, None, e.message, error=e.message)
+        return f"Error: {e.message}"
     except Exception as e:
         elapsed_ms = int((time.time() - t0) * 1000)
         err_msg = str(e)

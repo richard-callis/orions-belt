@@ -46,6 +46,20 @@ def create_app(config_object="config.Config"):
     app.register_blueprint(nova_bp)
     app.register_blueprint(chat_rooms_bp)
 
+    # ── Plugin system — load extensions at startup ─────────────────────────────
+    try:
+        from app.services.plugins import get_plugin_manager
+        pm = get_plugin_manager()
+        results = pm.load_all()
+        with app.app_context():
+            for r in results:
+                if r["status"] == "loaded":
+                    app.logger.info(f"Plugin loaded: {r['name']}")
+                elif r["status"] == "error":
+                    app.logger.warning(f"Plugin failed: {r['name']} — {r.get('error', 'unknown')}")
+    except Exception as e:
+        app.logger.warning(f"Plugin system error: {e}")
+
     # Root redirect
     from flask import redirect, url_for
 

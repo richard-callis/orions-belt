@@ -31,7 +31,7 @@ from app.models.mcp_tool import MCPTool
 from app.models.logs import LLMLog, AgentLog
 from app.models.settings import Setting
 from config import Config
-from app.services.llm import build_tool_definitions, build_context
+from app.services.llm import build_tool_definitions, build_context, build_context_with_state
 from app.services.mcp.tools import execute_tool
 
 bp = Blueprint("chat", __name__, url_prefix="/chat")
@@ -309,18 +309,33 @@ def messages_endpoint(session_id):
     messages = Message.query.filter_by(session_id=session_id)\
         .order_by(Message.created_at.asc())\
         .all()
-    return jsonify([
-        {
-            "id": m.id,
-            "role": m.role,
-            "content": m.content,
-            "created_at": m.created_at.isoformat() if m.created_at else None,
-            "token_count": m.token_count,
-            "tool_name": m.tool_name,
-            "tool_call_id": m.tool_call_id,
-        }
-        for m in messages
-    ])
+    compactions = ContextCompaction.query.filter_by(session_id=session_id)\
+        .order_by(ContextCompaction.comacted_at.asc())\
+        .all()
+    return jsonify({
+        "messages": [
+            {
+                "id": m.id,
+                "role": m.role,
+                "content": m.content,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+                "token_count": m.token_count,
+                "tool_name": m.tool_name,
+                "tool_call_id": m.tool_call_id,
+            }
+            for m in messages
+        ],
+        "compactions": [
+            {
+                "id": c.id,
+                "messages_compacted": c.messages_compacted,
+                "summary": c.summary,
+                "archived_messages": json.loads(c.archived_messages) if c.archived_messages else [],
+                "timestamp": c.comacted_at.isoformat() if c.comacted_at else None,
+            }
+            for c in compactions
+        ],
+    })
 
 
 # ── SSE Streaming Endpoint ────────────────────────────────────────────────────
@@ -362,9 +377,55 @@ def stream_messages(session_id):
         .all()
     raw_history.reverse()  # chronological order
 
-    # Build context for LLM
+    # Build context for LLM (with compaction state tracking)
     strategy = session.context_strategy or "sliding"
-    history = build_context(raw_history, strategy=strategy)
+    history, compaction_state = build_context_with_state(
+        raw_history, strategy=strategy
+    )
+
+    # If compaction is needed, save a compaction record and add summary to history
+    _compaction_event = None
+    if compaction_state.get("threshold_level") in ("compact", "emergency"):
+        # Gather the messages that were compacted (not in history)
+        all_llm_ids = {m.id for m in raw_history}
+        history_ids = {id(m) for m in raw_history[-history_limit:]}
+        compacted_msgs = [
+            {"id": m.id, "role": m.role, "content": m.content}
+            for m in raw_history
+            if m.id not in compaction_state.get("archived_ids", [])
+            or compaction_state.get("threshold_level") == "emergency"
+        ]
+        # If we can't identify compacted messages precisely, use the archived_ids
+        if compaction_state.get("archived_ids"):
+            compacted_msgs = [
+                {"id": m.id, "role": m.role, "content": m.content}
+                for m in raw_history
+                if m.id in compaction_state["archived_ids"]
+            ]
+            if not compacted_msgs:
+                # Fallback: messages not in the recent window
+                compacted_msgs = [
+                    {"id": m.id, "role": m.role, "content": m.content}
+                    for m in raw_history[:-history_limit]
+                ]
+
+        record = ContextCompaction(
+            session_id=session_id,
+            messages_compacted=compaction_state.get("messages_compacted", len(compacted_msgs)),
+            summary=compaction_state.get("summary_text", "[Context compacted]"),
+            archived_messages=json.dumps(compacted_msgs[:100]),  # Cap archived messages
+        )
+        db.session.add(record)
+        db.session.commit()
+
+        # Package compaction event for SSE stream
+        _compaction_event = {
+            "id": record.id,
+            "messages_compacted": record.messages_compacted,
+            "summary": record.summary,
+            "archived_messages": json.loads(record.archived_messages) if record.archived_messages else [],
+            "timestamp": record.comacted_at.isoformat() if record.comacted_at else _now().isoformat(),
+        }
 
     # LLM configuration — read from active provider, fallback to URL overrides
     import json
@@ -479,6 +540,10 @@ def stream_messages(session_id):
     start = time.time()
 
     def generate():
+        # Emit compaction event first (blue card UI)
+        if _compaction_event:
+            yield _sse_format("compaction", _compaction_event)
+
         # SECURITY: cap max_turns server-side to prevent runaway tool loops.
         # A client or adversarial LLM response cannot exceed MAX_TOOL_TURNS.
         from app.services.mcp.tools import MAX_TOOL_TURNS
@@ -648,6 +713,13 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
                     if resp.status_code != 200:
                         err = resp.read().decode()[:500]
                         log.warning("llm.error status=%d body=%s", resp.status_code, err)
+                        # Retry transient errors (harness FALLBACK recovery)
+                        if resp.status_code in (429, 500, 503) and turn_count < max_turns:
+                            backoff = min(2 ** turn_count, 8)
+                            log.warning("HTTP %d (turn %d), backing off %ds and retrying",
+                                        resp.status_code, turn_count, backoff)
+                            time.sleep(backoff)
+                            continue
                         yield _sse_format("error", {"error": f"API {resp.status_code}: {err}"})
                         llm_log.success = False
                         llm_log.error = err
@@ -855,23 +927,41 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
                         "content": str(result),
                     })
 
-        except httpx.TimeoutException:
+        except httpx.TimeoutException as e:
+            # Transient — retry with backoff (harness FALLBACK recovery)
             llm_log.success = False
             llm_log.error = "Request timed out"
             db.session.commit()
-            yield _sse_format("error", {"error": "Request timed out"})
-            return
-        except httpx.ConnectError as e:
-            llm_log.success = False
-            llm_log.error = f"Connection failed: {e}"
-            db.session.commit()
-            yield _sse_format("error", {"error": f"Connection failed: {e}"})
+            if turn_count < max_turns:
+                log.warning("LLM timeout, backing off and retrying turn %d", turn_count + 1)
+                time.sleep(min(2 ** turn_count, 8))
+                continue
+            yield _sse_format("error", {"error": "Request timed out after retries"})
             return
         except Exception as e:
+            err_str = str(e)
             llm_log.success = False
-            llm_log.error = str(e)
+            llm_log.error = err_str
             db.session.commit()
-            yield _sse_format("error", {"error": str(e)})
+            # Check for recoverable errors (harness FALLBACK recovery)
+            if "role" in err_str.lower() and "tool" in err_str.lower():
+                # Role ordering error — drop tools and retry
+                log.warning("LLM rejected role ordering, dropping tools for turn %d", turn_count + 1)
+                tool_defs = []
+                continue
+            if "too many" in err_str.lower() or "context" in err_str.lower():
+                # Context too large — compact messages and retry
+                non_system = [m for m in messages if m.get("role") != "system"]
+                if len(non_system) > 4:
+                    compact_count = len(non_system) // 2
+                    messages = (
+                        [m for m in messages if m.get("role") == "system"]
+                        + [{"role": "system", "content": "[Previous conversation summarized — context truncated]"}]
+                        + non_system[-compact_count:]
+                    )
+                    log.warning("Context too large, compacting for turn %d", turn_count + 1)
+                    continue
+            yield _sse_format("error", {"error": err_str})
             return
 
     _save_assistant_message(session_id, total_text)
@@ -916,6 +1006,13 @@ def _stream_ollama_gen(base_url, model, system_prompt, history,
                 with client.stream("POST", url, json=body) as resp:
                     if resp.status_code != 200:
                         err = resp.read().decode()[:500]
+                        # Retry transient errors (harness FALLBACK recovery)
+                        if resp.status_code in (429, 500, 503) and turn_count < max_turns:
+                            backoff = min(2 ** turn_count, 8)
+                            log.warning("Ollama HTTP %d (turn %d), backing off %ds and retrying",
+                                        resp.status_code, turn_count, backoff)
+                            time.sleep(backoff)
+                            continue
                         yield _sse_format("error", {"error": f"Ollama {resp.status_code}: {err}"})
                         llm_log.success = False
                         llm_log.error = err
@@ -986,22 +1083,38 @@ def _stream_ollama_gen(base_url, model, system_prompt, history,
                 messages.append({"role": "tool", "content": str(result)})
 
         except httpx.TimeoutException:
+            # Transient — retry with backoff (harness FALLBACK recovery)
             llm_log.success = False
             llm_log.error = "Request timed out"
             db.session.commit()
-            yield _sse_format("error", {"error": "Request timed out"})
-            return
-        except httpx.ConnectError as e:
-            llm_log.success = False
-            llm_log.error = f"Connection failed: {e}"
-            db.session.commit()
-            yield _sse_format("error", {"error": f"Connection failed: {e}"})
+            if turn_count < max_turns:
+                log.warning("LLM timeout (Ollama), backing off and retrying turn %d", turn_count + 1)
+                time.sleep(min(2 ** turn_count, 8))
+                continue
+            yield _sse_format("error", {"error": "Request timed out after retries"})
             return
         except Exception as e:
+            err_str = str(e)
             llm_log.success = False
-            llm_log.error = str(e)
+            llm_log.error = err_str
             db.session.commit()
-            yield _sse_format("error", {"error": str(e)})
+            # Check for recoverable errors (harness FALLBACK recovery)
+            if "role" in err_str.lower() and "tool" in err_str.lower():
+                log.warning("LLM rejected role ordering (Ollama), dropping tools for turn %d", turn_count + 1)
+                tool_defs = []
+                continue
+            if "too many" in err_str.lower() or "context" in err_str.lower():
+                non_system = [m for m in messages if m.get("role") != "system"]
+                if len(non_system) > 4:
+                    compact_count = len(non_system) // 2
+                    messages = (
+                        [m for m in messages if m.get("role") == "system"]
+                        + [{"role": "system", "content": "[Previous conversation summarized — context truncated]"}]
+                        + non_system[-compact_count:]
+                    )
+                    log.warning("Context too large (Ollama), compacting for turn %d", turn_count + 1)
+                    continue
+            yield _sse_format("error", {"error": err_str})
             return
 
     # Persist

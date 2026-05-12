@@ -442,17 +442,74 @@ async function switchSession(id) {
 async function loadMessages(sessionId) {
   try {
     const res = await fetch(`/chat/api/sessions/${sessionId}/messages`);
-    const messages = await res.json();
+    const data = await res.json();
+
+    // Handle both old format (array) and new format (object with messages + compactions)
+    let messages, compactions = [];
+    if (Array.isArray(data)) {
+      messages = data;
+    } else {
+      messages = data.messages || [];
+      compactions = data.compactions || [];
+    }
+
     const msgs = document.getElementById('messages');
     msgs.innerHTML = '';
 
-    if (messages.length === 0) {
+    if (messages.length === 0 && compactions.length === 0) {
       document.getElementById('empty-state').style.display = '';
       return;
     }
     document.getElementById('empty-state').style.display = 'none';
 
     messages.forEach(m => appendMessage(m.role, m.content, m.tool_name, m.tool_call_id));
+
+    // Render compaction cards
+    compactions.forEach(c => {
+      const compDiv = document.createElement('div');
+      compDiv.className = 'flex justify-start fade-in w-full js-compaction-card';
+      compDiv.innerHTML = `
+        <div class="max-w-[85%] w-full space-y-2 items-start flex flex-col">
+          <div class="w-full rounded-lg border border-accent/30 bg-accent/5 text-xs overflow-hidden" data-compaction-id="${escHtml(c.id || '')}">
+            <div class="flex items-center gap-2 px-3 py-1.5 border-b border-accent/20 bg-accent/10">
+              <i data-lucide="brain" class="w-3 h-3 text-accent"></i>
+              <span class="font-mono text-accent">Context compacted</span>
+              <span class="ml-auto px-1.5 py-0.5 rounded text-[10px] border border-accent/30 text-accent">${c.messages_compacted || 0} msgs</span>
+            </div>
+            <div class="px-3 py-2 font-mono text-text-secondary border-b border-accent/10">${escHtml(c.summary || '[Context summarized]')}</div>
+            <button class="compaction-expand w-full text-left px-3 py-1.5 text-[10px] text-accent hover:bg-accent/5 transition-colors font-mono flex items-center gap-1" data-archived="${btoa(unescape(encodeURIComponent(JSON.stringify(c.archived_messages || []))))}">
+              <i data-lucide="chevron-down" class="w-3 h-3"></i> Show original messages
+            </button>
+            <div class="compaction-body hidden px-3 py-2 border-t border-accent/10 font-mono text-text-muted whitespace-pre-wrap max-h-96 overflow-y-auto text-xs"></div>
+          </div>
+        </div>`;
+      msgs.appendChild(compDiv);
+
+      // Handle expand/collapse
+      compDiv.querySelector('.compaction-expand').addEventListener('click', function () {
+        const body = compDiv.querySelector('.compaction-body');
+        const icon = this.querySelector('[data-lucide]');
+        if (body.classList.contains('hidden')) {
+          body.classList.remove('hidden');
+          const archived = JSON.parse(decodeURIComponent(escape(atob(this.dataset.archived))));
+          body.innerHTML = archived.slice(0, 10).map(m =>
+            `<div class="mb-2 ${m.role === 'user' ? 'text-status-healthy' : 'text-text-secondary'}">` +
+            `<span class="font-semibold capitalize">${m.role}:</span> ` +
+            escHtml((m.content || '').substring(0, 500)) +
+            (m.content && m.content.length > 500 ? '…' : '') +
+            `</div>`
+          ).join('') || 'No messages available';
+          icon.setAttribute('data-lucide', 'chevron-up');
+          this.innerHTML = '<i data-lucide="chevron-up" class="w-3 h-3"></i> Hide original messages';
+        } else {
+          body.classList.add('hidden');
+          icon.setAttribute('data-lucide', 'chevron-down');
+          this.innerHTML = '<i data-lucide="chevron-down" class="w-3 h-3"></i> Show original messages';
+        }
+        lucide.createIcons();
+      });
+      lucide.createIcons();
+    });
 
     // Restore token count
     const totalTokens = messages.reduce((sum, m) => sum + (m.token_count || 0), 0);
@@ -829,6 +886,55 @@ async function streamResponse(userPrompt) {
 
         console.log('[SSE]', eventType, dataStr.slice(0, 120));
         switch (eventType) {
+          case 'compaction':
+            // Compaction blue card — mirrors tool call card style
+            toolCallCount++;
+            const compDiv = document.createElement('div');
+            compDiv.className = 'flex justify-start fade-in w-full js-compaction-card';
+            compDiv.innerHTML = `
+              <div class="max-w-[85%] w-full space-y-2 items-start flex flex-col">
+                <div class="w-full rounded-lg border border-accent/30 bg-accent/5 text-xs overflow-hidden" data-compaction-id="${escHtml(data.id || '')}">
+                  <div class="flex items-center gap-2 px-3 py-1.5 border-b border-accent/20 bg-accent/10">
+                    <i data-lucide="brain" class="w-3 h-3 text-accent"></i>
+                    <span class="font-mono text-accent">Context compacted</span>
+                    <span class="ml-auto px-1.5 py-0.5 rounded text-[10px] border border-accent/30 text-accent">${data.messages_compacted || 0} msgs</span>
+                  </div>
+                  <div class="px-3 py-2 font-mono text-text-secondary border-b border-accent/10">${escHtml(data.summary || '[Context summarized]')}</div>
+                  <button class="compaction-expand w-full text-left px-3 py-1.5 text-[10px] text-accent hover:bg-accent/5 transition-colors font-mono flex items-center gap-1" data-archived="${btoa(unescape(encodeURIComponent(JSON.stringify(data.archived_messages || []))))}">
+                    <i data-lucide="chevron-down" class="w-3 h-3"></i> Show original messages
+                  </button>
+                  <div class="compaction-body hidden px-3 py-2 border-t border-accent/10 font-mono text-text-muted whitespace-pre-wrap max-h-96 overflow-y-auto text-xs"></div>
+                </div>
+              </div>`;
+            msgs.appendChild(compDiv);
+            msgs.scrollTop = msgs.scrollHeight;
+            lucide.createIcons();
+
+            // Handle expand/collapse
+            compDiv.querySelector('.compaction-expand').addEventListener('click', function () {
+              const body = compDiv.querySelector('.compaction-body');
+              const icon = this.querySelector('[data-lucide]');
+              if (body.classList.contains('hidden')) {
+                body.classList.remove('hidden');
+                const msgs = JSON.parse(decodeURIComponent(escape(atob(this.dataset.archived))));
+                body.innerHTML = msgs.slice(0, 10).map(m =>
+                  `<div class="mb-2 ${m.role === 'user' ? 'text-status-healthy' : 'text-text-secondary'}">` +
+                  `<span class="font-semibold capitalize">${m.role}:</span> ` +
+                  escHtml((m.content || '').substring(0, 500)) +
+                  (m.content && m.content.length > 500 ? '…' : '') +
+                  `</div>`
+                ).join('') || 'No messages available';
+                icon.setAttribute('data-lucide', 'chevron-up');
+                this.innerHTML = '<i data-lucide="chevron-up" class="w-3 h-3"></i> Hide original messages';
+              } else {
+                body.classList.add('hidden');
+                icon.setAttribute('data-lucide', 'chevron-down');
+                this.innerHTML = '<i data-lucide="chevron-down" class="w-3 h-3"></i> Show original messages';
+              }
+              lucide.createIcons();
+            });
+            break;
+
           case 'text':
             if (data.content) {
               totalText += data.content;
