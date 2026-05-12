@@ -449,7 +449,13 @@ def stream_messages(session_id):
         active_provider = llm_providers[0]
 
     llm_base_url = (active_provider or {}).get("base_url", Config.LLM_BASE_URL)
-    llm_api_key = (active_provider or {}).get("api_key", Config.LLM_API_KEY)
+    raw_key = (active_provider or {}).get("api_key", Config.LLM_API_KEY)
+    # Decrypt if it looks like Fernet ciphertext
+    _plaintext_prefixes = ("sk-", "sk-proj-", "ghp_", "glpat-", "xoxb-", "xoxp-", "AIza", "EA")
+    if raw_key and not raw_key.startswith(_plaintext_prefixes):
+        from app.services.crypto import decrypt_data
+        raw_key = decrypt_data(raw_key) or raw_key
+    llm_api_key = raw_key
     llm_model = (active_provider or {}).get("model", Config.LLM_MODEL)
 
     explicit_model = body.get("model")

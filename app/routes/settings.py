@@ -95,10 +95,70 @@ def _get_providers():
     try:
         parsed = json.loads(row.value)
         if isinstance(parsed, list):
-            return parsed
+            # Decrypt api_key fields (return a copy to avoid mutating DB state)
+            from app.services.crypto import decrypt_data
+            result = []
+            for p in parsed:
+                entry = dict(p)  # shallow copy
+                raw_key = entry.get("api_key", "")
+                if raw_key and not raw_key.startswith("*") and not _looks_plaintext(raw_key):
+                    decrypted = decrypt_data(raw_key)
+                    if decrypted:
+                        entry["api_key"] = decrypted
+                result.append(entry)
+            return result
     except Exception as e:
         log.warning("_get_providers: JSON parse failed, falling back to defaults — value=%r, error=%s", (row.value or "")[:200], e)
     return _DEFAULT_PROVIDERS
+
+
+def _looks_plaintext(key: str) -> bool:
+    """Quick heuristic: real plaintext keys look like 'sk-...', 'ghp_...', etc.
+    Fernet tokens are long base64 strings — those are encrypted."""
+    if not key:
+        return True
+    # Common plaintext key prefixes
+    for prefix in ("sk-", "sk-proj-", "ghp_", "glpat-", "xoxb-", "xoxp-", "AIza", "EA"):
+        if key.startswith(prefix):
+            return True
+    return False
+
+
+def _looks_encrypted(key: str) -> bool:
+    """Return True if key looks like a Fernet-encrypted token."""
+    if not key or len(key) < 66 or "=" not in key:
+        return False
+    return True
+
+
+def _reencrypt_plaintext_keys(providers: list) -> list:
+    """Re-encrypt any plaintext-looking api_keys before saving.
+
+    This handles the case where _get_providers() returned decrypted keys
+    and they need to be re-encrypted before persisting to the database.
+    """
+    from app.services.crypto import decrypt_data, encrypt_data
+
+    plaintext_prefixes = ("sk-", "sk-proj-", "ghp_", "glpat-", "xoxb-", "xoxp-", "AIza", "EA")
+    for p in providers:
+        raw_key = p.get("api_key", "")
+        if not raw_key:
+            continue
+        # Skip masked keys
+        if raw_key.startswith("*"):
+            continue
+        # Re-encrypt if it looks like plaintext or decryption produced something plaintext-looking
+        needs_reencrypt = False
+        if any(raw_key.startswith(pfx) for pfx in plaintext_prefixes):
+            needs_reencrypt = True
+        elif not _looks_encrypted(raw_key):
+            # Try decrypting; if result is plaintext-looking, re-encrypt original
+            decrypted = decrypt_data(raw_key)
+            if decrypted and any(decrypted.startswith(pfx) for pfx in plaintext_prefixes):
+                needs_reencrypt = True
+        if needs_reencrypt:
+            p["api_key"] = encrypt_data(raw_key)
+    return providers
 
 
 def _get_active_provider_id():
@@ -201,6 +261,13 @@ def set_settings_bulk():
 
     for key, value in body.items():
         if key == "llm.providers":
+            # Encrypt api_key fields in the providers list
+            from app.services.crypto import encrypt_data
+            if isinstance(value, list):
+                for p in value:
+                    raw_key = p.get("api_key", "")
+                    if raw_key and not raw_key.startswith("*") and _looks_plaintext(raw_key):
+                        p["api_key"] = encrypt_data(raw_key)
             Setting.set(key, value, value_type="json")
         else:
             Setting.set(key, value, value_type="string")
@@ -309,17 +376,31 @@ def add_llm_provider():
         return jsonify({"error": "Name, Base URL, and Model are required"}), 400
 
     providers = _get_providers()
+    # Encrypt the API key before storing
+    encrypted_key = api_key
+    if encrypted_key and not encrypted_key.startswith("*") and _looks_plaintext(encrypted_key):
+        from app.services.crypto import encrypt_data
+        encrypted_key = encrypt_data(encrypted_key)
     new_provider = {
         "id": str(uuid.uuid4()),
         "name": name,
         "type": provider_type,
         "base_url": base_url,
-        "api_key": api_key,
+        "api_key": encrypted_key,
         "model": model,
     }
     providers.append(new_provider)
     Setting.set("llm.providers", providers, value_type="json")
-    log.info("Provider added: name=%r id=%s key_set=%s", name, new_provider["id"], bool(api_key))
+    log.info("Provider added: name=%r id=%s key_set=%s providers_count=%d", name, new_provider["id"], bool(api_key), len(providers))
+    for p in providers:
+        k = p.get("api_key", "")
+        log.info("  provider: name=%s key_len=%d key_start=%s", p.get("name", "?"), len(k), k[:20] if k else "(none)")
+    # Verify what was stored
+    row = Setting.query.get("llm.providers")
+    stored = json.loads(row.value) if row and row.value else []
+    for p in stored:
+        k = p.get("api_key", "")
+        log.info("  STORED provider: name=%s key_len=%d key_start=%s", p.get("name", "?"), len(k), k[:20] if k else "(none)")
 
     # Auto-select as active if it's the first provider
     if len(providers) == 1:
@@ -347,9 +428,15 @@ def update_llm_provider(provider_id):
     new_key = body.get("api_key", "")
     key_updated = False
     if new_key and not new_key.startswith("*"):
-        providers[idx]["api_key"] = new_key
+        if _looks_plaintext(new_key):
+            from app.services.crypto import encrypt_data
+            providers[idx]["api_key"] = encrypt_data(new_key)
+        else:
+            providers[idx]["api_key"] = new_key
         key_updated = True
 
+    # Re-encrypt any plaintext-looking keys (may have been decrypted by _get_providers)
+    _reencrypt_plaintext_keys(providers)
     Setting.set("llm.providers", providers, value_type="json")
     log.info("Provider updated: id=%s key_updated=%s key_set=%s",
              provider_id, key_updated, bool(providers[idx].get("api_key")))

@@ -5,6 +5,7 @@ Sits in the system tray when minimized (like Discord).
 """
 import sys
 import os
+import atexit
 import threading
 import time
 import logging
@@ -74,6 +75,18 @@ def run_flask():
 
     # Register on-shutdown backup + periodic scheduled backups
     from app.services.backup import register_shutdown_backup, start_periodic_backups
+    from app.services.retention import start_retention_service, stop_retention_service
+    from app.services.db_crypto import set_db_path, enforce_file_permissions
+    from config import Config
+
+    # Set DB path for permission enforcement
+    set_db_path(Path(Config.DATABASE_PATH))
+    enforce_file_permissions()
+
+    # Start data retention service
+    atexit.register(stop_retention_service)
+    start_retention_service(interval_hours=6.0)
+
     register_shutdown_backup()
     start_periodic_backups(interval_minutes=30)
 
@@ -958,7 +971,7 @@ def _ensure_projects_dir(app):
 
 
 def _migrate_llm_settings(app):
-    """Clean up corrupted LLM provider data from earlier buggy saves."""
+    """Clean up corrupted LLM provider data and encrypt plaintext API keys."""
     import json
     from app import db
     from app.models.settings import Setting
@@ -969,13 +982,24 @@ def _migrate_llm_settings(app):
         if row:
             db.session.delete(row)
 
-    # Fix corrupted llm.providers
+    # Fix corrupted llm.providers and encrypt plaintext keys
     row = db.session.get(Setting, "llm.providers")
     if row:
         try:
             providers = json.loads(row.value)
             if not isinstance(providers, list):
                 raise ValueError("not a list")
+            from app.services.crypto import encrypt_data
+
+            plaintext_prefixes = ("sk-", "sk-proj-", "ghp_", "glpat-", "xoxb-", "xoxp-", "AIza", "EA")
+            for p in providers:
+                raw_key = p.get("api_key", "")
+                if raw_key and raw_key.startswith(plaintext_prefixes) and len(raw_key) > 10:
+                    encrypted = encrypt_data(raw_key)
+                    if encrypted:
+                        p["api_key"] = encrypted
+                        print(f"[migrate] encrypted API key for provider: {p.get('name', '?')}")
+            row.value = json.dumps(providers)
         except (json.JSONDecodeError, ValueError):
             print("[migrate] removing corrupted llm.providers")
             db.session.delete(row)

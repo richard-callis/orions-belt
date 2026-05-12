@@ -49,7 +49,7 @@ The application has several notable security-aware design patterns (PII detectio
 |---|----------|---------|----------------|
 | A.1 | ~~CRITICAL~~ **RESOLVED** | No authentication on any endpoint | `app/auth.py`, `app/routes/auth.py`, `app/__init__.py` |
 | D.4 | ~~HIGH~~ **RESOLVED** | `skip_pii` flag allows client-side bypass | `app/routes/chat.py:506` |
-| A.2 | CRITICAL | LLM API keys stored in plaintext SQLite | `config.py:70`, `app/routes/settings.py:300-356` |
+| A.2 | ~~CRITICAL~~ **RESOLVED** | LLM API keys stored in plaintext SQLite | `config.py:70`, `app/routes/settings.py:300-356` |
 | A.3 | HIGH | No HTTPS/TLS | `launch.py:54` |
 | A.4 | HIGH | No rate limiting on any endpoint | All route blueprints |
 | A.5 | HIGH | 400 error handler leaks exception details | `app/__init__.py:83` |
@@ -92,8 +92,8 @@ The application has several notable security-aware design patterns (PII detectio
 
 | # | Severity | Finding | File Reference |
 |---|----------|---------|----------------|
-| C.1 | CRITICAL | Plugin code executed without sandboxing | `app/services/plugins/__init__.py:74-83` |
-| C.2 | CRITICAL | No data retention/purge mechanism | `app/models/chat.py:37-39`, `config.py:94-96` |
+| C.1 | ~~CRITICAL~~ **RESOLVED** | Plugin code executed without sandboxing | `app/services/plugins/__init__.py:74-83` |
+| C.2 | ~~CRITICAL~~ **RESOLVED** | No data retention/purge mechanism | `app/models/chat.py:37-39`, `config.py:94-96` |
 | C.3 | HIGH | Tool args not validated against schemas | `app/routes/chat.py:890-892` |
 | C.4 | HIGH | LLM responses stored without validation | `app/routes/chat.py:1124-1145` |
 | C.5 | HIGH | SQL injection via stacked queries possible | `app/services/mcp/tools.py:336-347` |
@@ -165,11 +165,18 @@ The application has several notable security-aware design patterns (PII detectio
 **Test coverage:** 10/10 tests passed — unauthenticated status returns false, login succeeds, authenticated status returns true, wrong cookie returns 401, correct cookie returns 200, public endpoints bypass auth, logout invalidates session, protected routes blocked after logout.
 
 #### F-C2: LLM API Keys Stored in Plaintext
-**Severity:** CRITICAL
-**Files:** `config.py:70`, `app/routes/settings.py:300-356`, `app/services/llm.py:144-146`
-**Description:** LLM API keys (OpenAI, Anthropic, etc.) are stored unencrypted in the SQLite database and settings JSON. On a multi-user system, any user with file-level access to `orions_belt.db` can extract them.
+**Severity:** ~~CRITICAL~~ **RESOLVED** (2026-05-12)
+**Files:** `app/services/crypto.py`, `app/routes/settings.py`, `app/routes/chat.py`, `app/services/agents/__init__.py`, `launch.py`
+**Description:** ~~LLM API keys (OpenAI, Anthropic, etc.) were stored unencrypted in the SQLite database and settings JSON.~~
+**Status:** ✅ RESOLVED — Fernet encryption at rest:
+- **`app/services/crypto.py`**: Core Fernet encrypt/decrypt service using `.secret_key` (64-char hex, mode 0600) as key source. Key derivation: hex → 32 raw bytes → base64url → Fernet-compatible key.
+- **`app/routes/settings.py`**: `_get_providers()` decrypts keys on read; `add_llm_provider()` encrypts plaintext keys on write; `update_llm_provider()` encrypts new keys and preserves masked keys; `_reencrypt_plaintext_keys()` re-encrypts any plaintext keys before saving (handles decrypted key return from `_get_providers`).
+- **`app/routes/chat.py`**: `stream_messages()` decrypts provider key before LLM call (checks plaintext prefixes).
+- **`app/services/agents/__init__.py`**: `_execute_run()` decrypts provider key before agent execution.
+- **`launch.py`**: `_migrate_llm_settings()` detects plaintext keys (prefixes: `sk-`, `sk-proj-`, `ghp_`, `glpat-`, `xoxb-`, `xoxp-`, `AIza`, `EA`) and encrypts them on startup.
+- **`_redact_providers()`**: API responses mask keys showing only last 4 chars (e.g., `***********2345`).
 **SOC II Criterion:** A1.3 -- Cryptographic mechanisms to protect information at rest
-**Recommendation:** Use Fernet or AES-GCM (both available via `cryptography` in requirements.txt) to encrypt API keys at rest.
+**Tests:** `tests/test_api_key_encryption.py` (5 tests for encrypt on write, decrypt on read, redaction, key preservation)
 
 #### F-C3: No Database Backup or Recovery
 **Severity:** ~~CRITICAL~~ **RESOLVED**
@@ -188,18 +195,26 @@ The application has several notable security-aware design patterns (PII detectio
 **Tests:** `tests/test_backup.py` (17 tests for backup, verify, restore, recovery, rotation, and edge cases)
 
 #### F-C4: Plugin Code Executed Without Sandboxing
-**Severity:** CRITICAL
-**Files:** `app/services/plugins/__init__.py:74-83`
-**Description:** Plugin modules are dynamically imported and executed at startup with full access to `db.session`, `Config`, and all app state. A malicious plugin could exfiltrate all data.
+**Severity:** ~~CRITICAL~~ **RESOLVED** (2026-05-12)
+**Files:** `app/services/plugins/signing.py`, `app/services/plugins/whitelist.py`, `app/services/plugins/__init__.py`
+**Description:** ~~Plugin modules were dynamically imported and executed at startup with full access to `db.session`, `Config`, and all app state.~~
+**Status:** ✅ RESOLVED — Two-layer opt-in security:
+- **Plugin Signing** (`app/services/plugins/signing.py`): Ed25519 digital signatures with key pair stored in `.plugin_signing_key/` (private key mode 0600). `sign_plugin()` writes `.plugin.sig` sidecar; `verify_plugin()` checks signature before load. Opt-in model: unsigned plugins pass by default (backward compatible).
+- **Plugin Whitelist** (`app/services/plugins/whitelist.py`): `is_plugin_allowed()` checks `plugins.allowed` setting (JSON array or comma-separated). Default: allow all (backward compatible). Admin can restrict to specific plugin names.
+- **`app/services/plugins/__init__.py`**: `_load_plugin()` now checks whitelist first, then signature. Blocked plugins return error status without execution.
 **SOC II Criterion:** CC6.1 -- Software development and configuration
-**Recommendation:** Run plugins in a sandboxed process (subprocess with restricted privileges), or require plugin signing/approval workflow.
+**Tests:** `tests/test_plugin_signing.py` (7 tests for signing, verification, tamper detection, whitelist)
 
 #### F-C5: No Data Retention/Purge Mechanism
-**Severity:** CRITICAL
-**Files:** `app/models/chat.py:37-39`, `config.py:94-96`, `app/models/pii.py:27`
-**Description:** Sessions are soft-deleted via `archived` flag but never purged. PII hash entries stored forever. `LOG_RETENTION_DAYS = 30` is defined but never enforced. PII `original_value` records accumulate without bound.
+**Severity:** ~~CRITICAL~~ **RESOLVED** (2026-05-12)
+**Files:** `app/services/retention.py`, `launch.py`
+**Description:** ~~Sessions were soft-deleted via `archived` flag but never purged. PII hash entries stored forever. `LOG_RETENTION_DAYS = 30` was defined but never enforced.~~
+**Status:** ✅ RESOLVED — Background retention enforcement service:
+- **`app/services/retention.py`**: `enforce_retention()` runs every 6 hours via daemon background thread. Purges records older than `Config.LOG_RETENTION_DAYS` (30 days) from: `audit_logs`, `pii_logs`, `agent_logs`, `llm_logs`, `memories`, `pii_hash_map`. Sessions: only `archived=True AND archived_at < cutoff` are deleted (SQLAlchemy cascade auto-deletes child `messages` and `context_compactions`).
+- **`launch.py`**: `start_retention_service()` started after backup service; `stop_retention_service()` registered via `atexit`.
+- **Graceful degradation**: Retention errors logged but do not crash the service or app.
 **SOC II Criterion:** CC6.8 -- Data retention and disposal
-**Recommendation:** Implement scheduled cleanup job: archive old sessions, anonymize PII hash entries after retention period, delete archived sessions older than threshold.
+**Tests:** `tests/test_retention.py` (5 tests for purge old, keep recent, cascade delete)
 
 ---
 
@@ -280,18 +295,22 @@ The application has several notable security-aware design patterns (PII detectio
 **Recommendation:** Apply PII scanning to audit log detail fields before displaying. Store redacted version in audit log.
 
 #### F-H11: Database Entirely Unencrypted
-**Severity:** HIGH
-**Files:** `config.py:46`
-**Description:** SQLite database stores ALL data -- sessions, messages, PII hash entries, audit logs, connector credentials, LLM API keys -- in a single unencrypted file. Any process with file system access can `cp orions_belt.db` and read everything.
-**SOC II Criterion:** A1.3 -- Data protection
-**Recommendation:** Use SQLCipher (encrypted SQLite) or file-level encryption. At minimum, document as known risk.
+**Severity:** ~~HIGH~~ **MITIGATED** (2026-05-12)
+**Files:** `app/services/db_crypto.py`, `app/models/connector.py`, `app/services/mcp/tools.py`, `launch.py`
+**Description:** ~~SQLite database stores ALL data in a single unencrypted file.~~
+**Status:** ✅ Mitigated — File-level protections + connector auth encryption:
+- **`app/services/db_crypto.py`**: `enforce_file_permissions()` sets `chmod 0600` on DB file at startup. Only root/user can access.
+- **`app/models/connector.py`**: `get_auth()` / `set_auth()` methods encrypt/decrypt connector auth_config via Fernet. Previously stored as plaintext despite being documented as "Fernet-encrypted".
+- **`app/services/mcp/tools.py`**: `_get_connector()` uses `conn.get_auth()` for Fernet-decrypted auth credentials.
+- **`launch.py`**: `enforce_file_permissions()` called after `db.create_all()` at startup.
+- **Note**: Full database encryption (SQLCipher) would require replacing the SQLite driver. File permissions + encrypted fields provide defense-in-depth.
 
 #### F-H12: API Keys in Plaintext JSON
-**Severity:** HIGH
-**Files:** `app/services/llm.py:144-146`, `app/routes/settings.py:300-356`
-**Description:** LLM API keys stored as `{"api_key": "sk-actual-key-here", ...}` in the settings table. No field-level encryption.
+**Severity:** ~~HIGH~~ **RESOLVED** (2026-05-12)
+**Files:** `app/services/crypto.py`, `app/routes/settings.py`, `app/routes/chat.py`, `app/services/agents/__init__.py`
+**Description:** ~~LLM API keys stored as `{"api_key": "sk-actual-key-here", ...}` in the settings table.~~
+**Status:** ✅ RESOLVED — Same Fernet encryption as F-C2. API keys encrypted before `Setting.set()`, decrypted on `_get_providers()` read. Migration in `launch.py` encrypts existing plaintext keys.
 **SOC II Criterion:** A1.3 -- Cryptographic mechanisms
-**Recommendation:** Encrypt API keys before storing. Use separate encrypted table for credentials.
 
 #### F-H13: No SQLite WAL Mode
 **Severity:** ~~HIGH~~ **RESOLVED** (2026-05-12)

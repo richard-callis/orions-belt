@@ -34,6 +34,33 @@ class Connector(db.Model):
     # Auth stored encrypted
     auth_config = db.Column(db.Text, nullable=True)  # Fernet-encrypted JSON
 
+    def get_auth(self) -> dict:
+        """Decrypt and return auth_config as a dict.
+
+        Returns empty dict if no auth_config or decryption fails.
+        """
+        import json
+        if not self.auth_config:
+            return {}
+        from app.services.crypto import decrypt_data
+        raw = decrypt_data(self.auth_config)
+        if raw is None:
+            return {}
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+    def set_auth(self, auth: dict) -> None:
+        """Encrypt and store auth_config as a JSON string."""
+        import json
+        if not auth:
+            self.auth_config = None
+            return
+        from app.services.crypto import encrypt_data
+        raw = json.dumps(auth)
+        self.auth_config = encrypt_data(raw)
+
     def to_dict(self, include_auth=False):
         import json
         d = {

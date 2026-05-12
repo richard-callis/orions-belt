@@ -142,7 +142,12 @@ def _execute_run(run, agent, task, session_id: str | None = None):
         active_provider = llm_providers[0]
 
     base_url = (active_provider or {}).get("base_url", Config.LLM_BASE_URL)
-    api_key = (active_provider or {}).get("api_key", Config.LLM_API_KEY)
+    raw_key = (active_provider or {}).get("api_key", Config.LLM_API_KEY)
+    # Decrypt if it looks like Fernet ciphertext (not plaintext prefix, not empty)
+    if raw_key and not raw_key.startswith("sk-") and not raw_key.startswith("sk-proj-") and not raw_key.startswith("ghp_") and not raw_key.startswith("glpat-") and not raw_key.startswith("xoxb-") and not raw_key.startswith("xoxp-") and not raw_key.startswith("AIza") and not raw_key.startswith("EA"):
+        from app.services.crypto import decrypt_data
+        raw_key = decrypt_data(raw_key) or raw_key
+    api_key = raw_key
     model = agent.llm_model_override or (active_provider or {}).get("model", Config.LLM_MODEL)
 
     # Determine available tools

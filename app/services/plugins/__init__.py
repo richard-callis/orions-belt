@@ -66,6 +66,18 @@ class PluginManager:
         plugin_path = os.path.join(extensions_dir, f"{plugin_module}.py")
 
         try:
+            # Check whitelist
+            from app.services.plugins.whitelist import is_plugin_allowed
+            if not is_plugin_allowed(name):
+                return {"name": name, "status": "error", "error": "Plugin not in whitelist"}
+
+            # Check signature (opt-in: unsigned passes, signed must verify)
+            from pathlib import Path
+            from app.services.plugins.signing import verify_plugin
+            plugin_path_obj = Path(plugin_path)
+            if not verify_plugin(plugin_path_obj):
+                return {"name": name, "status": "error", "error": "Plugin signature verification failed"}
+
             # Dynamically import the module
             spec = importlib.util.spec_from_file_location(f"orions_belt.plugin.{name}", plugin_path)
             if spec is None or spec.loader is None:

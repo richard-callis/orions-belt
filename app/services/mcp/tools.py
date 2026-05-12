@@ -600,6 +600,7 @@ def _get_connector(name: str):
         "name": conn.name,
         "type": conn.connector_type,
         "config": json.loads(conn.config or "{}"),
+        "auth": conn.get_auth(),
     }
 
 
