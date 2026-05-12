@@ -283,9 +283,23 @@ function openProjectModal(existing) {
     const name = document.getElementById('m-name').value.trim();
     if (!name) { alert('Name is required'); return; }
     const body = { name, description: document.getElementById('m-desc').value, status: document.getElementById('m-status').value };
-    if (isEdit) await api('PATCH', `/work/api/projects/${existing.id}`, body);
-    else await api('POST', '/work/api/projects', body);
-    closeModal(); await loadProjects();
+    try {
+      let saved;
+      if (isEdit) {
+        saved = await api('PATCH', `/work/api/projects/${existing.id}`, body);
+        const idx = S.projects.findIndex(p => p.id === existing.id);
+        if (idx !== -1) { S.projects[idx] = saved; if (S.project.id === existing.id) S.project = saved; }
+      } else {
+        saved = await api('POST', '/work/api/projects', body);
+        S.projects.unshift(saved);
+      }
+      closeModal();
+      renderProjectList();
+      if (S.project) await selectProject(S.project.id);
+      else await loadProjects();
+    } catch(e) {
+      alert(`Failed to save project: ${e.message}`);
+    }
   });
 }
 
@@ -429,17 +443,58 @@ function openEpicModal(existing) {
     };
     const planEl = document.getElementById('m-plan');
     if (planEl) body.plan = planEl.value;
-    if (isEdit) await api('PATCH', `/work/api/epics/${existing.id}`, body);
-    else await api('POST', `/work/api/projects/${S.project.id}/epics`, body);
-    closeModal(); await loadEpics();
+    try {
+      let saved;
+      if (isEdit) {
+        saved = await api('PATCH', `/work/api/epics/${existing.id}`, body);
+        // Optimistic: update cached epic in place
+        const idx = S.epics.findIndex(e => e.id === existing.id);
+        if (idx !== -1) S.epics[idx] = saved;
+      } else {
+        saved = await api('POST', `/work/api/projects/${S.project.id}/epics`, body);
+        // Optimistic: insert new epic at top of list
+        S.epics.unshift(saved);
+      }
+      closeModal();
+      // Optimistic DOM update — only re-render if the epic list is visible
+      const epicBody = document.querySelector('.epic-body:not(.hidden)');
+      if (!epicBody) {
+        // No body open — full reload needed for stats etc
+        await loadEpics();
+      } else {
+        // Open epic body: update or insert its card
+        if (isEdit) {
+          const card = document.getElementById(`epic-${existing.id}`);
+          if (card) { const newHtml = epicHtml(saved); card.outerHTML = newHtml; lucide.createIcons({ nodes: [card.parentElement] }); }
+        } else {
+          const list = document.getElementById('epic-list');
+          list.innerHTML = epicHtml(saved) + list.innerHTML;
+          lucide.createIcons({ nodes: [list] });
+        }
+        updateStats();
+      }
+    } catch(e) {
+      alert(`Failed to save epic: ${e.message}`);
+    }
   });
 }
 
 async function deleteEpic(epicId) {
   const epic = S.epics.find(e => e.id === epicId);
   if (!confirm(`Delete epic "${epic?.title}"?`)) return;
-  await api('DELETE', `/work/api/epics/${epicId}`);
-  await loadEpics();
+  try {
+    await api('DELETE', `/work/api/epics/${epicId}`);
+    const idx = S.epics.findIndex(e => e.id === epicId);
+    if (idx !== -1) S.epics.splice(idx, 1);
+    // Also clean up any loaded features/tasks for this epic
+    delete S.features[epicId];
+    Object.keys(S.features).forEach(k => {
+      S.features[k] = S.features[k].filter(f => f.epic_id !== epicId);
+    });
+    renderEpics(); updateStats();
+  } catch(e) {
+    alert(`Failed to delete epic: ${e.message}`);
+  }
 }
 
 // ── Features ──────────────────────────────────────────────────────
@@ -565,21 +620,53 @@ function openFeatureModal(existing, epicId) {
     const planEl = document.getElementById('m-plan');
     if (planEl) body.plan = planEl.value;
     const eid = existing?.epic_id || epicId;
-    if (isEdit) await api('PATCH', `/work/api/features/${existing.id}`, body);
-    else await api('POST', `/work/api/epics/${epicId}/features`, body);
-    closeModal();
-    delete S.features[eid];
-    const epicBody = document.getElementById(`epic-body-${eid}`);
-    if (epicBody && !epicBody.classList.contains('hidden')) await loadFeatures(eid);
-    else if (!isEdit) await toggleEpic(eid);
+    try {
+      let saved;
+      if (isEdit) {
+        saved = await api('PATCH', `/work/api/features/${existing.id}`, body);
+        const feat = S.features[eid];
+        if (feat) {
+          const idx = feat.findIndex(f => f.id === existing.id);
+          if (idx !== -1) feat[idx] = saved;
+        }
+      } else {
+        saved = await api('POST', `/work/api/epics/${epicId}/features`, body);
+        S.features[eid] = [...(S.features[eid] || []), saved];
+      }
+      closeModal();
+      if (saved) {
+        const epicBody = document.getElementById(`epic-body-${eid}`);
+        if (epicBody && !epicBody.classList.contains('hidden')) {
+          renderFeatures(eid);
+          updateStats();
+        } else {
+          await toggleEpic(eid);
+        }
+      }
+    } catch(e) {
+      alert(`Failed to save feature: ${e.message}`);
+    }
   });
 }
 
 async function deleteFeature(featureId, epicId) {
   const feat = (S.features[epicId] || []).find(f => f.id === featureId);
   if (!confirm(`Delete feature "${feat?.title}"?`)) return;
-  await api('DELETE', `/work/api/features/${featureId}`);
-  delete S.features[epicId]; await loadFeatures(epicId);
+  try {
+    await api('DELETE', `/work/api/features/${featureId}`);
+    const items = S.features[epicId];
+    if (items) {
+      const idx = items.findIndex(f => f.id === featureId);
+      if (idx !== -1) items.splice(idx, 1);
+    }
+    delete S.tasks[featureId];
+    const epicBody = document.getElementById(`epic-body-${epicId}`);
+    if (epicBody && !epicBody.classList.contains('hidden')) {
+      renderFeatures(epicId); updateStats();
+    }
+  } catch(e) {
+    alert(`Failed to delete feature: ${e.message}`);
+  }
 }
 
 // ── Tasks ─────────────────────────────────────────────────────────
@@ -683,19 +770,51 @@ function openTaskModal(existing, featureId) {
     const planEl = document.getElementById('m-plan');
     if (planEl) body.plan = planEl.value;
     const fid = existing?.feature_id || featureId;
-    if (isEdit) await api('PATCH', `/work/api/tasks/${existing.id}`, body);
-    else await api('POST', `/work/api/features/${fid}/tasks`, body);
-    closeModal();
-    delete S.tasks[fid]; await loadTasks(fid);
+    try {
+      let saved;
+      if (isEdit) {
+        saved = await api('PATCH', `/work/api/tasks/${existing.id}`, body);
+        const tk = S.tasks[fid];
+        if (tk) {
+          const idx = tk.findIndex(t => t.id === existing.id);
+          if (idx !== -1) tk[idx] = saved;
+        }
+      } else {
+        saved = await api('POST', `/work/api/features/${fid}/tasks`, body);
+        S.tasks[fid] = [...(S.tasks[fid] || []), saved];
+      }
+      closeModal();
+      if (saved) {
+        const featBody = document.getElementById(`feat-body-${fid}`);
+        if (featBody && !featBody.classList.contains('hidden')) {
+          renderTasks(fid);
+          updateStats();
+        }
+      }
+    } catch(e) {
+      alert(`Failed to save task: ${e.message}`);
+    }
   });
 }
 
 async function deleteTask(taskId, featureId) {
   const task = (S.tasks[featureId] || []).find(t => t.id === taskId);
   if (!confirm(`Delete task "${task?.title}"?`)) return;
-  await api('DELETE', `/work/api/tasks/${taskId}`);
-  delete S.tasks[featureId]; await loadTasks(featureId);
-  if (S.taskDetail && S.taskDetail.id === taskId) closeTaskPanel();
+  try {
+    await api('DELETE', `/work/api/tasks/${taskId}`);
+    const items = S.tasks[featureId];
+    if (items) {
+      const idx = items.findIndex(t => t.id === taskId);
+      if (idx !== -1) items.splice(idx, 1);
+    }
+    if (S.taskDetail && S.taskDetail.id === taskId) closeTaskPanel();
+    const featBody = document.getElementById(`feat-body-${featureId}`);
+    if (featBody && !featBody.classList.contains('hidden')) {
+      renderTasks(featureId); updateStats();
+    }
+  } catch(e) {
+    alert(`Failed to delete task: ${e.message}`);
+  }
 }
 
 // ── Task panel ────────────────────────────────────────────────────
@@ -763,8 +882,22 @@ async function saveTaskPanel(taskId, featureId) {
     description: document.getElementById('tp-desc').value,
     acceptance_criteria: document.getElementById('tp-ac').value,
   };
-  await api('PATCH', `/work/api/tasks/${taskId}`, body);
-  delete S.tasks[featureId]; await loadTasks(featureId);
+  try {
+    const saved = await api('PATCH', `/work/api/tasks/${taskId}`, body);
+    // Optimistic: update cached task and DOM
+    const tk = S.tasks[featureId];
+    if (tk) {
+      const idx = tk.findIndex(t => t.id === taskId);
+      if (idx !== -1) { tk[idx] = saved; S.taskDetail = saved; }
+    }
+    // Update the row in-place without re-rendering the whole list
+    const row = document.querySelector(`#feature-${featureId} + .feat-body .task-row, .feat-body > div[onclick*="${taskId}"]`);
+    // Simpler approach: just re-render tasks (only visible, small list)
+    renderTasks(featureId);
+    updateStats();
+  } catch(e) {
+    alert(`Failed to save task: ${e.message}`);
+  }
 }
 
 function closeTaskPanel() {
@@ -788,9 +921,13 @@ async function generateFeatures(epicId) {
     await api('POST', `/work/api/ai/generate-features/${epicId}`);
     delete S.features[epicId];
     const epicBody = document.getElementById(`epic-body-${epicId}`);
-    if (epicBody && !epicBody.classList.contains('hidden')) await loadFeatures(epicId);
-    else await toggleEpic(epicId);
+    if (epicBody && !epicBody.classList.contains('hidden')) {
+      await loadFeatures(epicId);
+    } else {
+      await toggleEpic(epicId);
+    }
   } catch(e) {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i data-lucide="sparkles" class="w-3 h-3"></i> Features'; lucide.createIcons(); }
     alert(`Generate features failed: ${e.message}`);
   }
 }
@@ -798,14 +935,19 @@ async function generateFeatures(epicId) {
 // ── Generate Tasks ────────────────────────────────────────────────
 async function generateTasks(featureId, epicId) {
   const btn = document.querySelector(`#feature-${featureId} .generate-tasks-btn`);
+  const btnHtml = btn?.innerHTML || '';
   if (btn) { btn.disabled = true; btn.innerHTML = '<i data-lucide="loader" class="w-2.5 h-2.5 spin-slow inline-block"></i>'; lucide.createIcons(); }
   try {
     await api('POST', `/work/api/ai/generate-tasks/${featureId}`);
     delete S.tasks[featureId];
     const featBody = document.getElementById(`feat-body-${featureId}`);
-    if (featBody && !featBody.classList.contains('hidden')) await loadTasks(featureId);
-    else await toggleFeature(featureId, epicId);
+    if (featBody && !featBody.classList.contains('hidden')) {
+      await loadTasks(featureId);
+    } else {
+      await toggleFeature(featureId, epicId);
+    }
   } catch(e) {
+    if (btn) { btn.disabled = false; lucide.createIcons({ nodes: [btn] }); }
     alert(`Generate tasks failed: ${e.message}`);
   }
 }

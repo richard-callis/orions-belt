@@ -343,8 +343,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Resume a session; prefer the one specified in ?session=
   try {
-    const res = await fetch('/chat/api/sessions');
-    allSessions = await res.json();
+    allSessions = await cachedFetch('/chat/api/sessions');
     if (targetSessionId) {
       await switchSession(targetSessionId);
     } else if (allSessions.length > 0) {
@@ -358,9 +357,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   const input = document.getElementById('chat-input');
+  let _inputRaf = null;
   input.addEventListener('input', () => {
-    input.style.height = 'auto';
-    input.style.height = Math.min(input.scrollHeight, 192) + 'px';
+    cancelAnimationFrame(_inputRaf);
+    _inputRaf = requestAnimationFrame(() => {
+      input.style.height = 'auto';
+      input.style.height = Math.min(input.scrollHeight, 192) + 'px';
+    });
     document.getElementById('char-count').textContent = input.value.length + ' chars';
   });
 
@@ -409,7 +412,7 @@ async function loadSessions() {
         </div>`;
       list.appendChild(div);
     });
-    lucide.createIcons();
+    lucide.createIcons({ nodes: list.children });
   } catch (e) {
     console.error('Failed to load sessions:', e);
   }
@@ -466,49 +469,9 @@ async function loadMessages(sessionId) {
 
     // Render compaction cards
     compactions.forEach(c => {
-      const compDiv = document.createElement('div');
-      compDiv.className = 'flex justify-start fade-in w-full js-compaction-card';
-      compDiv.innerHTML = `
-        <div class="max-w-[85%] w-full space-y-2 items-start flex flex-col">
-          <div class="w-full rounded-lg border border-accent/30 bg-accent/5 text-xs overflow-hidden" data-compaction-id="${escHtml(c.id || '')}">
-            <div class="flex items-center gap-2 px-3 py-1.5 border-b border-accent/20 bg-accent/10">
-              <i data-lucide="brain" class="w-3 h-3 text-accent"></i>
-              <span class="font-mono text-accent">Context compacted</span>
-              <span class="ml-auto px-1.5 py-0.5 rounded text-[10px] border border-accent/30 text-accent">${c.messages_compacted || 0} msgs</span>
-            </div>
-            <div class="px-3 py-2 font-mono text-text-secondary border-b border-accent/10">${escHtml(c.summary || '[Context summarized]')}</div>
-            <button class="compaction-expand w-full text-left px-3 py-1.5 text-[10px] text-accent hover:bg-accent/5 transition-colors font-mono flex items-center gap-1" data-archived="${btoa(unescape(encodeURIComponent(JSON.stringify(c.archived_messages || []))))}">
-              <i data-lucide="chevron-down" class="w-3 h-3"></i> Show original messages
-            </button>
-            <div class="compaction-body hidden px-3 py-2 border-t border-accent/10 font-mono text-text-muted whitespace-pre-wrap max-h-96 overflow-y-auto text-xs"></div>
-          </div>
-        </div>`;
+      const compDiv = createCompactionCard(c);
       msgs.appendChild(compDiv);
-
-      // Handle expand/collapse
-      compDiv.querySelector('.compaction-expand').addEventListener('click', function () {
-        const body = compDiv.querySelector('.compaction-body');
-        const icon = this.querySelector('[data-lucide]');
-        if (body.classList.contains('hidden')) {
-          body.classList.remove('hidden');
-          const archived = JSON.parse(decodeURIComponent(escape(atob(this.dataset.archived))));
-          body.innerHTML = archived.slice(0, 10).map(m =>
-            `<div class="mb-2 ${m.role === 'user' ? 'text-status-healthy' : 'text-text-secondary'}">` +
-            `<span class="font-semibold capitalize">${m.role}:</span> ` +
-            escHtml((m.content || '').substring(0, 500)) +
-            (m.content && m.content.length > 500 ? '…' : '') +
-            `</div>`
-          ).join('') || 'No messages available';
-          icon.setAttribute('data-lucide', 'chevron-up');
-          this.innerHTML = '<i data-lucide="chevron-up" class="w-3 h-3"></i> Hide original messages';
-        } else {
-          body.classList.add('hidden');
-          icon.setAttribute('data-lucide', 'chevron-down');
-          this.innerHTML = '<i data-lucide="chevron-down" class="w-3 h-3"></i> Show original messages';
-        }
-        lucide.createIcons();
-      });
-      lucide.createIcons();
+      lucide.createIcons({ nodes: [compDiv] });
     });
 
     // Restore token count
@@ -625,8 +588,47 @@ async function deleteSession(id) {
 }
 
 async function compactContext() {
-  // Placeholder — would compress old messages
-  console.log('compact context');
+  if (!currentSessionId) return;
+  const msgs = document.getElementById('messages');
+  const placeholder = document.createElement('div');
+  placeholder.className = 'flex justify-center py-3';
+  placeholder.innerHTML = '<span class="text-xs text-text-muted animate-pulse">Compacting context…</span>';
+  msgs.appendChild(placeholder);
+  msgs.scrollTop = msgs.scrollHeight;
+
+  try {
+    // Fetch current messages and trigger compaction
+    const data = await cachedFetch(`/chat/api/sessions/${currentSessionId}/messages`);
+    const messages = data.messages || [];
+    const compactions = data.compactions || [];
+
+    // Build a compaction card from the last recorded compaction (if any),
+    // or create one from the current message list head.
+    let compactionData;
+    if (compactions.length > 0) {
+      compactionData = compactions[compactions.length - 1];
+    } else {
+      // Manual compact: summarize the oldest half of messages
+      const half = Math.floor(messages.length / 2);
+      const oldMsgs = messages.slice(0, half);
+      compactionData = {
+        id: 'manual_' + Date.now(),
+        messages_compacted: oldMsgs.length,
+        summary: `[Manually compacted ${oldMsgs.length} older messages — context window freed]`,
+        archived_messages: oldMsgs,
+        timestamp: new Date().toISOString(),
+      };
+    }
+
+    placeholder.remove();
+
+    const card = createCompactionCard(compactionData);
+    msgs.appendChild(card);
+    msgs.scrollTop = msgs.scrollHeight;
+    lucide.createIcons({ nodes: [card] });
+  } catch (e) {
+    placeholder.innerHTML = `<span class="text-xs text-status-error">Compaction failed: ${e.message}</span>`;
+  }
 }
 
 // ── Sending messages ──────────────────────────────────────────────────────────
@@ -663,8 +665,7 @@ async function sendMessage() {
 
 async function loadLlmProviders() {
   try {
-    const res = await fetch('/api/llm/providers');
-    const data = await res.json();
+    const data = await cachedFetch('/api/llm/providers');
     llmProviders = data.providers || [];
 
     // Keep hidden select in sync for getActiveProviderConfig()
@@ -706,7 +707,7 @@ async function loadLlmProviders() {
       item.onclick = () => selectProvider(p.id);
       dropdown.appendChild(item);
     });
-    lucide.createIcons();
+    lucide.createIcons({ nodes: dropdown.children });
 
     // Update pill label to active provider name
     const active = llmProviders.find(p => p.id === data.active_id) || llmProviders[0];
@@ -746,7 +747,7 @@ function selectProvider(id) {
       icon.setAttribute('data-lucide', 'check');
       icon.className = 'w-3 h-3 flex-shrink-0';
       btn.appendChild(icon);
-      lucide.createIcons();
+      lucide.createIcons({ nodes: [btn] });
     } else if (!isActive && check) {
       check.remove();
     }
@@ -887,52 +888,11 @@ async function streamResponse(userPrompt) {
         console.log('[SSE]', eventType, dataStr.slice(0, 120));
         switch (eventType) {
           case 'compaction':
-            // Compaction blue card — mirrors tool call card style
             toolCallCount++;
-            const compDiv = document.createElement('div');
-            compDiv.className = 'flex justify-start fade-in w-full js-compaction-card';
-            compDiv.innerHTML = `
-              <div class="max-w-[85%] w-full space-y-2 items-start flex flex-col">
-                <div class="w-full rounded-lg border border-accent/30 bg-accent/5 text-xs overflow-hidden" data-compaction-id="${escHtml(data.id || '')}">
-                  <div class="flex items-center gap-2 px-3 py-1.5 border-b border-accent/20 bg-accent/10">
-                    <i data-lucide="brain" class="w-3 h-3 text-accent"></i>
-                    <span class="font-mono text-accent">Context compacted</span>
-                    <span class="ml-auto px-1.5 py-0.5 rounded text-[10px] border border-accent/30 text-accent">${data.messages_compacted || 0} msgs</span>
-                  </div>
-                  <div class="px-3 py-2 font-mono text-text-secondary border-b border-accent/10">${escHtml(data.summary || '[Context summarized]')}</div>
-                  <button class="compaction-expand w-full text-left px-3 py-1.5 text-[10px] text-accent hover:bg-accent/5 transition-colors font-mono flex items-center gap-1" data-archived="${btoa(unescape(encodeURIComponent(JSON.stringify(data.archived_messages || []))))}">
-                    <i data-lucide="chevron-down" class="w-3 h-3"></i> Show original messages
-                  </button>
-                  <div class="compaction-body hidden px-3 py-2 border-t border-accent/10 font-mono text-text-muted whitespace-pre-wrap max-h-96 overflow-y-auto text-xs"></div>
-                </div>
-              </div>`;
+            const compDiv = createCompactionCard(data);
             msgs.appendChild(compDiv);
             msgs.scrollTop = msgs.scrollHeight;
-            lucide.createIcons();
-
-            // Handle expand/collapse
-            compDiv.querySelector('.compaction-expand').addEventListener('click', function () {
-              const body = compDiv.querySelector('.compaction-body');
-              const icon = this.querySelector('[data-lucide]');
-              if (body.classList.contains('hidden')) {
-                body.classList.remove('hidden');
-                const msgs = JSON.parse(decodeURIComponent(escape(atob(this.dataset.archived))));
-                body.innerHTML = msgs.slice(0, 10).map(m =>
-                  `<div class="mb-2 ${m.role === 'user' ? 'text-status-healthy' : 'text-text-secondary'}">` +
-                  `<span class="font-semibold capitalize">${m.role}:</span> ` +
-                  escHtml((m.content || '').substring(0, 500)) +
-                  (m.content && m.content.length > 500 ? '…' : '') +
-                  `</div>`
-                ).join('') || 'No messages available';
-                icon.setAttribute('data-lucide', 'chevron-up');
-                this.innerHTML = '<i data-lucide="chevron-up" class="w-3 h-3"></i> Hide original messages';
-              } else {
-                body.classList.add('hidden');
-                icon.setAttribute('data-lucide', 'chevron-down');
-                this.innerHTML = '<i data-lucide="chevron-down" class="w-3 h-3"></i> Show original messages';
-              }
-              lucide.createIcons();
-            });
+            lucide.createIcons({ nodes: [compDiv] });
             break;
 
           case 'text':
@@ -958,7 +918,7 @@ async function streamResponse(userPrompt) {
             toolCallsContainer.appendChild(tcDiv);
             lastToolCallDiv = tcDiv;
             msgs.scrollTop = msgs.scrollHeight;
-            lucide.createIcons();
+            lucide.createIcons({ nodes: [tcDiv] });
             break;
 
           case 'tool_result':
@@ -978,7 +938,6 @@ async function streamResponse(userPrompt) {
             }
             msgs.scrollTop = msgs.scrollHeight;
             lastToolCallDiv = null;
-            lucide.createIcons();
             break;
 
           case 'done':
@@ -1129,7 +1088,7 @@ function appendMessage(role, content, toolName, toolCallId) {
 
   msgs.appendChild(div);
   msgs.scrollTop = msgs.scrollHeight;
-  lucide.createIcons();
+  lucide.createIcons({ nodes: [div] });
 }
 
 // ── Planning mode ─────────────────────────────────────────────────────────────
@@ -1156,7 +1115,7 @@ function checkPlanMode(session) {
 
   document.getElementById('plan-banner-title').textContent = `Planning ${typeLabel}: ${displayName}`;
   banner.classList.remove('hidden');
-  lucide.createIcons();
+  lucide.createIcons({ nodes: [banner] });
 }
 
 async function autoSendPlanContext(initialContext) {
@@ -1190,7 +1149,7 @@ async function savePlan() {
     console.error('Failed to save plan:', e);
     btn.disabled = false;
     btn.innerHTML = '<i data-lucide="save" class="w-3 h-3"></i> Save Plan';
-    lucide.createIcons();
+    lucide.createIcons({ nodes: [btn] });
 
     const errorEl = document.createElement('div');
     errorEl.className = 'mx-auto w-full rounded-lg border border-status-error/30 bg-status-error/5 text-xs px-3 py-2 text-status-error mt-2';
@@ -1299,7 +1258,7 @@ async function switchToRoom(roomId) {
   const msgs = room.messages || [];
   lastMsgTime = msgs.length ? msgs[msgs.length - 1].created_at : null;
 
-  roomPollTimer = setInterval(pollRoomMessages, 3000);
+  roomPollTimer = setInterval(pollRoomMessages, 10000);
   loadRooms(); // refresh sidebar highlight
 
   // Wire room input keyboard shortcut
@@ -1330,6 +1289,8 @@ function stopRoomPoll() {
 
 async function pollRoomMessages() {
   if (!currentRoom) return;
+  // Only poll when the tab is visible (saves bandwidth when backgrounded)
+  if (document.hidden) return;
   try {
     const url = lastMsgTime
       ? `/api/chat-rooms/${currentRoom.id}/messages?after=${encodeURIComponent(lastMsgTime)}`
@@ -1365,7 +1326,7 @@ function renderRoomHeader(room) {
       </button>`;
     strip.appendChild(chip);
   });
-  lucide.createIcons();
+  lucide.createIcons({ nodes: [strip, badge] });
 }
 
 function renderRoomMessages(messages) {

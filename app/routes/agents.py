@@ -195,7 +195,48 @@ def cancel_run(run_id):
     return jsonify({"success": True})
 
 
-# ── Step Approval ─────────────────────────────────────────────────────────────
+# ── Agent Run Status SSE ──────────────────────────────────────────────────────
+
+@bp.route("/api/agent-runs/<run_id>/stream", methods=["GET"])
+def stream_run_status(run_id):
+    """SSE stream for agent run status updates.
+
+    Emits JSON events whenever the run's status changes:
+    {"status": "running"}
+    {"status": "completed"}
+    """
+    from flask import Response, stream_with_context
+
+    def generate():
+        import time
+        run = AgentRun.query.get(run_id)
+        if not run:
+            yield f'data: {{"error":"not found"}}\n\n'
+            return
+        prev_status = run.status
+
+        while True:
+            db.session.expire_all()
+            run = AgentRun.query.get(run_id)
+            if not run:
+                yield f'data: {{"error":"gone"}}\n\n'
+                break
+            if run.status != prev_status:
+                prev_status = run.status
+                yield f'data: {{"status":"{run.status}"}}\n\n'
+                # Terminal states — stop streaming
+                if run.status in ("completed", "failed", "cancelled"):
+                    break
+            time.sleep(1)  # Check every second
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )# ── Step Approval ─────────────────────────────────────────────────────────────
 
 @bp.route("/api/agent-steps/<step_id>/approve", methods=["POST"])
 def approve_step(step_id):

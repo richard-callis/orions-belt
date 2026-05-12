@@ -248,7 +248,7 @@
 
   // ── Agent sidebar ──────────────────────────────────────────────────────────
   function loadAgents() {
-    api('/agents/api/agents').then(data => {
+    cachedFetch('/agents/api/agents', {}, 15000).then(data => {
       agents = data;
       renderSidebar();
     }).catch(() => {
@@ -476,25 +476,70 @@
       </div>`;
   }
 
-  // ── Polling ────────────────────────────────────────────────────────────────
+  // ── Agent run status via SSE ──────────────────────────────────────────────
   function startPoll(runId) {
     activeRunId = runId;
     stopPoll();
-    pollTimer = setInterval(() => {
-      if (currentTab !== 'runs') return;
-      loadSteps(runId);
-      api(`/agents/api/agent-runs/${runId}`).then(run => {
-        // Refresh the card status in-place
-        if (run.status !== 'running' && run.status !== 'awaiting_approval') {
-          stopPoll();
-          loadRuns(); // full refresh once terminal state reached
-        } else {
-          // Update header status badge if this is the current agent
-          const agent = agents.find(a => a.id === selectedId);
-          if (agent) document.getElementById('hdr-status').innerHTML = statusBadge(run.status);
-        }
+    if (currentTab !== 'runs') return;
+
+    // Use SSE instead of polling — server pushes status updates
+    let evtSource = null;
+    try {
+      evtSource = new EventSource(`/agents/api/agent-runs/${runId}/stream`);
+
+      evtSource.addEventListener('message', (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          if (data.error) { stopPoll(); return; }
+          updateRunStatus(runId, data.status);
+        } catch {}
       });
-    }, 2500);
+
+      evtSource.onerror = () => {
+        // Connection lost — fall back to polling
+        evtSource.close();
+        evtSource = null;
+        // Fall back to polling for resilience
+        pollTimer = setInterval(() => {
+          if (currentTab !== 'runs') return;
+          api(`/agents/api/agent-runs/${runId}`).then(run => {
+            if (run.status !== 'running' && run.status !== 'awaiting_approval') {
+              stopPoll();
+              loadRuns();
+            }
+          }).catch(() => stopPoll());
+        }, 5000);
+      };
+    } catch {
+      // EventSource not available — fall back to polling
+      pollTimer = setInterval(() => {
+        if (currentTab !== 'runs') return;
+        api(`/agents/api/agent-runs/${runId}`).then(run => {
+          if (run.status !== 'running' && run.status !== 'awaiting_approval') {
+            stopPoll();
+            loadRuns();
+          }
+        }).catch(() => stopPoll());
+      }, 5000);
+    }
+
+    function updateRunStatus(runId, newStatus) {
+      if (currentTab !== 'runs') return;
+      const card = document.querySelector(`#steps-${runId}`)?.closest('.rounded-lg.border');
+      if (card) {
+        const statusEl = card.querySelector('.flex.items-center.gap-2.min-w-0');
+        if (statusEl) {
+          const badge = statusEl.querySelector('.px-2.py-0\\.5\\.rounded-full');
+          if (badge) badge.outerHTML = statusBadge(newStatus);
+        }
+      }
+      const agent = agents.find(a => a.id === selectedId);
+      if (agent) document.getElementById('hdr-status').innerHTML = statusBadge(newStatus);
+      if (newStatus !== 'running' && newStatus !== 'awaiting_approval') {
+        stopPoll();
+        loadRuns();
+      }
+    }
   }
 
   function stopPoll() {
