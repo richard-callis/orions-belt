@@ -132,7 +132,7 @@
   <div class="status-text" id="statusText">Starting download…</div>
 
   <div class="error-box" id="errorBox"></div>
-  <div class="done-msg" id="doneMsg">&#10003; All models ready — launching Orion's Belt…</div>
+  <div class="done-msg" id="doneMsg">&#10003; All models ready — creating your session…</div>
 </div>
 
 <script>
@@ -172,7 +172,8 @@
       document.getElementById('statusText').textContent = '';
       document.getElementById('doneMsg').style.display = 'block';
       clearInterval(pollTimer);
-      setTimeout(() => { window.location.href = '/'; }, 1500);
+      // Create auth session before redirecting to the main app
+      startApp();
       return;
     }
 
@@ -180,6 +181,23 @@
       document.getElementById('statusText').textContent =
         `Downloading ${state.current_model}…`;
     }
+  }
+
+  async function startApp() {
+    try {
+      const r = await fetch('/api/auth/login', { method: 'POST' });
+      if (r.ok) {
+        const data = await r.json();
+        // Store token for JS-side auth checks
+        if (typeof setAuthToken === 'function') {
+          setAuthToken(data.token);
+        }
+      }
+    } catch (e) {
+      console.warn('Auth login failed (will retry on next page load):', e);
+    }
+    // Redirect to main app after a short delay
+    setTimeout(() => { window.location.href = '/'; }, 500);
   }
 
   async function poll() {

@@ -1,4 +1,4 @@
-from flask import Flask
+from flask import Flask, Response, g, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 
@@ -22,6 +22,7 @@ def create_app(config_object="config.Config"):
         )
 
     # Register blueprints
+    from app.routes.auth import bp as auth_bp
     from app.routes.chat import bp as chat_bp
     from app.routes.work import bp as work_bp
     from app.routes.agents import bp as agents_bp
@@ -33,7 +34,9 @@ def create_app(config_object="config.Config"):
     from app.routes.first_run import bp as first_run_bp
     from app.routes.nova import bp as nova_bp
     from app.routes.chat_rooms import bp as chat_rooms_bp
+    from app.routes.system import bp as system_bp
 
+    app.register_blueprint(auth_bp)
     app.register_blueprint(chat_bp)
     app.register_blueprint(work_bp)
     app.register_blueprint(agents_bp)
@@ -45,6 +48,7 @@ def create_app(config_object="config.Config"):
     app.register_blueprint(first_run_bp)
     app.register_blueprint(nova_bp)
     app.register_blueprint(chat_rooms_bp)
+    app.register_blueprint(system_bp)
 
     # ── Plugin system — load extensions at startup ─────────────────────────────
     try:
@@ -59,6 +63,44 @@ def create_app(config_object="config.Config"):
                     app.logger.warning(f"Plugin failed: {r['name']} — {r.get('error', 'unknown')}")
     except Exception as e:
         app.logger.warning(f"Plugin system error: {e}")
+
+    # ── Authentication middleware (global before_request) ────────────────────
+    @app.before_request
+    def auth_check():
+        """Enforce authentication on all protected routes.
+
+        API routes (URL contains /api/) return 401 for unauthenticated requests.
+        HTML page routes allow through so checkAuth() in base.html can show the overlay.
+        """
+        # Skip for public routes
+        public_paths = (
+            "/api/auth/",
+            "/api/health",
+            "/first-run",
+            "/api/first-run/",
+            "/static/",
+        )
+        if request.path == "/":
+            return None  # root redirect is public
+        if any(request.path.startswith(p) for p in public_paths):
+            return None
+
+        from app.auth import check_auth
+        user, authenticated = check_auth()
+        if not authenticated:
+            # API routes return 401 immediately
+            if "/api/" in request.path:
+                return jsonify({"error": "Unauthorized", "detail": "Authentication required"}), 401
+            # HTML page routes: allow through so checkAuth() JS shows the overlay
+            g.current_user = None
+            return None
+
+        g.current_user = user
+
+    # ── 401 error handler ──────────────────────────────────────────────────
+    @app.errorhandler(401)
+    def unauthorized(e):
+        return jsonify({"error": "Unauthorized", "detail": "Authentication required"}), 401
 
     # Root redirect
     from flask import redirect, url_for

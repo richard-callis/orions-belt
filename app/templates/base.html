@@ -106,6 +106,31 @@
 
   </div>
 
+  <!-- ── Auth overlay (shown when not authenticated) ─────────── -->
+  <div id="auth-overlay" class="hidden fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+    <div class="bg-bg-card border border-border-visible rounded-xl shadow-2xl max-w-sm w-full mx-4 p-8 text-center">
+      <div class="w-12 h-12 rounded-full bg-accent/15 border border-accent/30 flex items-center justify-center mx-auto mb-4">
+        <i data-lucide="shield" class="w-6 h-6 text-accent"></i>
+      </div>
+      <h2 id="auth-overlay-title" class="text-sm font-semibold text-text-primary mb-2">Authenticating…</h2>
+      <p id="auth-overlay-desc" class="text-xs text-text-muted leading-relaxed">Verifying your session.</p>
+      <div id="auth-overlay-actions" class="hidden mt-5 flex items-center justify-center gap-3">
+        <button onclick="loginAndReload()"
+                class="px-4 py-2 rounded text-sm bg-accent/15 text-accent hover:bg-accent/30 transition-colors font-medium">
+          Sign in
+        </button>
+        <button onclick="logoutAndReload()"
+                class="px-4 py-2 rounded text-sm text-text-muted hover:text-text-primary hover:bg-bg-raised transition-colors">
+          Sign out
+        </button>
+      </div>
+      <button onclick="retryAuth()"
+              class="mt-3 px-4 py-2 rounded text-xs text-text-muted hover:text-text-primary hover:bg-bg-raised transition-colors">
+        Retry
+      </button>
+    </div>
+  </div>
+
   <!-- ── Status bar ─────────────────────────────────────────── -->
   <div class="hidden md:flex items-center gap-4 px-4 py-1.5 border-t border-border-subtle bg-bg-sidebar text-xs text-text-muted font-mono flex-shrink-0">
     <span class="flex items-center gap-1.5">
@@ -119,6 +144,10 @@
     <span class="flex items-center gap-1.5">
       <span class="inline-block w-2 h-2 rounded-full bg-status-healthy pulse-dot"></span>
       SQLite
+    </span>
+    <span id="auth-status-indicator" class="flex items-center gap-1.5">
+      <span class="inline-block w-2 h-2 rounded-full bg-status-healthy"></span>
+      <span id="auth-status-user" class="opacity-60"></span>
     </span>
     <span class="ml-auto opacity-40">Orion's Belt v0.1.0</span>
   </div>
@@ -199,9 +228,81 @@
     // ── Re-init icons after HTMX swaps ───────────────────────
     document.body.addEventListener('htmx:afterSwap', () => lucide.createIcons());
 
-    // ── PII Guard boot check ──────────────────────────────────
-    // Restore decision from sessionStorage so navigating between pages doesn't re-ask
-    window._piiGuardDisabled = sessionStorage.getItem('piiGuardDecision') === 'accepted';
+    // ── Auth check ────────────────────────────────────────────
+    // Runs before PII Guard so we block unauthenticated users first.
+    window._authenticated = false;
+
+    async function checkAuth() {
+      try {
+        const res = await fetch('/api/auth/status');
+        const data = await res.json();
+        if (data.authenticated) {
+          window._authenticated = true;
+          // Update status bar
+          const userEl = document.getElementById('auth-status-user');
+          if (userEl) userEl.textContent = data.windows_user || '';
+          document.getElementById('auth-overlay').classList.add('hidden');
+          return true;
+        } else {
+          // Not authenticated
+          window._authenticated = false;
+          const titleEl = document.getElementById('auth-overlay-title');
+          const descEl = document.getElementById('auth-overlay-desc');
+          const actionsEl = document.getElementById('auth-overlay-actions');
+          if (titleEl) titleEl.textContent = 'Not Authenticated';
+          if (descEl) descEl.textContent = 'Your session could not be verified. Sign in to continue.';
+          if (actionsEl) actionsEl.classList.remove('hidden');
+          document.getElementById('auth-overlay').classList.remove('hidden');
+          lucide.createIcons();
+          return false;
+        }
+      } catch (e) {
+        // Network error — don't block the user; let them try
+        console.warn('Auth check failed:', e);
+        document.getElementById('auth-overlay').classList.add('hidden');
+        return false;
+      }
+    }
+
+    async function retryAuth() {
+      document.getElementById('auth-overlay-actions').classList.add('hidden');
+      document.getElementById('auth-overlay-title').textContent = 'Authenticating…';
+      document.getElementById('auth-overlay-desc').textContent = 'Verifying your session.';
+      checkAuth();
+    }
+
+    async function loginAndReload() {
+      const titleEl = document.getElementById('auth-overlay-title');
+      const descEl = document.getElementById('auth-overlay-desc');
+      const actionsEl = document.getElementById('auth-overlay-actions');
+      if (titleEl) titleEl.textContent = 'Signing in…';
+      if (descEl) descEl.textContent = 'Verifying Windows session…';
+      if (actionsEl) actionsEl.classList.add('hidden');
+
+      try {
+        const r = await fetch('/api/auth/login', { method: 'POST' });
+        if (r.ok) {
+          const data = await r.json();
+          if (typeof setAuthToken === 'function') setAuthToken(data.token);
+        }
+      } catch (e) {
+        console.warn('Login failed:', e);
+        if (titleEl) titleEl.textContent = 'Login Failed';
+        if (descEl) descEl.textContent = 'Could not verify your session. Try again.';
+        if (actionsEl) actionsEl.classList.remove('hidden');
+        return;
+      }
+      location.reload();
+    }
+
+    async function logoutAndReload() {
+      try { await fetch('/api/auth/logout', { method: 'POST' }); } catch (e) {}
+      window._authenticated = false;
+      location.reload();
+    }
+
+    // Check auth immediately; PII Guard runs after on DOMContentLoaded
+    checkAuth();
 
     function _applyPiiWarningDot() {
       const dot = document.querySelector('#pii-status span.rounded-full');

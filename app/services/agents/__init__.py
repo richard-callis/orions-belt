@@ -38,7 +38,7 @@ def _now():
     return datetime.now(timezone.utc)
 
 
-def run_agent(agent_id: str, task_id: str) -> "AgentRun":
+def run_agent(agent_id: str, task_id: str, session_id: str | None = None) -> "AgentRun":
     """Execute an agent against a task.
 
     Creates an AgentRun record and runs the tool loop synchronously.
@@ -84,7 +84,7 @@ def run_agent(agent_id: str, task_id: str) -> "AgentRun":
     db.session.commit()
 
     try:
-        _execute_run(run, agent, task)
+        _execute_run(run, agent, task, session_id=session_id)
     except Exception as e:
         run.status = "failed"
         run.error_message = str(e)
@@ -100,7 +100,7 @@ def run_agent(agent_id: str, task_id: str) -> "AgentRun":
     return run
 
 
-def _execute_run(run, agent, task):
+def _execute_run(run, agent, task, session_id: str | None = None):
     """Inner loop: LLM call → tool execution → repeat."""
     from app import db
     from app.models.agent import AgentStep
@@ -216,12 +216,14 @@ def _execute_run(run, agent, task):
             try:
                 import asyncio
                 result = asyncio.get_event_loop().run_until_complete(
-                    execute_tool(tool_name, tool_args)
+                    execute_tool(tool_name, tool_args, session_id=session_id, run_id=str(run.id))
                 )
             except RuntimeError:
                 # No event loop running — create one
                 import asyncio
-                result = asyncio.run(execute_tool(tool_name, tool_args))
+                result = asyncio.run(
+                    execute_tool(tool_name, tool_args, session_id=session_id, run_id=str(run.id))
+                )
             except Exception as e:
                 result = f"Error executing {tool_name}: {e}"
 

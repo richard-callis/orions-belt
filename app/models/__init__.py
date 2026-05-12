@@ -1,4 +1,5 @@
 # Import all models so SQLAlchemy registers them with the metadata
+from app.models.auth import User
 from app.models.settings import Setting
 from app.models.chat import Session, Message, ContextCompaction
 from app.models.work import Project, Epic, Feature, Task
@@ -10,6 +11,7 @@ from app.models.pii import PIIHashEntry
 from app.models.logs import AuditLog, PIILog, AgentLog, LLMLog
 
 __all__ = [
+    "User",
     "Setting",
     "Session", "Message", "ContextCompaction",
     "Project", "Epic", "Feature", "Task",

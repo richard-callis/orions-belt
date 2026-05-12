@@ -130,7 +130,8 @@ def start_run(agent_id):
 
     try:
         from app.services.agents import run_agent
-        run = run_agent(agent_id=agent_id, task_id=task_id)
+        session_id = body.get("session_id")  # optional — links agent run to a chat session
+        run = run_agent(agent_id=agent_id, task_id=task_id, session_id=session_id)
         return jsonify(run.to_dict()), 202
     except Exception as e:
         return jsonify({"error": str(e)}), 500

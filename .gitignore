@@ -20,6 +20,7 @@ env/
 *.env
 config.local.py
 .secret_key
+.orions_belt_auth
 
 # Database
 *.db

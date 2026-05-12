@@ -19,10 +19,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from flask import g
+
 from app import db
 from app.models.connector import AuthorizedDirectory
-from app.models.mcp_tool import MCPTool
 from app.models.logs import AuditLog
+from app.models.mcp_tool import MCPTool
 from app.models.pii import PIIHashEntry
 
 log = logging.getLogger("orions-belt")
@@ -140,8 +142,14 @@ def _get_effective_tier(path: str, tool_tier: int) -> int:
     return tool_tier
 
 
-async def execute_tool(tool_name: str, args: dict) -> str:
+async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = None, run_id: str | None = None) -> str:
     """Execute a tool by name with the given args.
+
+    Args:
+        tool_name: Name of the tool to execute.
+        args: Tool arguments dict.
+        session_id: Optional session ID for audit trail attribution.
+        run_id: Optional run ID for audit trail attribution.
 
     Returns the result as a string. Used by the LLM service's agentic loop.
 
@@ -149,6 +157,12 @@ async def execute_tool(tool_name: str, args: dict) -> str:
     - Tool result caching (cacheable read-only tools skip execution on hit)
     - Structured error handling (ToolError exceptions propagate)
     """
+    # Set session_id/run_id on g context for _log_audit to read
+    if session_id:
+        g.orions_belt_session_id = session_id
+    if run_id:
+        g.orions_belt_run_id = run_id
+
     # Check tool exists
     tool = MCPTool.query.filter_by(name=tool_name, enabled=True).first()
     if not tool:
@@ -198,13 +212,13 @@ async def execute_tool(tool_name: str, args: dict) -> str:
             log.warning("mcp.execute: unknown or disabled tool=%r", tool_name)
             return f"Error: unknown tool '{tool_name}'"
 
-    # Sanitise args for logging — truncate large values
-    args_preview = json.dumps(
-        {k: (v[:120] + "…" if isinstance(v, str) and len(v) > 120 else v)
+    # Sanitise args for logging — truncate large values, never log PII
+    input_params = json.dumps(
+        {k: (v[:200] + "…" if isinstance(v, str) and len(v) > 200 else v)
          for k, v in args.items()},
         default=str,
     )
-    log.info("mcp.call  tool=%s tier=%d args=%s", tool_name, tool.tier, args_preview)
+    log.info("mcp.call  tool=%s tier=%d args=%s", tool_name, tool.tier, input_params)
     t0 = time.time()
 
     try:
@@ -222,32 +236,63 @@ async def execute_tool(tool_name: str, args: dict) -> str:
         else:
             preview = result[:200].replace("\n", "\\n") if isinstance(result, str) else str(result)[:200]
             log.info("mcp.result tool=%s elapsed=%dms preview=%s", tool_name, elapsed_ms, preview)
-        _log_audit(tool_name, TIER_READ if tool.tier <= TIER_READ else tool.tier, "auto", None, None, result)
+        _log_audit(
+            tool_name,
+            TIER_READ if tool.tier <= TIER_READ else tool.tier,
+            g.current_user or "",
+            getattr(g, "orions_belt_session_id", None),
+            getattr(g, "orions_belt_run_id", None),
+            input_params,
+            result,
+        )
         return result
     except ToolError as e:
         elapsed_ms = int((time.time() - t0) * 1000)
         log.warning("mcp.error  tool=%s elapsed=%dms category=%s %s",
                      tool_name, elapsed_ms, e.category, e.message)
-        _log_audit(tool_name, tool.tier, "auto", None, None, e.message, error=e.message)
+        _log_audit(
+            tool_name, tool.tier, g.current_user or "",
+            getattr(g, "orions_belt_session_id", None),
+            getattr(g, "orions_belt_run_id", None),
+            input_params,
+            e.message, error=e.message,
+        )
         return f"Error: {e.message}"
     except Exception as e:
         elapsed_ms = int((time.time() - t0) * 1000)
         err_msg = str(e)
         log.error("mcp.error  tool=%s elapsed=%dms error=%s", tool_name, elapsed_ms, err_msg, exc_info=True)
-        _log_audit(tool_name, tool.tier, "auto", None, None, f"Error: {err_msg}", error=err_msg)
+        _log_audit(
+            tool_name, tool.tier, g.current_user or "",
+            getattr(g, "orions_belt_session_id", None),
+            getattr(g, "orions_belt_run_id", None),
+            input_params,
+            f"Error: {err_msg}", error=err_msg,
+        )
         return f"Error: {err_msg}"
 
 
 def _log_audit(tool_name: str, tier: int, caller: str, session_id: str | None,
-               run_id: str | None, result: str, error: str | None = None):
-    """Log an audit entry."""
+               run_id: str | None, input_params: str, result: str, error: str | None = None):
+    """Log an audit entry.
+
+    Args:
+        tool_name: Name of the tool executed.
+        tier: Security tier of the tool.
+        caller: Username of the caller.
+        session_id: Session ID if applicable.
+        run_id: Agent run ID if applicable.
+        input_params: Sanitised tool input parameters (truncated, no PII).
+        result: Tool output/result string.
+        error: Optional error message.
+    """
     log = AuditLog(
         tool_name=tool_name,
         tier=tier,
         caller=caller,
         session_id=session_id,
         run_id=run_id,
-        input_summary=result[:500],
+        input_summary=input_params[:500],
         outcome="auto" if tier <= TIER_READ else "pending",
         result_summary=result[:1000],
         error=error,

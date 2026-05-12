@@ -502,10 +502,12 @@ def stream_messages(session_id):
                 f"=== END PLANNING CONTEXT ==="
             )
 
-    # ── PII Guard: scan outbound user message ─────────────────────────────────
+    # ── PII Guard: scan outbound user message (mandatory) ─────────────────────
+    # The skip_pii parameter was removed — PII scanning is now always mandatory.
+    # If the guard fails to initialize, the original prompt passes through
+    # (non-fatal). This prevents a client from bypassing PII detection.
     pii_globally_enabled = Setting.get("pii.guard.enabled", True)
-    skip_pii = body.get("skip_pii", False) or not pii_globally_enabled
-    if not skip_pii:
+    if pii_globally_enabled:
         try:
             from app.services.pii_guard import get_pii_guard
             guard = get_pii_guard()
@@ -595,12 +597,21 @@ def stream_messages(session_id):
 
 # ── Sync stream generators (no async/await for Flask compatibility) ──────────
 
-def _run_tool(tool_name, args):
-    """Run an async MCP tool from a synchronous context."""
+def _run_tool(tool_name, args, session_id=None, run_id=None):
+    """Run an async MCP tool from a synchronous context.
+
+    Args:
+        tool_name: Tool to execute.
+        args: Tool arguments.
+        session_id: Optional session ID for audit trail.
+        run_id: Optional run ID for audit trail.
+    """
     import asyncio
     loop = asyncio.new_event_loop()
     try:
-        return loop.run_until_complete(execute_tool(tool_name, args))
+        return loop.run_until_complete(
+            execute_tool(tool_name, args, session_id=session_id, run_id=run_id)
+        )
     finally:
         loop.close()
 
@@ -900,7 +911,7 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
                 yield _sse_format("tool_call", {"tool": tc["name"], "input": tc["args"]})
 
                 try:
-                    result = _run_tool(tc["name"], args)
+                    result = _run_tool(tc["name"], args, session_id=session_id, run_id=run_id)
                 except Exception as e:
                     result = f"Error: {e}"
 
@@ -1071,7 +1082,7 @@ def _stream_ollama_gen(base_url, model, system_prompt, history,
                 yield _sse_format("tool_call", {"tool": tc["name"], "input": tc["args"]})
 
                 try:
-                    result = _run_tool(tc["name"], args)
+                    result = _run_tool(tc["name"], args, session_id=session_id, run_id=run_id)
                 except Exception as e:
                     result = f"Error: {e}"
 

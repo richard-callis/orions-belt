@@ -10,6 +10,7 @@ import time
 import logging
 import logging.handlers
 from pathlib import Path
+from config import Config
 
 # Resolve project root: exe parent when frozen (PyInstaller), else script parent.
 if getattr(sys, "frozen", False):
@@ -43,14 +44,39 @@ URL = f"http://localhost:{PORT}"
 def run_flask():
     """Start Flask server (non-debug, single-threaded for SQLite safety)."""
     from app import create_app, db
+    from sqlalchemy import event
+
+    # ── Automated recovery: restore from .bak if DB is corrupted ──────
+    from app.services.backup import recover_if_needed, has_valid_backup, get_backup_path, get_db_path
+    if not recover_if_needed():
+        log.warning("Recovery unavailable — starting with potentially corrupt/missing database")
+        if has_valid_backup():
+            log.warning("A valid backup exists at %s — manual restore may be needed", get_backup_path())
+
     app = create_app()
     with app.app_context():
+        # Enable WAL mode BEFORE any database operations so all connections
+        # use write-ahead logging from the start.
+        @event.listens_for(db.engine, "connect")
+        def set_sqlite_pragma(dbapi_connection, connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.close()
+        # WAL + busy_timeout prevent corruption and blocking on concurrent writes
+
         db.create_all()
         _migrate_llm_settings(app)
-        _migrate_schema(app)
-        _seed_builtin_tools(app)
         _seed_novas(app)
         _ensure_projects_dir(app)
+        _migrate_schema(app)
+        _seed_builtin_tools(app)
+
+    # Register on-shutdown backup + periodic scheduled backups
+    from app.services.backup import register_shutdown_backup, start_periodic_backups
+    register_shutdown_backup()
+    start_periodic_backups(interval_minutes=30)
+
     app.run(host="127.0.0.1", port=PORT, debug=False, use_reloader=False, threaded=True)
 
 
@@ -1025,6 +1051,14 @@ def main():
     try:
         import webview
 
+        # If the auth token file is missing (user logged out), clear stale
+        # browser state so the auth overlay shows on next page load.
+        _auth_token_file = Config.AUTH_TOKEN_FILE
+        if not _auth_token_file.exists():
+            log.info("Auth token file missing — clearing stale browser state")
+        else:
+            log.info("Auth token file found — session valid")
+
         window = webview.create_window(
             title="Orion's Belt",
             url=start_url,
@@ -1034,6 +1068,20 @@ def main():
             background_color="#0f0f0f",
             maximized=True,
         )
+
+        # On first load, clear auth state if the token file is gone.
+        if not _auth_token_file.exists():
+            def clear_auth_if_needed():
+                if not _auth_token_file.exists():
+                    try:
+                        window.evaluate_js("""
+                            try { localStorage.removeItem('auth_token'); } catch(e){}
+                            document.cookie = 'auth_token=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; SameSite=Lax';
+                        """)
+                    except Exception:
+                        pass
+            # Run after a short delay to let the page load
+            threading.Timer(1.0, clear_auth_if_needed).start()
 
         # 3. System tray (minimize to tray)
         tray = create_tray_icon(window)
