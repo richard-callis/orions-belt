@@ -98,6 +98,7 @@ class Config:
     # ── Memory / embeddings ───────────────────────────────────
     MEMORY_EMBEDDING_MODEL = "all-MiniLM-L6-v2"   # small, fast, CPU
     MEMORY_TOP_K = 5                               # memories injected per call
+    LANCE_DB_PATH = str(BASE_DIR / "memory.lance")
 
     # ── Auth ────────────────────────────────────────────────────
     AUTH_TOKEN_FILE = Path(os.environ.get("ORBELT_AUTH_TOKEN", str(Path.home() / ".orions_belt_auth")))
