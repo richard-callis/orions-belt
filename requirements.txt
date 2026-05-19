@@ -9,6 +9,8 @@ alembic>=1.13.0
 
 # LLM providers
 openai>=1.0.0          # OpenAI-compatible client (OpenAI, Azure, llama-server, any endpoint)
+anthropic>=0.40.0      # Anthropic SDK — native tool use, streaming, prompt caching
+ollama>=0.4.0          # Ollama Python client — native /api/chat endpoint
 
 # PII / PHI detection — all pure Python, no compiler needed
 presidio-analyzer>=2.2.0

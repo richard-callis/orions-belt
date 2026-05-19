@@ -297,62 +297,14 @@ def _call_llm_sync(
     messages: list,
     tool_defs: list,
 ) -> tuple[str, list, int]:
-    """Make a synchronous LLM call and return (response_text, tool_calls, tokens)."""
-    url = f"{base_url.rstrip('/')}/chat/completions"
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    """Make a synchronous LLM call via the appropriate provider adapter.
 
-    body = {
-        "model": model,
-        "messages": messages,
-        "stream": False,
-    }
-    if tool_defs:
-        body["tools"] = tool_defs
-
-    try:
-        with httpx.Client(timeout=120.0) as client:
-            resp = client.post(url, json=body, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-    except httpx.HTTPStatusError as e:
-        status = e.response.status_code
-        if status in (429, 500, 503):
-            raise TransientError(f"HTTP {status}: {e.response.text[:300]}")
-        raise RuntimeError(f"LLM API error {status}: {e.response.text[:300]}")
-    except (httpx.ConnectError, httpx.Timeout) as e:
-        raise TransientError(f"Connection failed: {e}")
-    except Exception as e:
-        raise RuntimeError(f"LLM call failed: {e}")
-
-    choice = data.get("choices", [{}])[0]
-    msg = choice.get("message", {})
-    response_text = msg.get("content") or ""
-
-    content = msg.get("content", "")
-    if "role" in str(msg).lower() and "tool" in str(msg).lower() and "error" in str(msg).lower():
-        if isinstance(content, str) and "role" in content.lower() and "tool" in content.lower():
-            raise RoleOrderError("LLM rejected role ordering in messages")
-
-    raw_tool_calls = msg.get("tool_calls", [])
-    tool_calls = []
-    for tc in raw_tool_calls:
-        fn = tc.get("function", {})
-        try:
-            args = json.loads(fn.get("arguments", "{}"))
-        except json.JSONDecodeError:
-            args = {}
-        tool_calls.append({
-            "id": tc.get("id", str(uuid.uuid4())),
-            "name": fn.get("name", ""),
-            "args": args,
-        })
-
-    usage = data.get("usage", {})
-    tokens = usage.get("total_tokens", 0)
-
-    return response_text, tool_calls, tokens
+    Returns (response_text, tool_calls, tokens_used).
+    Raises TransientError, RoleOrderError, ContextTooLargeError, or RuntimeError.
+    """
+    from app.services.llm_adapters import get_adapter
+    adapter = get_adapter(base_url, api_key, model)
+    return adapter.complete(messages, tool_defs)
 
 
 def retry_with_recovery(
