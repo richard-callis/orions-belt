@@ -31,6 +31,8 @@ protobuf>=3.20.0        # Required by transformers tokenizers (DeBERTa judge)
 # Memory — sentence embeddings for similarity recall
 sentence-transformers>=2.7.0
 numpy>=1.26.0
+lancedb>=0.6.0         # Vector DB — embedded, no server, replaces numpy recall loop
+pyarrow>=14.0.0        # Required by LanceDB (may already be present transitively)
 
 # Windows connectors
 pywin32>=306            # Outlook COM automation (Windows only)

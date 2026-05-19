@@ -54,6 +54,8 @@ for pkg in [
     "jinja2",
     "anthropic",
     "ollama",
+    "lancedb",
+    "pyarrow",
 ]:
     try:
         d, b, h = collect_all(pkg)
