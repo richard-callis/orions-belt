@@ -927,6 +927,7 @@ def _migrate_schema(app):
         "tasks": [
             ("plan", "TEXT"),
         ],
+        "agent_traces": [],
     }
     with db.engine.connect() as conn:
         for table, additions in cols.items():

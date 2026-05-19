@@ -216,3 +216,63 @@ def remove_member(room_id, agent_id):
         room.updated_at = _now()
     db.session.commit()
     return "", 204
+
+
+# ── Room Goals ────────────────────────────────────────────────────────────────
+
+@bp.route("/<room_id>/goals", methods=["GET"])
+def list_room_goals(room_id):
+    from app.models.chat_room_goal import ChatRoomGoal
+    goals = ChatRoomGoal.query.filter_by(room_id=room_id).order_by(
+        ChatRoomGoal.created_at.desc()
+    ).all()
+    return jsonify([g.to_dict() for g in goals])
+
+
+@bp.route("/<room_id>/goals", methods=["POST"])
+def create_room_goal(room_id):
+    from app.models.chat_room_goal import ChatRoomGoal
+    room = ChatRoom.query.get(room_id)
+    if not room:
+        return jsonify({"error": "Room not found"}), 404
+    body = request.get_json() or {}
+    goal_text = (body.get("goal_text") or "").strip()
+    if not goal_text:
+        return jsonify({"error": "goal_text is required"}), 400
+    goal = ChatRoomGoal(
+        room_id=room_id,
+        goal_text=goal_text,
+        set_by=body.get("set_by", "user"),
+    )
+    db.session.add(goal)
+    db.session.commit()
+    return jsonify(goal.to_dict()), 201
+
+
+@bp.route("/goals/<goal_id>", methods=["PATCH"])
+def update_room_goal(goal_id):
+    from app.models.chat_room_goal import ChatRoomGoal
+    from datetime import datetime, timezone
+    goal = ChatRoomGoal.query.get(goal_id)
+    if not goal:
+        return jsonify({"error": "Goal not found"}), 404
+    body = request.get_json() or {}
+    if "goal_text" in body:
+        goal.goal_text = body["goal_text"]
+    if "status" in body:
+        goal.status = body["status"]
+        if body["status"] == "completed" and not goal.completed_at:
+            goal.completed_at = datetime.now(timezone.utc)
+    db.session.commit()
+    return jsonify(goal.to_dict())
+
+
+@bp.route("/goals/<goal_id>", methods=["DELETE"])
+def delete_room_goal(goal_id):
+    from app.models.chat_room_goal import ChatRoomGoal
+    goal = ChatRoomGoal.query.get(goal_id)
+    if not goal:
+        return jsonify({"error": "Goal not found"}), 404
+    db.session.delete(goal)
+    db.session.commit()
+    return "", 204

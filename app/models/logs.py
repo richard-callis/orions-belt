@@ -95,3 +95,24 @@ class LLMLog(db.Model):
 
     success = db.Column(db.Boolean, default=True)
     error = db.Column(db.Text, nullable=True)
+
+
+class AgentTrace(db.Model):
+    """Granular per-step trace for agent runs — for observability and debugging."""
+    __tablename__ = "agent_traces"
+
+    id = db.Column(db.String(36), primary_key=True, default=_uuid)
+    created_at = db.Column(db.DateTime, default=_now, index=True)
+
+    run_id = db.Column(db.String(36), nullable=False, index=True)
+    step = db.Column(db.Integer, nullable=False)
+
+    # "llm_call" | "tool_call" | "tool_result" | "approval_wait" | "completed" | "failed"
+    trace_type = db.Column(db.String(32), nullable=False)
+
+    tool_name = db.Column(db.String(128), nullable=True)
+    tool_args = db.Column(db.Text, nullable=True)    # JSON string, truncated
+    tool_result = db.Column(db.Text, nullable=True)  # truncated
+    content = db.Column(db.Text, nullable=True)      # LLM text output
+    model_used = db.Column(db.String(128), nullable=True)
+    duration_ms = db.Column(db.Integer, nullable=True)

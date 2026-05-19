@@ -18,7 +18,7 @@ def create_app(config_object="config.Config"):
     with app.app_context():
         from app.models import (  # noqa: F401
             chat, work, agent, connector, mcp_tool, memory, logs, pii, settings, nova,
-            chat_room
+            chat_room, chat_room_goal
         )
 
     # Register blueprints
