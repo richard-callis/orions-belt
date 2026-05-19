@@ -102,8 +102,10 @@ def run_agent(agent_id: str, task_id: str, session_id: str | None = None) -> "Ag
 
 def _execute_run(run, agent, task, session_id: str | None = None):
     """Inner loop: LLM call → tool execution → repeat."""
+    import time as _time
     from app import db
     from app.models.agent import AgentStep
+    from app.models.logs import AgentTrace
     from app.models.mcp_tool import MCPTool
     from app.models.settings import Setting
     from app.services.llm import build_tool_definitions, retry_with_recovery
@@ -172,6 +174,7 @@ def _execute_run(run, agent, task, session_id: str | None = None):
 
     for iteration in range(max_iter):
         run.iterations_used = iteration + 1
+        _step_start = _time.time()
 
         # LLM call (with error recovery from harness spec)
         response_text, tool_calls, tokens_used = retry_with_recovery(
@@ -188,6 +191,12 @@ def _execute_run(run, agent, task, session_id: str | None = None):
             run.result_summary = response_text or "Task completed."
             run.status = "completed"
             run.completed_at = _now()
+            trace = AgentTrace(
+                run_id=run.id, step=iteration * 10,
+                trace_type="completed", content=(response_text or "")[:2000],
+                model_used=model,
+            )
+            db.session.add(trace)
             db.session.commit()
             return
 
@@ -235,7 +244,20 @@ def _execute_run(run, agent, task, session_id: str | None = None):
             step.tool_output = result
             step.approved = True
             step.approved_at = _now()
+            elapsed_ms = int((_time.time() - _step_start) * 1000)
+            trace = AgentTrace(
+                run_id=run.id,
+                step=(iteration * 10) + tool_calls.index(tc),
+                trace_type="tool_call",
+                tool_name=tool_name,
+                tool_args=json.dumps(tool_args)[:500],
+                tool_result=str(result)[:1000],
+                model_used=model,
+                duration_ms=elapsed_ms,
+            )
+            db.session.add(trace)
             db.session.commit()
+            _step_start = _time.time()  # reset for next step
 
             messages.append({
                 "role": "assistant",

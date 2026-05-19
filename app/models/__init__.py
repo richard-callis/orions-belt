@@ -8,7 +8,8 @@ from app.models.connector import Connector, AuthorizedDirectory
 from app.models.mcp_tool import MCPTool, ToolProposal
 from app.models.memory import Memory
 from app.models.pii import PIIHashEntry
-from app.models.logs import AuditLog, PIILog, AgentLog, LLMLog
+from app.models.logs import AuditLog, PIILog, AgentLog, LLMLog, AgentTrace
+from app.models.chat_room_goal import ChatRoomGoal
 
 __all__ = [
     "User",
@@ -20,5 +21,6 @@ __all__ = [
     "MCPTool", "ToolProposal",
     "Memory",
     "PIIHashEntry",
-    "AuditLog", "PIILog", "AgentLog", "LLMLog",
+    "AuditLog", "PIILog", "AgentLog", "LLMLog", "AgentTrace",
+    "ChatRoomGoal",
 ]

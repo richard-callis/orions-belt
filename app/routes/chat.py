@@ -68,6 +68,26 @@ def _get_base_system_prompt() -> str:
     return stored if stored else _BUILTIN_BASE_PROMPT
 
 
+def _match_nova_skill(user_message: str) -> str | None:
+    """Return injected system prompt if any Nova skill matches the user message."""
+    import json
+    from app.models.nova import Nova
+    msg_lower = user_message.lower()
+    skills = Nova.query.filter_by(nova_type="agent").all()
+    for nova in skills:
+        try:
+            config = json.loads(nova.config or "{}")
+        except Exception:
+            continue
+        patterns = config.get("trigger_patterns", [])
+        if any(p.lower() in msg_lower for p in patterns):
+            injected = config.get("system_prompt", "")
+            if injected:
+                log.info("nova.skill_injected nova=%s", nova.name)
+                return injected
+    return None
+
+
 def _get_planning_suffix() -> str:
     """Return the planning session suffix, falling back to the built-in default."""
     from app.models.settings import Setting
@@ -524,6 +544,11 @@ def stream_messages(session_id):
                 prompt = clean_prompt  # send sanitized text to LLM
         except Exception:
             pass  # PII guard failure is non-fatal — pass original prompt through
+
+    # ── Nova skill injection — prepend matching skill system prompt ──────────────
+    skill_injection = _match_nova_skill(prompt)
+    if skill_injection:
+        system_prompt = skill_injection + "\n\n" + system_prompt
 
     # ── Memory: inject relevant context into system prompt ────────────────────
     memory_context = ""
