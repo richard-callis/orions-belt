@@ -522,8 +522,8 @@ def stream_messages(session_id):
             )
             if pii_found:
                 prompt = clean_prompt  # send sanitized text to LLM
-        except Exception:
-            pass  # PII guard failure is non-fatal — pass original prompt through
+        except Exception as e:
+            log.warning("PII guard failed (non-fatal, original prompt passes through): %s", e)
 
     # ── Memory: inject relevant context into system prompt ────────────────────
     memory_context = ""
@@ -531,8 +531,8 @@ def stream_messages(session_id):
         from app.services.memory import get_memory_service
         mem_svc = get_memory_service()
         memory_context = mem_svc.inject_context(prompt, session_id=session_id)
-    except Exception:
-        pass  # Memory service failure is non-fatal
+    except Exception as e:
+        log.warning("Memory service failed (non-fatal): %s", e)
 
     if memory_context:
         system_prompt = memory_context + "\n\n" + system_prompt

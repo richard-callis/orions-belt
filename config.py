@@ -43,7 +43,8 @@ def _load_or_create_secret_key() -> str:
 
 class Config:
     # ── Database ──────────────────────────────────────────────
-    SQLALCHEMY_DATABASE_URI = f"sqlite:///{BASE_DIR / 'orions_belt.db'}"
+    DATABASE_PATH = BASE_DIR / "orions_belt.db"
+    SQLALCHEMY_DATABASE_URI = f"sqlite:///{DATABASE_PATH}"
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     # ── Security ──────────────────────────────────────────────

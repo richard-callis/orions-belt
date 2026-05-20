@@ -54,5 +54,5 @@ class Setting(db.Model):
 
     @classmethod
     def is_setup_complete(cls) -> bool:
-        return cls.get("setup.completed", default=False, ) == "true" or \
-               cls.get("setup.completed") is True
+        val = cls.get("setup.completed", default=False)
+        return val is True or val == "true"
