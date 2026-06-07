@@ -56,7 +56,9 @@ class ToolError(Exception):
 
 
 # Tier 0 read tools that are cacheable
-CACHEABLE_TOOLS = {"read_file", "list_directory", "search_files", "run_sql_query"}
+# run_sql_query is excluded: results are connector-scoped and the cache has no
+# authorization dimension, so caching would leak results across agent contexts.
+CACHEABLE_TOOLS = {"read_file", "list_directory", "search_files"}
 
 
 # ── Tier system ───────────────────────────────────────────────────────────────
@@ -386,7 +388,10 @@ def _assert_select_only(query: str) -> str | None:
     """
     stripped = re.sub(r"/\*.*?\*/", "", query, flags=re.DOTALL)
     stripped = re.sub(r"--[^\n]*", "", stripped)
-    stripped = stripped.strip()
+    stripped = stripped.strip().rstrip(";")
+    # Block stacked queries — semicolons after stripping comments indicate a second statement
+    if ";" in stripped:
+        return "Error: multi-statement queries are not permitted"
     if not re.match(r"^SELECT\b", stripped, re.IGNORECASE):
         return "Error: only SELECT queries are permitted via MCP tools"
     return None
