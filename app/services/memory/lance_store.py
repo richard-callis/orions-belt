@@ -11,6 +11,7 @@ call migrate_from_sqlite() once to backfill.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from pathlib import Path
 from typing import Any
@@ -140,6 +141,11 @@ class LanceStore:
             }
             for k, v in scope_filter.items():
                 col = field_map.get(k, k)
+                # Validate value is a safe identifier (UUID or alphanumeric) before
+                # interpolating into the WHERE clause — LanceDB has no bind parameters.
+                if not re.match(r'^[a-zA-Z0-9_-]+$', str(v)):
+                    log.warning("lance_store: skipping unsafe scope_filter value for %s", col)
+                    continue
                 conditions.append(f"{col} = '{v}'")
             if conditions:
                 query = query.where(" AND ".join(conditions))
@@ -165,6 +171,9 @@ class LanceStore:
     def delete(self, memory_id: str) -> bool:
         """Delete a memory by ID. Returns True if deleted."""
         self._ensure_ready()
+        if not re.match(r'^[a-zA-Z0-9_-]+$', str(memory_id)):
+            log.warning("lance_store: rejected unsafe memory_id in delete: %r", memory_id)
+            return False
         try:
             self._table.delete(f"id = '{memory_id}'")
             return True
