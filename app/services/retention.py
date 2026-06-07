@@ -43,7 +43,6 @@ def enforce_retention():
         (PIILog, "pii_logs", "created_at"),
         (AgentLog, "agent_logs", "created_at"),
         (LLMLog, "llm_logs", "created_at"),
-        (Memory, "memories", "created_at"),
         (PIIHashEntry, "pii_hash_map", "created_at"),
     ]
 
@@ -59,6 +58,20 @@ def enforce_retention():
         except Exception as e:
             db.session.rollback()
             log.error("Retention purge failed for %s: %s", name, e)
+
+    # Memories: purge old non-pinned records. Pinned memories are intentionally
+    # permanent and must survive retention sweeps.
+    try:
+        count = db.session.query(Memory).filter(
+            Memory.created_at < cutoff,
+            Memory.pinned != True,
+        ).delete(synchronize_session=False)
+        total_purged += count
+        db.session.commit()
+        log.info("Retention: purged %d old memories records (older than %s)", count, cutoff.isoformat())
+    except Exception as e:
+        db.session.rollback()
+        log.error("Retention purge failed for memories: %s", e)
 
     # Sessions: only purge archived ones older than cutoff.
     # Non-archived sessions are preserved; cascade auto-deletes their messages.
