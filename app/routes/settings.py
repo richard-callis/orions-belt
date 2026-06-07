@@ -391,16 +391,8 @@ def add_llm_provider():
     }
     providers.append(new_provider)
     Setting.set("llm.providers", providers, value_type="json")
-    log.info("Provider added: name=%r id=%s key_set=%s providers_count=%d", name, new_provider["id"], bool(api_key), len(providers))
-    for p in providers:
-        k = p.get("api_key", "")
-        log.info("  provider: name=%s key_len=%d key_start=%s", p.get("name", "?"), len(k), k[:20] if k else "(none)")
-    # Verify what was stored
-    row = Setting.query.get("llm.providers")
-    stored = json.loads(row.value) if row and row.value else []
-    for p in stored:
-        k = p.get("api_key", "")
-        log.info("  STORED provider: name=%s key_len=%d key_start=%s", p.get("name", "?"), len(k), k[:20] if k else "(none)")
+    log.info("Provider added: name=%r id=%s key_set=%s providers_count=%d",
+             name, new_provider["id"], bool(api_key), len(providers))
 
     # Auto-select as active if it's the first provider
     if len(providers) == 1:

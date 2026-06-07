@@ -78,12 +78,16 @@ def page():
 @bp.route("/api/first-run/start", methods=["POST"])
 def start():
     global _thread
+    from config import BASE_DIR
+    # Guard: if all models are already cached, don't trigger downloads again.
+    # This endpoint is unauthenticated (needed for first-run UX) so we must
+    # prevent it from being used as a resource-exhaustion vector post-setup.
+    if models_ready(BASE_DIR):
+        return jsonify({"ok": True, "already_done": True})
     with _lock:
         if _state["started"]:
             return jsonify({"ok": True, "already_started": True})
         _state["started"] = True
-
-    from config import BASE_DIR
     _thread = threading.Thread(target=_download_all, args=(BASE_DIR,), daemon=True)
     _thread.start()
     return jsonify({"ok": True})
