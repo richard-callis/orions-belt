@@ -10,7 +10,7 @@
       <h2 class="text-base font-semibold text-text-primary">Connectors</h2>
       <p class="text-xs text-text-muted mt-0.5">Configure integrations available to agents and MCP tools</p>
     </div>
-    <button onclick="document.getElementById('add-connector-modal').classList.remove('hidden')"
+    <button onclick="openAddModal()"
             class="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs bg-accent/15 text-accent hover:bg-accent/30 transition-colors font-medium">
       <i data-lucide="plus" class="w-3 h-3"></i>
       Add Connector
@@ -18,51 +18,8 @@
   </div>
 
   <!-- Connector cards -->
-  <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-6">
-    {% set connectors = [
-      ('REST API', 'Jira Cloud', 'plug', True, 'rest_api', 'https://company.atlassian.net'),
-      ('SQL Server', 'Analytics DB', 'database', True, 'sql_server', 'analytics-server\\SQLEXPRESS'),
-      ('Outlook', 'Work Email', 'mail', True, 'outlook', 'COM Automation'),
-    ] %}
-    {% for ctype, name, icon, enabled, ctype_key, endpoint in connectors %}
-    <div class="rounded-lg border border-border-subtle bg-bg-card p-4 hover:border-border-visible transition-colors">
-      <div class="flex items-start gap-3">
-        <div class="w-10 h-10 rounded-xl bg-bg-raised border border-border-subtle flex items-center justify-center flex-shrink-0">
-          <i data-lucide="{{ icon }}" class="w-5 h-5 text-accent"></i>
-        </div>
-        <div class="flex-1 min-w-0">
-          <div class="flex items-center gap-2 mb-0.5">
-            <span class="text-sm font-semibold text-text-primary">{{ name }}</span>
-            <span class="px-1.5 py-0.5 rounded text-[10px] {% if enabled %}bg-status-healthy/10 text-status-healthy border border-status-healthy/20{% else %}bg-bg-raised text-text-muted border border-border-subtle{% endif %}">
-              {{ 'Active' if enabled else 'Disabled' }}
-            </span>
-          </div>
-          <div class="text-[10px] text-text-muted mb-2">
-            <span class="px-1.5 py-0.5 rounded bg-bg-raised border border-border-subtle">{{ ctype }}</span>
-          </div>
-          <div class="text-xs font-mono text-text-muted truncate">{{ endpoint }}</div>
-        </div>
-        <div class="flex items-center gap-1.5 flex-shrink-0">
-          <button class="p-1.5 rounded text-text-muted hover:text-accent hover:bg-accent/10 transition-colors" title="Test">
-            <i data-lucide="zap" class="w-3.5 h-3.5"></i>
-          </button>
-          <button class="p-1.5 rounded text-text-muted hover:text-accent hover:bg-accent/10 transition-colors" title="Edit">
-            <i data-lucide="settings-2" class="w-3.5 h-3.5"></i>
-          </button>
-          <button class="p-1.5 rounded text-text-muted hover:text-status-error hover:bg-status-error/10 transition-colors" title="Delete">
-            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
-          </button>
-        </div>
-      </div>
-    </div>
-    {% endfor %}
-
-    <!-- Add card -->
-    <button onclick="document.getElementById('add-connector-modal').classList.remove('hidden')"
-            class="rounded-lg border border-dashed border-border-visible bg-bg-card p-4 hover:border-accent/40 hover:bg-accent/5 transition-colors flex items-center justify-center gap-2 text-text-muted hover:text-accent">
-      <i data-lucide="plus-circle" class="w-5 h-5"></i>
-      <span class="text-sm">Add connector</span>
-    </button>
+  <div id="connector-grid" class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-6">
+    <div class="col-span-full text-xs text-text-muted py-4 text-center" id="empty-state">Loading connectors…</div>
   </div>
 
   <!-- Connector type reference -->
@@ -88,18 +45,19 @@
 
 </div>
 
-<!-- Add Connector Modal -->
-<div id="add-connector-modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+<!-- Add/Edit Connector Modal -->
+<div id="connector-modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
   <div class="bg-bg-sidebar border border-border-subtle rounded-xl w-full max-w-md shadow-2xl">
     <div class="flex items-center justify-between px-5 py-4 border-b border-border-subtle">
-      <h3 class="text-sm font-semibold text-text-primary">Add Connector</h3>
-      <button onclick="document.getElementById('add-connector-modal').classList.add('hidden')"
-              class="text-text-muted hover:text-text-secondary transition-colors">
+      <h3 id="modal-title" class="text-sm font-semibold text-text-primary">Add Connector</h3>
+      <button onclick="closeModal()" class="text-text-muted hover:text-text-secondary transition-colors">
         <i data-lucide="x" class="w-4 h-4"></i>
       </button>
     </div>
 
     <div class="p-5 space-y-4">
+      <input type="hidden" id="edit-connector-id" value="">
+
       <div>
         <label class="text-xs text-text-muted block mb-1.5">Connector Type</label>
         <select id="connector-type" onchange="updateConnectorFields()"
@@ -113,20 +71,21 @@
 
       <div>
         <label class="text-xs text-text-muted block mb-1.5">Name</label>
-        <input type="text" placeholder="e.g. Jira Cloud"
+        <input type="text" id="connector-name" placeholder="e.g. Jira Cloud"
                class="w-full px-2.5 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent" />
       </div>
 
-      <div id="connector-type-fields">
-        <!-- Populated by JS based on type selection -->
-      </div>
+      <div id="connector-type-fields"></div>
+
+      <div id="modal-error" class="hidden text-xs text-status-error bg-status-error/10 rounded p-2"></div>
     </div>
 
     <div class="flex items-center gap-2 px-5 py-4 border-t border-border-subtle">
-      <button class="flex-1 py-2 rounded text-sm bg-accent/15 text-accent hover:bg-accent/30 transition-colors font-medium">
-        Test & Save
+      <button id="save-btn" onclick="saveConnector()"
+              class="flex-1 py-2 rounded text-sm bg-accent/15 text-accent hover:bg-accent/30 transition-colors font-medium">
+        Test &amp; Save
       </button>
-      <button onclick="document.getElementById('add-connector-modal').classList.add('hidden')"
+      <button onclick="closeModal()"
               class="px-4 py-2 rounded text-sm border border-border-subtle text-text-muted hover:text-text-secondary transition-colors">
         Cancel
       </button>
@@ -137,51 +96,318 @@
 
 {% block scripts %}
 <script>
-  const typeFields = {
-    rest_api: `
+  const TYPE_ICONS = { rest_api: 'plug', sql_server: 'database', outlook: 'mail' };
+  const TYPE_LABELS = { rest_api: 'REST API', sql_server: 'SQL Server', outlook: 'Outlook' };
+
+  // ── Field templates ──────────────────────────────────────────────────────────
+
+  function restApiFields(cfg, auth) {
+    cfg = cfg || {}; auth = auth || {};
+    return `
       <div class="space-y-3">
         <div>
           <label class="text-xs text-text-muted block mb-1.5">Base URL</label>
-          <input type="url" placeholder="https://api.example.com/v1"
+          <input type="url" id="cfg-base_url" value="${esc(cfg.base_url||'')}" placeholder="https://api.example.com/v1"
                  class="w-full px-2.5 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent" />
         </div>
         <div>
           <label class="text-xs text-text-muted block mb-1.5">Auth Type</label>
-          <select class="w-full px-2.5 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent">
-            <option>None</option><option>Bearer Token</option><option>API Key Header</option><option>Basic Auth</option>
+          <select id="cfg-auth_type" onchange="updateAuthFields()"
+                  class="w-full px-2.5 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent">
+            <option value="none" ${(cfg.auth_type||'none')==='none'?'selected':''}>None</option>
+            <option value="bearer" ${cfg.auth_type==='bearer'?'selected':''}>Bearer Token</option>
+            <option value="api_key" ${cfg.auth_type==='api_key'?'selected':''}>API Key Header</option>
+            <option value="basic" ${cfg.auth_type==='basic'?'selected':''}>Basic Auth</option>
           </select>
         </div>
-      </div>`,
-    outlook: `
-      <div class="rounded-lg border border-status-info/20 bg-status-info/5 p-3 text-xs text-status-info">
-        <i data-lucide="info" class="w-3.5 h-3.5 inline mr-1"></i>
-        Outlook connector uses Windows COM automation — no credentials needed. Outlook must be running on this machine.
-      </div>`,
-    sql_server: `
-      <div class="space-y-3">
-        <div>
-          <label class="text-xs text-text-muted block mb-1.5">Server</label>
-          <input type="text" placeholder="server\\instance or server:port"
-                 class="w-full px-2.5 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent" />
-        </div>
-        <div>
-          <label class="text-xs text-text-muted block mb-1.5">Database</label>
-          <input type="text" placeholder="database_name"
-                 class="w-full px-2.5 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent" />
-        </div>
-        <div>
-          <label class="text-xs text-text-muted block mb-1.5">Auth</label>
-          <select class="w-full px-2.5 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent">
-            <option>Windows Authentication (Trusted)</option><option>SQL Server Auth</option>
-          </select>
-        </div>
-      </div>`,
-  };
+        <div id="auth-fields"></div>
+      </div>`;
+  }
 
-  function updateConnectorFields() {
-    const type = document.getElementById('connector-type').value;
-    document.getElementById('connector-type-fields').innerHTML = typeFields[type] || '';
+  function updateAuthFields() {
+    const type = document.getElementById('cfg-auth_type')?.value;
+    const container = document.getElementById('auth-fields');
+    if (!container) return;
+    const cls = 'w-full px-2.5 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent';
+    if (type === 'bearer') {
+      container.innerHTML = `<div><label class="text-xs text-text-muted block mb-1.5">Token</label><input type="password" id="auth-token" placeholder="your-token" class="${cls}" /></div>`;
+    } else if (type === 'api_key') {
+      container.innerHTML = `<div class="space-y-2">
+        <div><label class="text-xs text-text-muted block mb-1.5">Header Name</label><input type="text" id="auth-header_name" placeholder="X-API-Key" value="X-API-Key" class="${cls}" /></div>
+        <div><label class="text-xs text-text-muted block mb-1.5">API Key</label><input type="password" id="auth-api_key" placeholder="your-key" class="${cls}" /></div>
+      </div>`;
+    } else if (type === 'basic') {
+      container.innerHTML = `<div class="space-y-2">
+        <div><label class="text-xs text-text-muted block mb-1.5">Username</label><input type="text" id="auth-username" class="${cls}" /></div>
+        <div><label class="text-xs text-text-muted block mb-1.5">Password</label><input type="password" id="auth-password" class="${cls}" /></div>
+      </div>`;
+    } else {
+      container.innerHTML = '';
+    }
     lucide.createIcons();
   }
+
+  function sqlServerFields(cfg, auth) {
+    cfg = cfg || {}; auth = auth || {};
+    const cls = 'w-full px-2.5 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent';
+    const isSQL = (cfg.auth_type||'windows') === 'sql';
+    return `
+      <div class="space-y-3">
+        <div><label class="text-xs text-text-muted block mb-1.5">Server</label>
+          <input type="text" id="cfg-server" value="${esc(cfg.server||'')}" placeholder="server\\instance or server:port" class="${cls}" /></div>
+        <div><label class="text-xs text-text-muted block mb-1.5">Database</label>
+          <input type="text" id="cfg-database" value="${esc(cfg.database||'')}" placeholder="database_name" class="${cls}" /></div>
+        <div><label class="text-xs text-text-muted block mb-1.5">Auth</label>
+          <select id="cfg-auth_type" onchange="updateSQLAuthFields()"
+                  class="w-full px-2.5 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent">
+            <option value="windows" ${!isSQL?'selected':''}>Windows Authentication (Trusted)</option>
+            <option value="sql" ${isSQL?'selected':''}>SQL Server Auth</option>
+          </select></div>
+        <div id="sql-auth-fields">${isSQL ? sqlAuthFields(auth) : ''}</div>
+      </div>`;
+  }
+
+  function sqlAuthFields(auth) {
+    auth = auth || {};
+    const cls = 'w-full px-2.5 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent';
+    return `<div class="space-y-2">
+      <div><label class="text-xs text-text-muted block mb-1.5">Username</label><input type="text" id="auth-username" value="${esc(auth.username||'')}" class="${cls}" /></div>
+      <div><label class="text-xs text-text-muted block mb-1.5">Password</label><input type="password" id="auth-password" class="${cls}" /></div>
+    </div>`;
+  }
+
+  function updateSQLAuthFields() {
+    const type = document.getElementById('cfg-auth_type')?.value;
+    document.getElementById('sql-auth-fields').innerHTML = type === 'sql' ? sqlAuthFields({}) : '';
+  }
+
+  function outlookFields() {
+    return `<div class="rounded-lg border border-status-info/20 bg-status-info/5 p-3 text-xs text-status-info">
+      <i data-lucide="info" class="w-3.5 h-3.5 inline mr-1"></i>
+      Outlook connector uses Windows COM automation — no credentials needed. Outlook must be running on this machine.
+    </div>`;
+  }
+
+  function updateConnectorFields(cfg, auth) {
+    const type = document.getElementById('connector-type').value;
+    const container = document.getElementById('connector-type-fields');
+    if (type === 'rest_api') container.innerHTML = restApiFields(cfg, auth);
+    else if (type === 'sql_server') container.innerHTML = sqlServerFields(cfg, auth);
+    else if (type === 'outlook') container.innerHTML = outlookFields();
+    else container.innerHTML = '';
+    lucide.createIcons();
+    if (type === 'rest_api') updateAuthFields();
+  }
+
+  // ── Collect form values ───────────────────────────────────────────────────────
+
+  function collectFormValues() {
+    const type = document.getElementById('connector-type').value;
+    const name = document.getElementById('connector-name').value.trim();
+    if (!type) return { error: 'Select a connector type' };
+    if (!name) return { error: 'Name is required' };
+
+    let config = {}, auth = {};
+    if (type === 'rest_api') {
+      const authType = document.getElementById('cfg-auth_type')?.value || 'none';
+      config = { base_url: document.getElementById('cfg-base_url')?.value || '', auth_type: authType };
+      if (authType === 'bearer') auth = { token: document.getElementById('auth-token')?.value || '' };
+      else if (authType === 'api_key') auth = { header_name: document.getElementById('auth-header_name')?.value || 'X-API-Key', api_key: document.getElementById('auth-api_key')?.value || '' };
+      else if (authType === 'basic') auth = { username: document.getElementById('auth-username')?.value || '', password: document.getElementById('auth-password')?.value || '' };
+    } else if (type === 'sql_server') {
+      const authType = document.getElementById('cfg-auth_type')?.value || 'windows';
+      config = { server: document.getElementById('cfg-server')?.value || '', database: document.getElementById('cfg-database')?.value || '', auth_type: authType };
+      if (authType === 'sql') auth = { username: document.getElementById('auth-username')?.value || '', password: document.getElementById('auth-password')?.value || '' };
+    }
+    return { name, connector_type: type, config, auth };
+  }
+
+  // ── Save ─────────────────────────────────────────────────────────────────────
+
+  async function saveConnector() {
+    const vals = collectFormValues();
+    if (vals.error) { showModalError(vals.error); return; }
+
+    const editId = document.getElementById('edit-connector-id').value;
+    const btn = document.getElementById('save-btn');
+    btn.textContent = 'Saving…';
+    btn.disabled = true;
+    hideModalError();
+
+    try {
+      // Save first
+      const url = editId ? `/connectors/api/connectors/${editId}` : '/connectors/api/connectors';
+      const method = editId ? 'PATCH' : 'POST';
+      const saveResp = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(vals) });
+      const saveData = await saveResp.json();
+      if (!saveResp.ok) { showModalError(saveData.error || 'Save failed'); return; }
+
+      const connectorId = saveData.id;
+
+      // Then test
+      btn.textContent = 'Testing…';
+      const testResp = await fetch(`/connectors/api/connectors/${connectorId}/test`, { method: 'POST' });
+      const testData = await testResp.json();
+
+      closeModal();
+      await loadConnectors();
+
+      if (!testData.ok) {
+        // Show test warning non-blocking
+        showToast(`Saved but test failed: ${testData.message}`, 'warn');
+      } else {
+        showToast(`Connector saved & tested OK`, 'ok');
+      }
+    } catch (e) {
+      showModalError(String(e));
+    } finally {
+      btn.textContent = 'Test & Save';
+      btn.disabled = false;
+    }
+  }
+
+  // ── Test existing connector ───────────────────────────────────────────────────
+
+  async function testConnector(id, btn) {
+    btn.disabled = true;
+    const origHTML = btn.innerHTML;
+    btn.innerHTML = '<i data-lucide="loader" class="w-3.5 h-3.5 animate-spin"></i>';
+    lucide.createIcons();
+    try {
+      const resp = await fetch(`/connectors/api/connectors/${id}/test`, { method: 'POST' });
+      const data = await resp.json();
+      showToast(data.ok ? `OK: ${data.message}` : `Failed: ${data.message}`, data.ok ? 'ok' : 'error');
+    } catch (e) {
+      showToast(`Error: ${e}`, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = origHTML;
+      lucide.createIcons();
+    }
+  }
+
+  // ── Delete ───────────────────────────────────────────────────────────────────
+
+  async function deleteConnector(id, name) {
+    if (!confirm(`Delete connector "${name}"?`)) return;
+    const resp = await fetch(`/connectors/api/connectors/${id}`, { method: 'DELETE' });
+    if (resp.ok || resp.status === 204) { await loadConnectors(); showToast('Connector deleted', 'ok'); }
+    else showToast('Delete failed', 'error');
+  }
+
+  // ── Edit ─────────────────────────────────────────────────────────────────────
+
+  async function editConnector(id) {
+    const resp = await fetch(`/connectors/api/connectors/${id}`);
+    const c = await resp.json();
+    openAddModal(c);
+  }
+
+  // ── Render ───────────────────────────────────────────────────────────────────
+
+  async function loadConnectors() {
+    const resp = await fetch('/connectors/api/connectors');
+    const connectors = await resp.json();
+    const grid = document.getElementById('connector-grid');
+
+    if (!connectors.length) {
+      grid.innerHTML = `<div class="col-span-full text-xs text-text-muted py-8 text-center">No connectors yet — click <strong>Add Connector</strong> to get started.</div>
+        <button onclick="openAddModal()" class="col-span-full rounded-lg border border-dashed border-border-visible bg-bg-card p-4 hover:border-accent/40 hover:bg-accent/5 transition-colors flex items-center justify-center gap-2 text-text-muted hover:text-accent">
+          <i data-lucide="plus-circle" class="w-5 h-5"></i><span class="text-sm">Add connector</span>
+        </button>`;
+      lucide.createIcons();
+      return;
+    }
+
+    grid.innerHTML = connectors.map(c => {
+      const icon = TYPE_ICONS[c.connector_type] || 'plug';
+      const label = TYPE_LABELS[c.connector_type] || c.connector_type;
+      const endpoint = c.config?.base_url || c.config?.server || (c.connector_type === 'outlook' ? 'COM Automation' : '');
+      return `
+      <div class="rounded-lg border border-border-subtle bg-bg-card p-4 hover:border-border-visible transition-colors">
+        <div class="flex items-start gap-3">
+          <div class="w-10 h-10 rounded-xl bg-bg-raised border border-border-subtle flex items-center justify-center flex-shrink-0">
+            <i data-lucide="${icon}" class="w-5 h-5 text-accent"></i>
+          </div>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 mb-0.5">
+              <span class="text-sm font-semibold text-text-primary">${esc(c.name)}</span>
+              <span class="px-1.5 py-0.5 rounded text-[10px] ${c.enabled ? 'bg-status-healthy/10 text-status-healthy border border-status-healthy/20' : 'bg-bg-raised text-text-muted border border-border-subtle'}">
+                ${c.enabled ? 'Active' : 'Disabled'}
+              </span>
+            </div>
+            <div class="text-[10px] text-text-muted mb-2">
+              <span class="px-1.5 py-0.5 rounded bg-bg-raised border border-border-subtle">${label}</span>
+            </div>
+            ${endpoint ? `<div class="text-xs font-mono text-text-muted truncate">${esc(endpoint)}</div>` : ''}
+          </div>
+          <div class="flex items-center gap-1.5 flex-shrink-0">
+            <button onclick="testConnector('${c.id}', this)" class="p-1.5 rounded text-text-muted hover:text-accent hover:bg-accent/10 transition-colors" title="Test">
+              <i data-lucide="zap" class="w-3.5 h-3.5"></i>
+            </button>
+            <button onclick="editConnector('${c.id}')" class="p-1.5 rounded text-text-muted hover:text-accent hover:bg-accent/10 transition-colors" title="Edit">
+              <i data-lucide="settings-2" class="w-3.5 h-3.5"></i>
+            </button>
+            <button onclick="deleteConnector('${c.id}', '${esc(c.name)}')" class="p-1.5 rounded text-text-muted hover:text-status-error hover:bg-status-error/10 transition-colors" title="Delete">
+              <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+            </button>
+          </div>
+        </div>
+      </div>`;
+    }).join('') + `
+    <button onclick="openAddModal()" class="rounded-lg border border-dashed border-border-visible bg-bg-card p-4 hover:border-accent/40 hover:bg-accent/5 transition-colors flex items-center justify-center gap-2 text-text-muted hover:text-accent">
+      <i data-lucide="plus-circle" class="w-5 h-5"></i><span class="text-sm">Add connector</span>
+    </button>`;
+    lucide.createIcons();
+  }
+
+  // ── Modal helpers ────────────────────────────────────────────────────────────
+
+  function openAddModal(existing) {
+    document.getElementById('edit-connector-id').value = existing?.id || '';
+    document.getElementById('modal-title').textContent = existing ? 'Edit Connector' : 'Add Connector';
+    document.getElementById('connector-name').value = existing?.name || '';
+    document.getElementById('connector-type').value = existing?.connector_type || '';
+    document.getElementById('save-btn').textContent = 'Test & Save';
+    hideModalError();
+    if (existing) updateConnectorFields(existing.config, {});
+    else document.getElementById('connector-type-fields').innerHTML = '';
+    document.getElementById('connector-modal').classList.remove('hidden');
+  }
+
+  function closeModal() {
+    document.getElementById('connector-modal').classList.add('hidden');
+  }
+
+  function showModalError(msg) {
+    const el = document.getElementById('modal-error');
+    el.textContent = msg;
+    el.classList.remove('hidden');
+  }
+
+  function hideModalError() {
+    document.getElementById('modal-error').classList.add('hidden');
+  }
+
+  // ── Toast ────────────────────────────────────────────────────────────────────
+
+  function showToast(msg, type) {
+    const colours = { ok: 'bg-status-healthy/10 text-status-healthy border-status-healthy/20', warn: 'bg-status-warning/10 text-status-warning border-status-warning/20', error: 'bg-status-error/10 text-status-error border-status-error/20' };
+    const t = document.createElement('div');
+    t.className = `fixed bottom-5 right-5 z-[100] px-4 py-2.5 rounded-lg border text-xs font-medium shadow-lg ${colours[type] || colours.ok}`;
+    t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 3500);
+  }
+
+  // ── Escape helper ────────────────────────────────────────────────────────────
+
+  function esc(s) {
+    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // ── Init ─────────────────────────────────────────────────────────────────────
+
+  loadConnectors();
 </script>
 {% endblock %}

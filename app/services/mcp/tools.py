@@ -179,6 +179,20 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
             log.info("mcp.cache HIT tool=%s", tool_name)
             return cached if isinstance(cached, str) else str(cached)
 
+    # Enforce directory-level tier caps (read_only, max_tier) for path-based tools.
+    # _get_effective_tier returns min(tool.tier, directory.max_tier); if that is
+    # lower than the tool's natural tier the directory does not allow this operation.
+    path_arg = args.get("path") or args.get("src") or args.get("dest") or ""
+    if path_arg:
+        effective_tier = _get_effective_tier(str(path_arg), tool.tier)
+        if effective_tier < tool.tier:
+            tier_names = {TIER_READ: "read-only (Tier 0)", TIER_CREATE: "create (Tier 1)",
+                          TIER_MODIFY: "modify (Tier 2)", TIER_DELETE: "delete (Tier 3)"}
+            log.warning("mcp.blocked  tool=%s path=%r dir_max_tier=%d tool_tier=%d",
+                        tool_name, path_arg, effective_tier, tool.tier)
+            return (f"Error: '{path_arg}' is in a directory that only allows "
+                    f"{tier_names.get(effective_tier, f'tier {effective_tier}')} operations")
+
     # Route to the appropriate handler
     handlers = {
         # Tier 0: read operations
