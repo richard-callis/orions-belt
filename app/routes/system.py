@@ -3,6 +3,7 @@ Orion's Belt — System administration routes
 
 Backup, restore, health, and other system-level operations.
 """
+import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path

@@ -74,7 +74,8 @@ def create_app(config_object="config.Config"):
         """
         # Skip for public routes
         public_paths = (
-            "/api/auth/",
+            "/api/auth/login",
+            "/api/auth/logout",
             "/api/health",
             "/first-run",
             "/api/first-run/",
