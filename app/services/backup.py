@@ -78,6 +78,9 @@ def backup_database(dest: Optional[Path] = None, *, keep_history: int = 5) -> bo
         dest_conn.close()
         src_conn.close()
 
+        # Restrict backup file permissions — it contains all secrets
+        dest.chmod(0o600)
+
         # Verify the backup is a valid SQLite database
         if not _verify_backup(dest):
             log.error("Backup verification FAILED for %s", dest)
