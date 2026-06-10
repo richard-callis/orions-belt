@@ -1,4 +1,6 @@
-"""Knowledge base: notes, wikis, runbooks, and llm-context notes auto-injected into agents."""
+"""
+Knowledge base: notes, wikis, runbooks, and LLM context injections.
+"""
 import uuid
 from datetime import datetime, timezone
 from app import db
@@ -20,6 +22,7 @@ class Note(db.Model):
     content = db.Column(db.Text, nullable=False, default="")
     # note|wiki|runbook|llm-context
     note_type = db.Column(db.String(32), default="note")
+
     project_id = db.Column(db.String(36), db.ForeignKey("projects.id"), nullable=True)
     pinned = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=_now)

@@ -1,9 +1,8 @@
 """
 Agents and their execution runs.
 An Agent is a named, configured AI worker assigned to Tasks.
-An AgentRun is one execution attempt.
+An AgentRun is one execution attempt — it has its own Session for context tracking.
 """
-import json
 import uuid
 from datetime import datetime, timezone
 from app import db
@@ -24,18 +23,22 @@ class Agent(db.Model):
     name = db.Column(db.String(128), nullable=False)
     description = db.Column(db.Text, nullable=True)
     system_prompt = db.Column(db.Text, nullable=True)
+
+    # Which tools this agent is allowed to use (JSON list of tool names)
     allowed_tools = db.Column(db.Text, default="[]")
+
+    # LLM config override (null = use global config)
     llm_model_override = db.Column(db.String(128), nullable=True)
     max_iterations = db.Column(db.Integer, default=20)
-    status = db.Column(db.String(32), default="idle")  # idle|running|error
 
-    # Token budget constraints (null = unlimited)
+    # Token budgets (null = unlimited)
     daily_token_budget = db.Column(db.Integer, nullable=True)
     monthly_token_budget = db.Column(db.Integer, nullable=True)
 
-    # Role hint for tool scoping: auto|deployment|investigation|knowledge|coordination
+    # Role-based tool scoping: auto|deployment|investigation|knowledge|coordination
     role_scope = db.Column(db.String(32), nullable=True)
 
+    status = db.Column(db.String(32), default="idle")  # idle|running|error
     created_at = db.Column(db.DateTime, default=_now)
     updated_at = db.Column(db.DateTime, default=_now, onupdate=_now)
 
@@ -43,6 +46,7 @@ class Agent(db.Model):
                             cascade="all, delete-orphan")
 
     def to_dict(self):
+        import json
         return {
             "id": self.id,
             "name": self.name,
@@ -51,10 +55,10 @@ class Agent(db.Model):
             "allowed_tools": json.loads(self.allowed_tools or "[]"),
             "llm_model_override": self.llm_model_override,
             "max_iterations": self.max_iterations,
-            "status": self.status,
             "daily_token_budget": self.daily_token_budget,
             "monthly_token_budget": self.monthly_token_budget,
             "role_scope": self.role_scope,
+            "status": self.status,
         }
 
 
@@ -65,6 +69,8 @@ class AgentRun(db.Model):
     id = db.Column(db.String(36), primary_key=True, default=_uuid)
     agent_id = db.Column(db.String(36), db.ForeignKey("agents.id"), nullable=False)
     task_id = db.Column(db.String(36), db.ForeignKey("tasks.id"), nullable=False)
+
+    # Each run gets its own session for full context tracking
     session_id = db.Column(db.String(36), db.ForeignKey("sessions.id"), nullable=True)
 
     # pending|running|awaiting_approval|pending_validation|completed|failed|cancelled
@@ -74,18 +80,21 @@ class AgentRun(db.Model):
     completed_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=_now)
 
+    # Outcome
     result_summary = db.Column(db.Text, nullable=True)
     error_message = db.Column(db.Text, nullable=True)
     iterations_used = db.Column(db.Integer, default=0)
     tokens_used = db.Column(db.Integer, default=0)
 
-    # Plan-before-execute
+    # Plan gate
     plan_xml = db.Column(db.Text, nullable=True)
     plan_approved = db.Column(db.Boolean, nullable=True)
     blocked_steps_json = db.Column(db.Text, default="[]")
 
-    # Reliability tracking
-    reviewer_verdict = db.Column(db.String(32), nullable=True)  # approved|rejected|skipped
+    # Reviewer outcome: approved|rejected|skipped
+    reviewer_verdict = db.Column(db.String(32), nullable=True)
+
+    # Remediation loop counter
     remediation_attempts = db.Column(db.Integer, default=0)
 
     agent = db.relationship("Agent", back_populates="runs")
@@ -123,16 +132,18 @@ class AgentStep(db.Model):
     step_number = db.Column(db.Integer, nullable=False)
     created_at = db.Column(db.DateTime, default=_now)
 
+    # What the LLM decided to do
     reasoning = db.Column(db.Text, nullable=True)
     tool_name = db.Column(db.String(128), nullable=True)
-    tool_input = db.Column(db.Text, nullable=True)
-    tool_output = db.Column(db.Text, nullable=True)
+    tool_input = db.Column(db.Text, nullable=True)   # JSON
+    tool_output = db.Column(db.Text, nullable=True)  # JSON
 
+    # Approval tracking (Tier 2/3 tools)
     required_approval = db.Column(db.Boolean, default=False)
-    approved = db.Column(db.Boolean, nullable=True)
+    approved = db.Column(db.Boolean, nullable=True)  # None=pending, True=approved, False=rejected
     approved_at = db.Column(db.DateTime, nullable=True)
 
-    # Idempotency: SHA-256 of (tool_name + canonical args)
+    # Idempotency checkpointing: SHA-256 of (tool_name + canonical args)
     checkpoint_hash = db.Column(db.String(64), nullable=True)
     is_checkpointed = db.Column(db.Boolean, default=False)
     blocked = db.Column(db.Boolean, default=False)
@@ -148,6 +159,6 @@ class TokenUsage(db.Model):
     agent_id = db.Column(db.String(36), db.ForeignKey("agents.id"), nullable=False)
     run_id = db.Column(db.String(36), db.ForeignKey("agent_runs.id"), nullable=True)
     tokens_used = db.Column(db.Integer, nullable=False, default=0)
-    period_day = db.Column(db.String(10), nullable=False)   # "YYYY-MM-DD"
-    period_month = db.Column(db.String(7), nullable=False)  # "YYYY-MM"
+    period_day = db.Column(db.String(10), nullable=False)    # YYYY-MM-DD
+    period_month = db.Column(db.String(7), nullable=False)   # YYYY-MM
     created_at = db.Column(db.DateTime, default=_now)

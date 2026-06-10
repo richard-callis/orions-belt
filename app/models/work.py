@@ -2,7 +2,6 @@
 Work hierarchy: Project → Epic → Feature → Task
 Agents are assigned to Tasks.
 """
-import json
 import uuid
 from datetime import datetime, timezone
 from app import db
@@ -23,7 +22,7 @@ class Project(db.Model):
     name = db.Column(db.String(256), nullable=False)
     description = db.Column(db.Text, nullable=True)
     status = db.Column(db.String(32), default="active")  # active|paused|completed|archived
-    folder_path = db.Column(db.String(1024), nullable=True)
+    folder_path = db.Column(db.String(1024), nullable=True)  # absolute path to project folder
     created_at = db.Column(db.DateTime, default=_now)
     updated_at = db.Column(db.DateTime, default=_now, onupdate=_now)
 
@@ -49,8 +48,8 @@ class Epic(db.Model):
     project_id = db.Column(db.String(36), db.ForeignKey("projects.id"), nullable=False)
     title = db.Column(db.String(512), nullable=False)
     description = db.Column(db.Text, nullable=True)
-    plan = db.Column(db.Text, nullable=True)
-    status = db.Column(db.String(32), default="backlog")
+    plan = db.Column(db.Text, nullable=True)  # AI-generated plan from planning chat
+    status = db.Column(db.String(32), default="backlog")  # backlog|in_progress|done
     priority = db.Column(db.Integer, default=0)
     created_at = db.Column(db.DateTime, default=_now)
     updated_at = db.Column(db.DateTime, default=_now, onupdate=_now)
@@ -79,7 +78,7 @@ class Feature(db.Model):
     epic_id = db.Column(db.String(36), db.ForeignKey("epics.id"), nullable=False)
     title = db.Column(db.String(512), nullable=False)
     description = db.Column(db.Text, nullable=True)
-    plan = db.Column(db.Text, nullable=True)
+    plan = db.Column(db.Text, nullable=True)  # AI-generated plan from planning chat
     status = db.Column(db.String(32), default="backlog")
     priority = db.Column(db.Integer, default=0)
     plan_approved_at = db.Column(db.DateTime, nullable=True)
@@ -87,11 +86,8 @@ class Feature(db.Model):
     updated_at = db.Column(db.DateTime, default=_now, onupdate=_now)
 
     epic = db.relationship("Epic", back_populates="features")
-    tasks = db.relationship(
-        "Task", back_populates="feature",
-        cascade="all, delete-orphan",
-        order_by="Task.wave",
-    )
+    tasks = db.relationship("Task", back_populates="feature",
+                             cascade="all, delete-orphan", order_by="Task.wave")
 
     def to_dict(self):
         return {
@@ -115,20 +111,24 @@ class Task(db.Model):
     title = db.Column(db.String(512), nullable=False)
     description = db.Column(db.Text, nullable=True)
     acceptance_criteria = db.Column(db.Text, nullable=True)
-    plan = db.Column(db.Text, nullable=True)
-    # backlog|in_progress|review|done|blocked|pending_validation|cancelled
+    plan = db.Column(db.Text, nullable=True)  # AI-generated plan from planning chat
     status = db.Column(db.String(32), default="backlog")
+    # backlog|in_progress|review|done|blocked|pending_validation|cancelled
     priority = db.Column(db.Integer, default=0)
+
+    # Wave scheduling — topological order within a feature
+    depends_on_json = db.Column(db.Text, default="[]")  # JSON list of task IDs
+    wave = db.Column(db.Integer, default=0)
+
+    # Plan gate
+    plan_approved_at = db.Column(db.DateTime, nullable=True)
+    plan_risk_level = db.Column(db.String(32), nullable=True)  # low|medium|high|critical
+
     created_at = db.Column(db.DateTime, default=_now)
     updated_at = db.Column(db.DateTime, default=_now, onupdate=_now)
 
+    # Agent assignment
     assigned_agent_id = db.Column(db.String(36), db.ForeignKey("agents.id"), nullable=True)
-
-    # Execution ordering
-    depends_on_json = db.Column(db.Text, default="[]")
-    wave = db.Column(db.Integer, default=0)
-    plan_approved_at = db.Column(db.DateTime, nullable=True)
-    plan_risk_level = db.Column(db.String(32), nullable=True)  # low|medium|high|critical
 
     feature = db.relationship("Feature", back_populates="tasks")
     assigned_agent = db.relationship("Agent", foreign_keys=[assigned_agent_id])
@@ -137,10 +137,12 @@ class Task(db.Model):
 
     @property
     def depends_on(self):
+        import json
         return json.loads(self.depends_on_json or "[]")
 
     @depends_on.setter
     def depends_on(self, value):
+        import json
         self.depends_on_json = json.dumps(value or [])
 
     def to_dict(self):
@@ -153,9 +155,9 @@ class Task(db.Model):
             "plan": self.plan,
             "status": self.status,
             "priority": self.priority,
-            "assigned_agent_id": self.assigned_agent_id,
             "depends_on": self.depends_on,
             "wave": self.wave,
             "plan_approved_at": self.plan_approved_at.isoformat() if self.plan_approved_at else None,
             "plan_risk_level": self.plan_risk_level,
+            "assigned_agent_id": self.assigned_agent_id,
         }

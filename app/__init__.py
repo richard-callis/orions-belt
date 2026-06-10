@@ -17,7 +17,7 @@ def create_app(config_object="config.Config"):
     # Register models (ensures they're known to SQLAlchemy)
     with app.app_context():
         from app.models import (  # noqa: F401
-            chat, work, agent, connector, mcp_tool, memory, logs, pii, settings, nova,
+            chat, work, agent, knowledge, connector, mcp_tool, memory, logs, pii, settings, nova,
             chat_room, chat_room_goal
         )
 
@@ -35,6 +35,7 @@ def create_app(config_object="config.Config"):
     from app.routes.nova import bp as nova_bp
     from app.routes.chat_rooms import bp as chat_rooms_bp
     from app.routes.system import bp as system_bp
+    from app.routes.knowledge import bp as knowledge_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(chat_bp)
@@ -49,6 +50,7 @@ def create_app(config_object="config.Config"):
     app.register_blueprint(nova_bp)
     app.register_blueprint(chat_rooms_bp)
     app.register_blueprint(system_bp)
+    app.register_blueprint(knowledge_bp)
 
     # ── Plugin system — load extensions at startup ─────────────────────────────
     try:
