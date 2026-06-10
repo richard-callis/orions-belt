@@ -263,6 +263,45 @@ def build_tool_definitions(tools, include_plugins: bool = True) -> list[dict]:
     return result
 
 
+# ── Knowledge context injection ───────────────────────────────────────────────
+
+def inject_knowledge_context(messages: list[dict], query: str) -> list[dict]:
+    """Prepend relevant llm-context notes to the message list.
+
+    Selects up to 5 notes by keyword overlap against the query, then
+    injects them as a system message after any existing system messages.
+    Non-fatal: returns messages unchanged on any error.
+    """
+    try:
+        from app.models.knowledge import Note
+        context_notes = (
+            Note.query.filter_by(note_type="llm-context")
+            .order_by(Note.pinned.desc(), Note.updated_at.desc())
+            .limit(20).all()
+        )
+        if not context_notes:
+            return messages
+        query_words = set(query.lower().split())
+
+        def _relevance(note):
+            text = f"{note.title} {note.content}".lower()
+            return sum(1 for w in query_words if w in text)
+
+        ranked = sorted(context_notes, key=_relevance, reverse=True)[:5]
+        if not ranked:
+            return messages
+
+        ctx = "Relevant context from the knowledge base:\n\n"
+        for note in ranked:
+            ctx += f"### {note.title}\n{note.content}\n\n"
+
+        sys_msgs = [m for m in messages if m.get("role") == "system"]
+        other_msgs = [m for m in messages if m.get("role") != "system"]
+        return sys_msgs + [{"role": "system", "content": ctx.strip()}] + other_msgs
+    except Exception:
+        return messages
+
+
 # ── Error recovery types (from harness FALLBACK spec) ─────────────────────────
 
 class RecoveryError(Exception):

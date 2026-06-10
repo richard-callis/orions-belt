@@ -81,12 +81,13 @@ class Feature(db.Model):
     plan = db.Column(db.Text, nullable=True)  # AI-generated plan from planning chat
     status = db.Column(db.String(32), default="backlog")
     priority = db.Column(db.Integer, default=0)
+    plan_approved_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=_now)
     updated_at = db.Column(db.DateTime, default=_now, onupdate=_now)
 
     epic = db.relationship("Epic", back_populates="features")
     tasks = db.relationship("Task", back_populates="feature",
-                             cascade="all, delete-orphan", order_by="Task.created_at")
+                             cascade="all, delete-orphan", order_by="Task.wave")
 
     def to_dict(self):
         return {
@@ -97,6 +98,7 @@ class Feature(db.Model):
             "plan": self.plan,
             "status": self.status,
             "priority": self.priority,
+            "plan_approved_at": self.plan_approved_at.isoformat() if self.plan_approved_at else None,
             "task_count": len(self.tasks),
         }
 
@@ -110,8 +112,18 @@ class Task(db.Model):
     description = db.Column(db.Text, nullable=True)
     acceptance_criteria = db.Column(db.Text, nullable=True)
     plan = db.Column(db.Text, nullable=True)  # AI-generated plan from planning chat
-    status = db.Column(db.String(32), default="backlog")  # backlog|in_progress|review|done|blocked
+    status = db.Column(db.String(32), default="backlog")
+    # backlog|in_progress|review|done|blocked|pending_validation|cancelled
     priority = db.Column(db.Integer, default=0)
+
+    # Wave scheduling — topological order within a feature
+    depends_on_json = db.Column(db.Text, default="[]")  # JSON list of task IDs
+    wave = db.Column(db.Integer, default=0)
+
+    # Plan gate
+    plan_approved_at = db.Column(db.DateTime, nullable=True)
+    plan_risk_level = db.Column(db.String(32), nullable=True)  # low|medium|high|critical
+
     created_at = db.Column(db.DateTime, default=_now)
     updated_at = db.Column(db.DateTime, default=_now, onupdate=_now)
 
@@ -123,6 +135,16 @@ class Task(db.Model):
     agent_runs = db.relationship("AgentRun", back_populates="task",
                                   cascade="all, delete-orphan")
 
+    @property
+    def depends_on(self):
+        import json
+        return json.loads(self.depends_on_json or "[]")
+
+    @depends_on.setter
+    def depends_on(self, value):
+        import json
+        self.depends_on_json = json.dumps(value or [])
+
     def to_dict(self):
         return {
             "id": self.id,
@@ -133,5 +155,9 @@ class Task(db.Model):
             "plan": self.plan,
             "status": self.status,
             "priority": self.priority,
+            "depends_on": self.depends_on,
+            "wave": self.wave,
+            "plan_approved_at": self.plan_approved_at.isoformat() if self.plan_approved_at else None,
+            "plan_risk_level": self.plan_risk_level,
             "assigned_agent_id": self.assigned_agent_id,
         }

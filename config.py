@@ -111,3 +111,13 @@ class Config:
     WINDOW_HEIGHT = 900
     WINDOW_MIN_WIDTH = 1024
     WINDOW_MIN_HEIGHT = 600
+
+
+class TestConfig(Config):
+    TESTING = True
+    SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
+    SECRET_KEY = "test-secret-key-for-ci"
+    WTF_CSRF_ENABLED = False
+    LLM_BASE_URL = "http://localhost:11434/v1"
+    LLM_API_KEY = "test-key"
+    LLM_MODEL = "test-model"

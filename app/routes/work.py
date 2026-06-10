@@ -336,6 +336,8 @@ def create_task(feature_id):
         priority=body.get("priority", 0),
         assigned_agent_id=body.get("assigned_agent_id"),
     )
+    if "depends_on" in body:
+        task.depends_on = body["depends_on"]
     db.session.add(task)
     db.session.commit()
     return jsonify(task.to_dict()), 201
@@ -358,6 +360,8 @@ def update_task(task_id):
     for field in ("title", "description", "plan", "acceptance_criteria", "status", "priority", "assigned_agent_id"):
         if field in body:
             setattr(task, field, body[field])
+    if "depends_on" in body:
+        task.depends_on = body["depends_on"]
     task.updated_at = _now()
     db.session.commit()
     return jsonify(task.to_dict())
@@ -371,6 +375,105 @@ def delete_task(task_id):
     db.session.delete(task)
     db.session.commit()
     return "", 204
+
+
+# ── Wave scheduling & plan gates ─────────────────────────────────────────────
+
+def _compute_waves(feature_id: str) -> None:
+    """Assign topological wave numbers to tasks in a feature.
+
+    Tasks with no dependencies are wave 0. Each task's wave is
+    max(predecessor waves) + 1. Cycles are broken by capping at the
+    number of tasks (safe fallback — the cycle nodes all land on the cap).
+    """
+    tasks = Task.query.filter_by(feature_id=feature_id).all()
+    task_map = {t.id: t for t in tasks}
+    waves: dict[str, int] = {}
+
+    def _wave(tid: str, depth: int = 0) -> int:
+        if tid not in task_map:
+            return 0
+        if tid in waves:
+            return waves[tid]
+        if depth > len(tasks):
+            return len(tasks)  # cycle guard
+        deps = task_map[tid].depends_on
+        w = max((_wave(d, depth + 1) + 1 for d in deps if d in task_map), default=0)
+        waves[tid] = w
+        return w
+
+    for t in tasks:
+        t.wave = _wave(t.id)
+
+
+@bp.route("/api/features/<feature_id>/approve-plan", methods=["POST"])
+def approve_feature_plan(feature_id):
+    feature = Feature.query.get(feature_id)
+    if not feature:
+        return jsonify({"error": "Feature not found"}), 404
+    feature.plan_approved_at = _now()
+    _compute_waves(feature_id)
+    db.session.commit()
+    return jsonify(feature.to_dict())
+
+
+@bp.route("/api/tasks/<task_id>/approve-plan", methods=["POST"])
+def approve_task_plan(task_id):
+    task = Task.query.get(task_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+    task.plan_approved_at = _now()
+    db.session.commit()
+    return jsonify(task.to_dict())
+
+
+@bp.route("/api/tasks/<task_id>/resume-plan", methods=["POST"])
+def resume_task_plan(task_id):
+    """Resume a pending_validation agent run with optional blocked-step overrides."""
+    from app.models.agent import AgentRun
+    from app.services.agents import approve_plan
+
+    task = Task.query.get(task_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+
+    body = request.get_json() or {}
+    blocked_steps = body.get("blocked_steps", [])
+
+    run = (
+        AgentRun.query
+        .filter_by(task_id=task_id, status="pending_validation")
+        .order_by(AgentRun.created_at.desc())
+        .first()
+    )
+    if not run:
+        return jsonify({"error": "No pending_validation run found for this task"}), 404
+
+    approve_plan(run.id, blocked_steps)
+    return jsonify({"run_id": run.id, "status": "resumed"})
+
+
+@bp.route("/api/tasks/<task_id>/cancel", methods=["POST"])
+def cancel_task(task_id):
+    from app.models.agent import AgentRun
+
+    task = Task.query.get(task_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+
+    active_statuses = {"pending", "running", "awaiting_approval", "pending_validation"}
+    runs = AgentRun.query.filter(
+        AgentRun.task_id == task_id,
+        AgentRun.status.in_(active_statuses),
+    ).all()
+    for run in runs:
+        run.status = "cancelled"
+        run.completed_at = _now()
+
+    task.status = "cancelled"
+    task.updated_at = _now()
+    db.session.commit()
+    return jsonify(task.to_dict())
 
 
 # ── AI Planning ───────────────────────────────────────────────────────────────

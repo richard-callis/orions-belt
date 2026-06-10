@@ -22,14 +22,21 @@ class Agent(db.Model):
     id = db.Column(db.String(36), primary_key=True, default=_uuid)
     name = db.Column(db.String(128), nullable=False)
     description = db.Column(db.Text, nullable=True)
-    system_prompt = db.Column(db.Text, nullable=True)   # agent persona / instructions
+    system_prompt = db.Column(db.Text, nullable=True)
 
     # Which tools this agent is allowed to use (JSON list of tool names)
-    allowed_tools = db.Column(db.Text, default="[]")    # JSON
+    allowed_tools = db.Column(db.Text, default="[]")
 
     # LLM config override (null = use global config)
     llm_model_override = db.Column(db.String(128), nullable=True)
-    max_iterations = db.Column(db.Integer, default=20)  # safety cap on tool loop
+    max_iterations = db.Column(db.Integer, default=20)
+
+    # Token budgets (null = unlimited)
+    daily_token_budget = db.Column(db.Integer, nullable=True)
+    monthly_token_budget = db.Column(db.Integer, nullable=True)
+
+    # Role-based tool scoping: auto|deployment|investigation|knowledge|coordination
+    role_scope = db.Column(db.String(32), nullable=True)
 
     status = db.Column(db.String(32), default="idle")  # idle|running|error
     created_at = db.Column(db.DateTime, default=_now)
@@ -48,6 +55,9 @@ class Agent(db.Model):
             "allowed_tools": json.loads(self.allowed_tools or "[]"),
             "llm_model_override": self.llm_model_override,
             "max_iterations": self.max_iterations,
+            "daily_token_budget": self.daily_token_budget,
+            "monthly_token_budget": self.monthly_token_budget,
+            "role_scope": self.role_scope,
             "status": self.status,
         }
 
@@ -63,8 +73,8 @@ class AgentRun(db.Model):
     # Each run gets its own session for full context tracking
     session_id = db.Column(db.String(36), db.ForeignKey("sessions.id"), nullable=True)
 
+    # pending|running|awaiting_approval|pending_validation|completed|failed|cancelled
     status = db.Column(db.String(32), default="pending")
-    # pending|running|awaiting_approval|completed|failed|cancelled
 
     started_at = db.Column(db.DateTime, nullable=True)
     completed_at = db.Column(db.DateTime, nullable=True)
@@ -75,6 +85,17 @@ class AgentRun(db.Model):
     error_message = db.Column(db.Text, nullable=True)
     iterations_used = db.Column(db.Integer, default=0)
     tokens_used = db.Column(db.Integer, default=0)
+
+    # Plan gate
+    plan_xml = db.Column(db.Text, nullable=True)
+    plan_approved = db.Column(db.Boolean, nullable=True)
+    blocked_steps_json = db.Column(db.Text, default="[]")
+
+    # Reviewer outcome: approved|rejected|skipped
+    reviewer_verdict = db.Column(db.String(32), nullable=True)
+
+    # Remediation loop counter
+    remediation_attempts = db.Column(db.Integer, default=0)
 
     agent = db.relationship("Agent", back_populates="runs")
     task = db.relationship("Task", back_populates="agent_runs")
@@ -96,6 +117,9 @@ class AgentRun(db.Model):
             "iterations_used": self.iterations_used,
             "tokens_used": self.tokens_used,
             "step_count": len(self.steps),
+            "plan_approved": self.plan_approved,
+            "reviewer_verdict": self.reviewer_verdict,
+            "remediation_attempts": self.remediation_attempts,
         }
 
 
@@ -119,4 +143,22 @@ class AgentStep(db.Model):
     approved = db.Column(db.Boolean, nullable=True)  # None=pending, True=approved, False=rejected
     approved_at = db.Column(db.DateTime, nullable=True)
 
+    # Idempotency checkpointing: SHA-256 of (tool_name + canonical args)
+    checkpoint_hash = db.Column(db.String(64), nullable=True)
+    is_checkpointed = db.Column(db.Boolean, default=False)
+    blocked = db.Column(db.Boolean, default=False)
+
     run = db.relationship("AgentRun", back_populates="steps")
+
+
+class TokenUsage(db.Model):
+    """Per-run token consumption for daily/monthly budget enforcement."""
+    __tablename__ = "token_usage"
+
+    id = db.Column(db.String(36), primary_key=True, default=_uuid)
+    agent_id = db.Column(db.String(36), db.ForeignKey("agents.id"), nullable=False)
+    run_id = db.Column(db.String(36), db.ForeignKey("agent_runs.id"), nullable=True)
+    tokens_used = db.Column(db.Integer, nullable=False, default=0)
+    period_day = db.Column(db.String(10), nullable=False)    # YYYY-MM-DD
+    period_month = db.Column(db.String(7), nullable=False)   # YYYY-MM
+    created_at = db.Column(db.DateTime, default=_now)
