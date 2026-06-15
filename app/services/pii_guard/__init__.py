@@ -229,7 +229,7 @@ class PIIGuard:
             self._ner_model = GLiNER.from_pretrained(model_name)
             self._ner_ready = True
             log.info(f"PII Guard: GLiNER loaded ({model_name})")
-        except Exception as e:
+        except BaseException as e:
             log.warning(f"PII Guard: GLiNER unavailable ({e}) — Stage 2 disabled")
 
     def _init_judge(self):
@@ -247,7 +247,7 @@ class PIIGuard:
             )
             self._judge_ready = True
             log.info(f"PII Guard: Judge pipeline loaded ({model_name})")
-        except Exception as e:
+        except BaseException as e:
             log.warning(f"PII Guard: Judge model unavailable ({e}) — Stage 3 disabled")
 
     # ── Core API ──────────────────────────────────────────────────────────────
@@ -399,6 +399,13 @@ class PIIGuard:
         if self._regex_ready:
             return "degraded"  # regex-only mode: basic coverage, no NER/judge
         return "disabled"
+
+    @property
+    def models_unavailable(self) -> bool:
+        """Return True if no scan stage loaded — models not downloaded or broken."""
+        if not self._initialized:
+            return False
+        return not (self._presidio_ready or self._regex_ready or self._ner_ready)
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────

@@ -533,6 +533,7 @@ def stream_messages(session_id):
     # If the guard fails to initialize, the original prompt passes through
     # (non-fatal). This prevents a client from bypassing PII detection.
     pii_globally_enabled = Setting.get("pii.guard.enabled", True)
+    _pii_guard_disabled = False  # set True if guard cannot protect this message
     if pii_globally_enabled:
         try:
             from app.services.pii_guard import get_pii_guard
@@ -542,8 +543,11 @@ def stream_messages(session_id):
             )
             if pii_found:
                 prompt = clean_prompt  # send sanitized text to LLM
+            if guard.models_unavailable:
+                _pii_guard_disabled = True
         except Exception as e:
             log.warning("PII guard failed (non-fatal, original prompt passes through): %s", e)
+            _pii_guard_disabled = True
 
     # ── Nova skill injection — prepend matching skill system prompt ──────────────
     skill_injection = _match_nova_skill(prompt)
@@ -576,6 +580,16 @@ def stream_messages(session_id):
         # Emit compaction event first (blue card UI)
         if _compaction_event:
             yield _sse_format("compaction", _compaction_event)
+
+        # Warn when PII guard models are missing — no sensitive data filtering active
+        if _pii_guard_disabled:
+            yield _sse_format("pii_warning", {
+                "message": (
+                    "PII guard is not active — the AI models used for sensitive data "
+                    "detection are not installed or failed to load. Be cautious about "
+                    "what you send to the LLM. Run the model downloader to restore protection."
+                )
+            })
 
         # SECURITY: cap max_turns server-side to prevent runaway tool loops.
         # A client or adversarial LLM response cannot exceed MAX_TOOL_TURNS.

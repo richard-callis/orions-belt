@@ -94,6 +94,20 @@
       </div>
     </div>
 
+    <!-- PII guard warning banner — shown when guard models are not loaded -->
+    <div id="pii-warning-banner" class="hidden items-center justify-between gap-3 px-4 py-2 border-b border-status-warning/40 bg-status-warning/10 flex-shrink-0">
+      <div class="flex items-center gap-2 min-w-0">
+        <i data-lucide="shield-alert" class="w-4 h-4 text-status-warning flex-shrink-0"></i>
+        <span class="text-sm text-status-warning" id="pii-warning-text">
+          PII guard is not active — be cautious about sensitive data you share with the LLM.
+        </span>
+      </div>
+      <button onclick="document.getElementById('pii-warning-banner').classList.add('hidden')"
+              class="flex-shrink-0 text-status-warning/60 hover:text-status-warning transition-colors" title="Dismiss">
+        <i data-lucide="x" class="w-4 h-4"></i>
+      </button>
+    </div>
+
     <!-- Plan mode banner — shown when session is linked to an epic/feature/task -->
     <div id="plan-banner" class="hidden items-center justify-between px-4 py-2 border-b border-accent/30 bg-accent/5 flex-shrink-0">
       <div class="flex items-center gap-2">
@@ -938,6 +952,16 @@ async function streamResponse(userPrompt) {
             msgs.scrollTop = msgs.scrollHeight;
             lastToolCallDiv = null;
             break;
+
+          case 'pii_warning': {
+            const banner = document.getElementById('pii-warning-banner');
+            const txt = document.getElementById('pii-warning-text');
+            if (data.message) txt.textContent = data.message;
+            banner.classList.remove('hidden');
+            banner.classList.add('flex');
+            lucide.createIcons({ nodes: [banner] });
+            break;
+          }
 
           case 'done':
             // Stream complete — backend already persists the assistant message
