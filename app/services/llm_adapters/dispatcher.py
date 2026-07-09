@@ -20,7 +20,7 @@ def get_adapter(base_url: str, api_key: str, model: str) -> LLMAdapter:
     url = (base_url or "").lower()
     model_lower = (model or "").lower()
 
-    if "api.anthropic.com" in url or model_lower.startswith("claude"):
+    if "api.anthropic.com" in url or "anthropic" in url or model_lower.startswith("claude") or model_lower.startswith("fable"):
         log.debug("adapter=anthropic model=%s", model)
         from app.services.llm_adapters.anthropic_adapter import AnthropicAdapter
         return AnthropicAdapter(base_url, api_key, model)

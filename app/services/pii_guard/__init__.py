@@ -226,11 +226,13 @@ class PIIGuard:
             from gliner import GLiNER
             from config import Config
             model_name = getattr(Config, "PII_NER_MODEL", "urchade/gliner_medium-v2.1")
-            self._ner_model = GLiNER.from_pretrained(model_name)
+            # local_files_only=True prevents blocking network calls during user requests.
+            # If the model isn't cached it raises immediately — caught below.
+            self._ner_model = GLiNER.from_pretrained(model_name, local_files_only=True)
             self._ner_ready = True
             log.info(f"PII Guard: GLiNER loaded ({model_name})")
         except BaseException as e:
-            log.warning(f"PII Guard: GLiNER unavailable ({e}) — Stage 2 disabled")
+            log.warning(f"PII Guard: GLiNER unavailable ({e}) — Stage 2 disabled (run first-run setup to download)")
 
     def _init_judge(self):
         if not _is_torch_available():
@@ -240,15 +242,17 @@ class PIIGuard:
             from transformers import pipeline as hf_pipeline
             from config import Config
             model_name = getattr(Config, "PII_JUDGE_MODEL", "cross-encoder/nli-deberta-v3-small")
+            # local_files_only=True prevents blocking network calls during user requests.
             self._judge_pipeline = hf_pipeline(
                 "zero-shot-classification",
                 model=model_name,
                 device=-1,
+                local_files_only=True,
             )
             self._judge_ready = True
             log.info(f"PII Guard: Judge pipeline loaded ({model_name})")
         except BaseException as e:
-            log.warning(f"PII Guard: Judge model unavailable ({e}) — Stage 3 disabled")
+            log.warning(f"PII Guard: Judge model unavailable ({e}) — Stage 3 disabled (run first-run setup to download)")
 
     # ── Core API ──────────────────────────────────────────────────────────────
 

@@ -20,6 +20,10 @@ from app.models.mcp_tool import MCPTool
 log = logging.getLogger("orions-belt.agents")
 
 
+def _now():
+    return datetime.now(timezone.utc)
+
+
 # ── Context window helpers ────────────────────────────────────────────────────
 
 # Approximate tokens per character (used for threshold estimation)

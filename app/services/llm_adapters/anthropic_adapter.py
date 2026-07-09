@@ -103,7 +103,10 @@ class AnthropicAdapter(LLMAdapter):
     ) -> tuple[str, list[dict], int]:
         import anthropic
 
-        client = anthropic.Anthropic(api_key=self.api_key, timeout=120.0)
+        client_kwargs: dict = {"api_key": self.api_key, "timeout": 120.0}
+        if self.base_url and "api.anthropic.com" not in self.base_url.lower():
+            client_kwargs["base_url"] = self.base_url
+        client = anthropic.Anthropic(**client_kwargs)
         system_prompt, anthropic_messages = _to_anthropic_messages(messages)
         anthropic_tools = _to_anthropic_tools(tool_defs) if tool_defs else []
 

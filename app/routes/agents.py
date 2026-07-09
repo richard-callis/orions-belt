@@ -90,6 +90,14 @@ def update_agent(agent_id):
         agent.llm_model_override = body["llm_model_override"] or None
     if "max_iterations" in body:
         agent.max_iterations = min(int(body["max_iterations"]), 50)
+    if "daily_token_budget" in body:
+        v = body["daily_token_budget"]
+        agent.daily_token_budget = int(v) if v is not None else None
+    if "monthly_token_budget" in body:
+        v = body["monthly_token_budget"]
+        agent.monthly_token_budget = int(v) if v is not None else None
+    if "role_scope" in body:
+        agent.role_scope = body["role_scope"] or None
 
     agent.updated_at = _now()
     db.session.commit()
