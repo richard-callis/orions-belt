@@ -35,6 +35,12 @@ os.environ["HF_HOME"] = str(BASE_DIR / "models")
 os.environ["TRANSFORMERS_CACHE"] = str(BASE_DIR / "models" / "hub")
 
 # ── Model list ────────────────────────────────────────────────────────────────
+#
+# en_core_web_sm is NOT listed here — it is bundled as a pip dependency in
+# requirements.txt and installed automatically with `pip install -r requirements.txt`.
+# It provides NLP-based Presidio detection (Stage 1) even when HuggingFace is
+# unreachable, acting as the always-available fallback.
+#
 MODELS = [
     {
         "id": "urchade/gliner_medium-v2.1",
@@ -123,7 +129,9 @@ def main():
     print("  Orion's Belt — Model Downloader")
     print("  ================================")
     print(f"  Cache : {BASE_DIR / 'models'}")
-    print(f"  Total : {TOTAL_MB} MB across {len(MODELS)} models")
+    print(f"  Total : {TOTAL_MB} MB across {len(MODELS)} models  (+ en_core_web_sm via pip)")
+    print("  Note  : en_core_web_sm is already installed via requirements.txt")
+    print("          and provides PII detection even if the downloads below fail.")
     if SSL_BYPASS:
         print("  Mode  : SSL bypass active")
     print()
