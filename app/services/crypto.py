@@ -20,18 +20,28 @@ _fernet: Fernet | None = None
 
 
 def _load_key() -> Fernet:
-    """Load and cache the Fernet key from .secret_key."""
+    """Load and cache the Fernet key from .secret_key or SECRET_KEY env var."""
     global _fernet
     if _fernet is not None:
         return _fernet
 
     try:
-        raw = _SECRET_KEY_PATH.read_text().strip()
+        if _SECRET_KEY_PATH.exists():
+            raw = _SECRET_KEY_PATH.read_text().strip()
+            log.info("Encryption key loaded from %s", _SECRET_KEY_PATH)
+        else:
+            env_key = os.environ.get("SECRET_KEY", "").strip()
+            if not env_key:
+                raise FileNotFoundError(
+                    f"{_SECRET_KEY_PATH} not found and SECRET_KEY env var is not set"
+                )
+            # Derive a stable 32-byte key from the env var string
+            raw = env_key.encode("utf-8").hex()[:64].ljust(64, "0")
+            log.info("Encryption key derived from SECRET_KEY env var")
         # 64 hex chars -> 32 raw bytes -> base64url -> Fernet key
         raw_bytes = bytes.fromhex(raw)
         key = base64.urlsafe_b64encode(raw_bytes)
         _fernet = Fernet(key)
-        log.info("Encryption key loaded from %s", _SECRET_KEY_PATH)
         return _fernet
     except Exception as e:
         log.error("Failed to load encryption key: %s", e)
