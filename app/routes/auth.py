@@ -23,8 +23,16 @@ def login():
     stored_user = Setting.get("auth.username")
     stored_hash = Setting.get("auth.password_hash")
 
+    # No credentials configured — auto-login mode for local-only installs
     if not stored_user or not stored_hash:
-        return jsonify({"error": "No credentials configured — complete first-run setup"}), 403
+        import secrets
+        token = secrets.token_hex(32)
+        Setting.set("auth.session_token", token)
+        Setting.set("auth.username", "admin")
+        db.session.commit()
+        resp = make_response(jsonify({"ok": True, "username": "admin"}))
+        resp.set_cookie("orions_belt_session", token, httponly=True, samesite="Lax", max_age=86400 * 7)
+        return resp
 
     if username != stored_user:
         return jsonify({"error": "Invalid credentials"}), 401

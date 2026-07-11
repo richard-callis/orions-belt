@@ -138,9 +138,28 @@ def start_run(agent_id):
 
     try:
         from app.services.agents import run_agent
-        session_id = body.get("session_id")  # optional — links agent run to a chat session
-        run = run_agent(agent_id=agent_id, task_id=task_id, session_id=session_id)
-        return jsonify(run.to_dict()), 202
+        import threading
+        session_id = body.get("session_id")
+
+        run_holder = {}
+        error_holder = {}
+
+        def _run():
+            try:
+                run_holder["run"] = run_agent(agent_id=agent_id, task_id=task_id, session_id=session_id)
+            except Exception as e:
+                error_holder["error"] = str(e)
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join(timeout=2.0)  # wait up to 2s to get initial run record
+
+        if "error" in error_holder:
+            return jsonify({"error": error_holder["error"]}), 500
+        if "run" in run_holder:
+            return jsonify(run_holder["run"].to_dict()), 202
+        # Still running in background — return accepted
+        return jsonify({"status": "accepted", "agent_id": agent_id, "task_id": task_id}), 202
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -192,6 +211,17 @@ def get_run(run_id):
         for s in run.steps
     ]
     return jsonify(data)
+
+
+@bp.route("/api/agent-runs/<run_id>/resume-plan", methods=["POST"])
+def resume_run_plan(run_id):
+    """Approve a pending_validation run and resume execution."""
+    body = request.get_json() or {}
+    from app.services.agents import approve_plan
+    ok = approve_plan(run_id, blocked_steps=body.get("blocked_steps", []))
+    if not ok:
+        return jsonify({"error": "Run not found or not awaiting plan approval"}), 404
+    return jsonify({"success": True, "run_id": run_id})
 
 
 @bp.route("/api/agent-runs/<run_id>/cancel", methods=["POST"])

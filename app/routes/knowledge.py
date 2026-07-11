@@ -23,6 +23,13 @@ def _now():
 VALID_TYPES = {"note", "wiki", "runbook", "llm-context"}
 
 
+@bp.route("/")
+@bp.route("")
+def index():
+    from flask import render_template
+    return render_template("knowledge.html")
+
+
 @bp.route("/api/knowledge", methods=["GET"])
 def list_notes():
     q = Note.query

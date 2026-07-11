@@ -330,7 +330,7 @@ def messages_endpoint(session_id):
         .order_by(Message.created_at.asc())\
         .all()
     compactions = ContextCompaction.query.filter_by(session_id=session_id)\
-        .order_by(ContextCompaction.comacted_at.asc())\
+        .order_by(ContextCompaction.compacted_at.asc())\
         .all()
     return jsonify({
         "messages": [
@@ -351,7 +351,7 @@ def messages_endpoint(session_id):
                 "messages_compacted": c.messages_compacted,
                 "summary": c.summary,
                 "archived_messages": json.loads(c.archived_messages) if c.archived_messages else [],
-                "timestamp": c.comacted_at.isoformat() if c.comacted_at else None,
+                "timestamp": c.compacted_at.isoformat() if c.compacted_at else None,
             }
             for c in compactions
         ],
@@ -444,11 +444,10 @@ def stream_messages(session_id):
             "messages_compacted": record.messages_compacted,
             "summary": record.summary,
             "archived_messages": json.loads(record.archived_messages) if record.archived_messages else [],
-            "timestamp": record.comacted_at.isoformat() if record.comacted_at else _now().isoformat(),
+            "timestamp": record.compacted_at.isoformat() if record.compacted_at else _now().isoformat(),
         }
 
     # LLM configuration — read from active provider, fallback to URL overrides
-    import json
     llm_providers_raw = Setting.get("llm.providers")
     llm_active_id = Setting.get("llm.active_provider")
 
@@ -801,6 +800,12 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
                         except json.JSONDecodeError:
                             log.warning("llm.json_error payload=%s", payload[:200])
                             continue
+
+                        # Parse usage chunk (OpenAI sends this as a separate final chunk)
+                        usage = chunk.get("usage")
+                        if usage:
+                            llm_log.tokens_in = usage.get("prompt_tokens", 0)
+                            llm_log.tokens_out = usage.get("completion_tokens", 0)
 
                         choices = chunk.get("choices", [])
                         if not choices:

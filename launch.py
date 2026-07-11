@@ -1076,14 +1076,6 @@ def main():
     try:
         import webview
 
-        # If the auth token file is missing (user logged out), clear stale
-        # browser state so the auth overlay shows on next page load.
-        _auth_token_file = Config.AUTH_TOKEN_FILE
-        if not _auth_token_file.exists():
-            log.info("Auth token file missing — clearing stale browser state")
-        else:
-            log.info("Auth token file found — session valid")
-
         window = webview.create_window(
             title="Orion's Belt",
             url=start_url,

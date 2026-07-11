@@ -161,24 +161,8 @@
         <!-- Detection pipeline -->
         <div>
           <label class="text-xs font-semibold text-text-muted uppercase tracking-wider block mb-3">Detection Pipeline</label>
-          <div class="space-y-2">
-            {% set pipeline = [
-              ('check-circle-2','text-status-healthy','Presidio (rule-based)','Active','Catches SSNs, emails, phone numbers, credit cards, dates of birth via pattern matching'),
-              ('check-circle-2','text-status-healthy','GLiNER — gliner_medium-v2.1','Active','Zero-shot NER — detects any entity type (names, orgs, locations, SSNs) regardless of capitalization (~400MB, CPU)'),
-              ('circle','text-text-muted','PHI Judge — nli-deberta-v3-small','Downloading...','Zero-shot classifier: flags ambiguous text as PII / PHI / safe (~180MB)'),
-            ] %}
-            {% for icon, color, name, status, desc in pipeline %}
-            <div class="flex items-start gap-3 p-3 rounded-lg bg-bg-raised">
-              <i data-lucide="{{ icon }}" class="w-4 h-4 {{ color }} flex-shrink-0 mt-0.5"></i>
-              <div class="flex-1">
-                <div class="flex items-center gap-2 mb-0.5">
-                  <span class="text-sm font-medium text-text-primary">{{ name }}</span>
-                  <span class="text-[10px] {{ color }}">{{ status }}</span>
-                </div>
-                <p class="text-xs text-text-muted">{{ desc }}</p>
-              </div>
-            </div>
-            {% endfor %}
+          <div id="piiPipelineStatus" class="space-y-2">
+            <div class="text-xs text-text-muted p-3">Loading pipeline status…</div>
           </div>
         </div>
 
@@ -853,5 +837,53 @@ document.getElementById('pii-enabled-toggle').addEventListener('change', async f
 
 // Load both toggles on page load (LLM section is shown first)
 loadDebugToggle();
+
+// ── PII pipeline status (dynamic) ────────────────────────────────────────────
+async function loadPiiPipelineStatus() {
+  const el = document.getElementById('piiPipelineStatus');
+  if (!el) return;
+  try {
+    const r = await fetch('/api/pii/status');
+    const data = await r.json();
+    const s = data.stages || {};
+    const stages = [
+      {
+        name: 'Presidio (rule-based)',
+        desc: 'Catches SSNs, emails, phone numbers, credit cards, dates of birth via pattern matching',
+        ok: !!s.presidio,
+        degraded: !!s.regex,
+        statusLabel: s.presidio ? 'Active' : (s.regex ? 'Degraded (regex fallback)' : 'Not loaded'),
+      },
+      {
+        name: 'GLiNER — gliner_medium-v2.1',
+        desc: 'Zero-shot NER — detects any entity type regardless of capitalization (~400 MB, CPU)',
+        ok: !!s.ner,
+        statusLabel: s.ner ? 'Active' : 'Not loaded — run first-run setup',
+      },
+      {
+        name: 'PHI Judge — nli-deberta-v3-small',
+        desc: 'Zero-shot classifier: flags ambiguous text as PII / PHI / safe (~180 MB)',
+        ok: !!s.judge,
+        statusLabel: s.judge ? 'Active' : 'Not loaded — run first-run setup',
+      },
+    ];
+    el.innerHTML = stages.map(st => `
+      <div class="flex items-start gap-3 p-3 rounded-lg bg-bg-raised">
+        <i data-lucide="${st.ok ? 'check-circle-2' : (st.degraded ? 'alert-circle' : 'circle')}"
+           class="w-4 h-4 ${st.ok ? 'text-status-healthy' : (st.degraded ? 'text-status-warning' : 'text-text-muted')} flex-shrink-0 mt-0.5"></i>
+        <div class="flex-1">
+          <div class="flex items-center gap-2 mb-0.5">
+            <span class="text-sm font-medium text-text-primary">${st.name}</span>
+            <span class="text-[10px] ${st.ok ? 'text-status-healthy' : (st.degraded ? 'text-status-warning' : 'text-text-muted')}">${st.statusLabel}</span>
+          </div>
+          <p class="text-xs text-text-muted">${st.desc}</p>
+        </div>
+      </div>`).join('');
+    lucide.createIcons();
+  } catch (e) {
+    el.innerHTML = '<div class="text-xs text-text-muted p-3">Could not load pipeline status.</div>';
+  }
+}
+loadPiiPipelineStatus();
 </script>
 {% endblock %}
