@@ -1,0 +1,11 @@
+{
+  "name": "orions-belt-assets",
+  "private": true,
+  "scripts": {
+    "build": "tailwindcss -c tailwind.config.js -i tailwind.input.css -o ../app/static/css/tailwind.css --minify",
+    "watch": "tailwindcss -c tailwind.config.js -i tailwind.input.css -o ../app/static/css/tailwind.css --watch"
+  },
+  "devDependencies": {
+    "tailwindcss": "3.4.17"
+  }
+}

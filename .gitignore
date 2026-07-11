@@ -56,3 +56,6 @@ desktop.ini
 
 # Project folders (user content, not tracked in git)
 /projects/
+
+# Frontend build artifacts (node_modules only — compiled assets ARE committed)
+scripts/node_modules/
