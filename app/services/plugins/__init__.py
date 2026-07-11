@@ -63,7 +63,7 @@ class PluginManager:
         if name in self._plugins:
             return {"name": name, "status": "skipped", "reason": "already loaded"}
 
-        plugin_path = os.path.join(extensions_dir, f"{plugin_module}.py")
+        plugin_path = str(plugin_module)
 
         try:
             # Check whitelist

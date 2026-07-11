@@ -181,13 +181,19 @@ class PIIGuard:
             self._initialized = True
 
     def _init_presidio(self):
-        """Load Presidio with explicit spaCy NLP engine to avoid triggering torch."""
+        """Load Presidio with the bundled en_core_web_sm spaCy model.
+
+        en_core_web_sm ships as a pip dependency (requirements.txt) so it is
+        always available after `pip install -r requirements.txt` — no separate
+        HuggingFace download needed.  This makes Presidio the guaranteed
+        fallback even when GLiNER/DeBERTa cannot be downloaded.
+        """
         try:
             from presidio_analyzer import AnalyzerEngine
             from presidio_analyzer.nlp_engine import NlpEngineProvider
 
-            # Explicitly configure spaCy so presidio never falls through to
-            # a transformer-based engine (which would import torch and fail if
+            # Pin to en_core_web_sm so Presidio never falls through to a
+            # transformer-based engine (which would import torch and fail if
             # the torch DLL is broken on Windows).
             nlp_config = {
                 "nlp_engine_name": "spacy",
@@ -197,24 +203,31 @@ class PIIGuard:
                 provider = NlpEngineProvider(nlp_configuration=nlp_config)
                 nlp_engine = provider.create_engine()
                 self._presidio_analyzer = AnalyzerEngine(nlp_engine=nlp_engine)
-            except Exception:
-                # en_core_web_sm not downloaded yet — try default init
+                log.info("PII Guard: Presidio loaded with en_core_web_sm (Stage 1 active)")
+            except OSError as spacy_err:
+                # en_core_web_sm not found — should not happen after pip install,
+                # but fall back to Presidio default init and warn clearly.
+                log.warning(
+                    "PII Guard: en_core_web_sm not found (%s). "
+                    "Run: pip install -r requirements.txt  to install the bundled model.",
+                    spacy_err,
+                )
                 self._presidio_analyzer = AnalyzerEngine()
+                log.info("PII Guard: Presidio loaded with default NLP engine (Stage 1 active)")
 
             self._presidio_ready = True
-            log.info("PII Guard: Presidio analyzer loaded (Stage 1 active)")
         except OSError as e:
             if "1114" in str(e) or "c10.dll" in str(e) or "DLL" in str(e):
                 log.warning(
-                    f"PII Guard: Presidio unavailable — torch DLL failed ({e}). "
-                    f"{_TORCH_DLL_FIX} — falling back to regex scanner"
+                    "PII Guard: Presidio unavailable — torch DLL failed (%s). "
+                    "%s — falling back to regex scanner", e, _TORCH_DLL_FIX
                 )
             else:
-                log.warning(f"PII Guard: Presidio unavailable ({e}) — falling back to regex scanner")
+                log.warning("PII Guard: Presidio unavailable (%s) — falling back to regex scanner", e)
             self._regex_ready = True
             log.info("PII Guard: Regex fallback scanner active (Stage 1 degraded — common PII patterns only)")
         except Exception as e:
-            log.warning(f"PII Guard: Presidio unavailable ({e}) — falling back to regex scanner")
+            log.warning("PII Guard: Presidio unavailable (%s) — falling back to regex scanner", e)
             self._regex_ready = True
             log.info("PII Guard: Regex fallback scanner active (Stage 1 degraded — common PII patterns only)")
 
@@ -226,11 +239,13 @@ class PIIGuard:
             from gliner import GLiNER
             from config import Config
             model_name = getattr(Config, "PII_NER_MODEL", "urchade/gliner_medium-v2.1")
-            self._ner_model = GLiNER.from_pretrained(model_name)
+            # local_files_only=True prevents blocking network calls during user requests.
+            # If the model isn't cached it raises immediately — caught below.
+            self._ner_model = GLiNER.from_pretrained(model_name, local_files_only=True)
             self._ner_ready = True
             log.info(f"PII Guard: GLiNER loaded ({model_name})")
-        except Exception as e:
-            log.warning(f"PII Guard: GLiNER unavailable ({e}) — Stage 2 disabled")
+        except BaseException as e:
+            log.warning(f"PII Guard: GLiNER unavailable ({e}) — Stage 2 disabled (run first-run setup to download)")
 
     def _init_judge(self):
         if not _is_torch_available():
@@ -240,15 +255,17 @@ class PIIGuard:
             from transformers import pipeline as hf_pipeline
             from config import Config
             model_name = getattr(Config, "PII_JUDGE_MODEL", "cross-encoder/nli-deberta-v3-small")
+            # local_files_only=True prevents blocking network calls during user requests.
             self._judge_pipeline = hf_pipeline(
                 "zero-shot-classification",
                 model=model_name,
                 device=-1,
+                local_files_only=True,
             )
             self._judge_ready = True
             log.info(f"PII Guard: Judge pipeline loaded ({model_name})")
-        except Exception as e:
-            log.warning(f"PII Guard: Judge model unavailable ({e}) — Stage 3 disabled")
+        except BaseException as e:
+            log.warning(f"PII Guard: Judge model unavailable ({e}) — Stage 3 disabled (run first-run setup to download)")
 
     # ── Core API ──────────────────────────────────────────────────────────────
 
@@ -399,6 +416,13 @@ class PIIGuard:
         if self._regex_ready:
             return "degraded"  # regex-only mode: basic coverage, no NER/judge
         return "disabled"
+
+    @property
+    def models_unavailable(self) -> bool:
+        """Return True if no scan stage loaded — models not downloaded or broken."""
+        if not self._initialized:
+            return False
+        return not (self._presidio_ready or self._regex_ready or self._ner_ready)
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────

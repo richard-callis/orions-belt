@@ -182,7 +182,7 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
     # Enforce directory-level tier caps (read_only, max_tier) for path-based tools.
     # _get_effective_tier returns min(tool.tier, directory.max_tier); if that is
     # lower than the tool's natural tier the directory does not allow this operation.
-    path_arg = args.get("path") or args.get("src") or args.get("dest") or ""
+    path_arg = args.get("path") or args.get("src") or args.get("dest") or args.get("source") or args.get("destination") or ""
     if path_arg:
         effective_tier = _get_effective_tier(str(path_arg), tool.tier)
         if effective_tier < tool.tier:
@@ -302,6 +302,12 @@ def _log_audit(tool_name: str, tier: int, caller: str, session_id: str | None,
         result: Tool output/result string.
         error: Optional error message.
     """
+    if error:
+        outcome = "rejected"
+    elif tier <= TIER_READ:
+        outcome = "auto"
+    else:
+        outcome = "approved"
     log = AuditLog(
         tool_name=tool_name,
         tier=tier,
@@ -309,7 +315,7 @@ def _log_audit(tool_name: str, tier: int, caller: str, session_id: str | None,
         session_id=session_id,
         run_id=run_id,
         input_summary=input_params[:500],
-        outcome="auto" if tier <= TIER_READ else "pending",
+        outcome=outcome,
         result_summary=result[:1000],
         error=error,
     )
@@ -444,21 +450,6 @@ async def _handle_run_sql_query(tool_name: str, args: dict) -> str:
     except Exception as e:
         return f"Error running query: {e}"
 
-
-async def _handle_search_emails(tool_name: str, args: dict) -> str:
-    """Search Outlook emails (read-only)."""
-    import win32com.client  # Windows only
-    outlook = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
-    inbox = outlook.DefaultFolder(6)  # olFolderInbox
-
-    query = args.get("query", "")
-    count = args.get("count", 20)
-
-    results = []
-    for item in list(inbox.Items)[:count]:
-        if not query or query.lower() in (item.Subject or "").lower() or query.lower() in (item.Body or "").lower():
-            results.append(f"  {item.Subject} — {item.SenderName} — {item.ReceivedOn.strftime('%Y-%m-%d')}")
-    return "\n".join(results) if results else "No matching emails found."
 
 
 # ── Tier 1: Create Operations ────────────────────────────────────────────────

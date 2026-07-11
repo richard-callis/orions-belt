@@ -104,6 +104,27 @@
     font-size: 0.9rem;
     color: #22c55e;
   }
+
+  .skip-wrap {
+    margin-top: 28px;
+    text-align: center;
+  }
+  .skip-btn {
+    background: none;
+    border: 1px solid #333;
+    color: #666;
+    padding: 8px 20px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    transition: border-color 0.2s, color 0.2s;
+  }
+  .skip-btn:hover { border-color: #555; color: #aaa; }
+  .skip-note {
+    margin-top: 8px;
+    font-size: 0.75rem;
+    color: #444;
+  }
 </style>
 </head>
 <body>
@@ -133,6 +154,11 @@
 
   <div class="error-box" id="errorBox"></div>
   <div class="done-msg" id="doneMsg">&#10003; All models ready — creating your session…</div>
+
+  <div class="skip-wrap">
+    <button class="skip-btn" onclick="skipSetup()">Skip — proceed without PII guard</button>
+    <p class="skip-note">The harness works without these models. PII scanning will be disabled until you run setup again.</p>
+  </div>
 </div>
 
 <script>
@@ -212,6 +238,13 @@
     await fetch('/api/first-run/start', { method: 'POST' });
     pollTimer = setInterval(poll, 500);
     poll();
+  }
+
+  async function skipSetup() {
+    try {
+      await fetch('/api/first-run/skip', { method: 'POST' });
+    } catch (_) {}
+    window.location.href = '/';
   }
 
   init();

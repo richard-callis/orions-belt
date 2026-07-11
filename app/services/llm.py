@@ -20,6 +20,10 @@ from app.models.mcp_tool import MCPTool
 log = logging.getLogger("orions-belt.agents")
 
 
+def _now():
+    return datetime.now(timezone.utc)
+
+
 # ── Context window helpers ────────────────────────────────────────────────────
 
 # Approximate tokens per character (used for threshold estimation)
@@ -28,9 +32,9 @@ CHARS_PER_TOKEN = 4
 # Context compaction thresholds (from harness spec)
 # Based on percentage of context window used
 # The "window" is estimated as history_limit * average_msg_chars / CHARS_PER_TOKEN
-CONTEXT_THRESHOLD_WARN = 0.70    # 70% — log warning, prepare summary
-CONTEXT_THRESHOLD_COMPACT = 0.90  # 90% — auto-compact oldest messages
-CONTEXT_THRESHOLD_EMERGENCY = 0.99  # 99% — emergency reset
+CONTEXT_THRESHOLD_WARN = 70      # 70% — log warning, prepare summary
+CONTEXT_THRESHOLD_COMPACT = 90   # 90% — auto-compact oldest messages
+CONTEXT_THRESHOLD_EMERGENCY = 99  # 99% — emergency reset
 
 
 def _estimate_tokens(msg: dict) -> int:

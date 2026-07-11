@@ -330,7 +330,7 @@ def messages_endpoint(session_id):
         .order_by(Message.created_at.asc())\
         .all()
     compactions = ContextCompaction.query.filter_by(session_id=session_id)\
-        .order_by(ContextCompaction.comacted_at.asc())\
+        .order_by(ContextCompaction.compacted_at.asc())\
         .all()
     return jsonify({
         "messages": [
@@ -351,7 +351,7 @@ def messages_endpoint(session_id):
                 "messages_compacted": c.messages_compacted,
                 "summary": c.summary,
                 "archived_messages": json.loads(c.archived_messages) if c.archived_messages else [],
-                "timestamp": c.comacted_at.isoformat() if c.comacted_at else None,
+                "timestamp": c.compacted_at.isoformat() if c.compacted_at else None,
             }
             for c in compactions
         ],
@@ -444,11 +444,10 @@ def stream_messages(session_id):
             "messages_compacted": record.messages_compacted,
             "summary": record.summary,
             "archived_messages": json.loads(record.archived_messages) if record.archived_messages else [],
-            "timestamp": record.comacted_at.isoformat() if record.comacted_at else _now().isoformat(),
+            "timestamp": record.compacted_at.isoformat() if record.compacted_at else _now().isoformat(),
         }
 
     # LLM configuration — read from active provider, fallback to URL overrides
-    import json
     llm_providers_raw = Setting.get("llm.providers")
     llm_active_id = Setting.get("llm.active_provider")
 
@@ -533,6 +532,7 @@ def stream_messages(session_id):
     # If the guard fails to initialize, the original prompt passes through
     # (non-fatal). This prevents a client from bypassing PII detection.
     pii_globally_enabled = Setting.get("pii.guard.enabled", True)
+    _pii_guard_disabled = False  # set True if guard cannot protect this message
     if pii_globally_enabled:
         try:
             from app.services.pii_guard import get_pii_guard
@@ -542,8 +542,11 @@ def stream_messages(session_id):
             )
             if pii_found:
                 prompt = clean_prompt  # send sanitized text to LLM
+            if guard.models_unavailable:
+                _pii_guard_disabled = True
         except Exception as e:
             log.warning("PII guard failed (non-fatal, original prompt passes through): %s", e)
+            _pii_guard_disabled = True
 
     # ── Nova skill injection — prepend matching skill system prompt ──────────────
     skill_injection = _match_nova_skill(prompt)
@@ -576,6 +579,16 @@ def stream_messages(session_id):
         # Emit compaction event first (blue card UI)
         if _compaction_event:
             yield _sse_format("compaction", _compaction_event)
+
+        # Warn when PII guard models are missing — no sensitive data filtering active
+        if _pii_guard_disabled:
+            yield _sse_format("pii_warning", {
+                "message": (
+                    "PII guard is not active — the AI models used for sensitive data "
+                    "detection are not installed or failed to load. Be cautious about "
+                    "what you send to the LLM. Run the model downloader to restore protection."
+                )
+            })
 
         # SECURITY: cap max_turns server-side to prevent runaway tool loops.
         # A client or adversarial LLM response cannot exceed MAX_TOOL_TURNS.
@@ -787,6 +800,12 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
                         except json.JSONDecodeError:
                             log.warning("llm.json_error payload=%s", payload[:200])
                             continue
+
+                        # Parse usage chunk (OpenAI sends this as a separate final chunk)
+                        usage = chunk.get("usage")
+                        if usage:
+                            llm_log.tokens_in = usage.get("prompt_tokens", 0)
+                            llm_log.tokens_out = usage.get("completion_tokens", 0)
 
                         choices = chunk.get("choices", [])
                         if not choices:

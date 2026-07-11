@@ -87,10 +87,11 @@ def update_memory(memory_id):
         # Re-compute embedding when content changes
         try:
             from app.services.memory import get_memory_service
+            import struct
             svc = get_memory_service()
             new_embedding = svc._embed(mem.content)
             if new_embedding:
-                mem.embedding = new_embedding
+                mem.embedding = struct.pack(f'{len(new_embedding)}f', *new_embedding)
         except Exception as e:
             log.warning("memory update: embedding re-generation failed, search recall may degrade: %s", e)
     if "pinned" in body:
@@ -108,8 +109,13 @@ def delete_memory(memory_id):
     mem = Memory.query.get(memory_id)
     if not mem:
         return jsonify({"error": "Memory not found"}), 404
-    db.session.delete(mem)
-    db.session.commit()
+    try:
+        from app.services.memory import get_memory_service
+        get_memory_service().delete(memory_id)
+    except Exception:
+        # Fallback: SQLite-only delete if service unavailable
+        db.session.delete(mem)
+        db.session.commit()
     return "", 204
 
 

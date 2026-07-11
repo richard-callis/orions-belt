@@ -15,6 +15,7 @@ bp = Blueprint("first_run", __name__)
 _state = {
     "started": False,
     "done": False,
+    "skipped": False,
     "error": None,
     "current_model": None,      # human label of model being fetched
     "current_index": 0,         # 1-based
@@ -31,6 +32,9 @@ MODELS = [
 ]
 
 
+_SKIP_SENTINEL = "models/hub/.pii-models-skipped"
+
+
 def _is_cached(base_dir: Path, model_id: str) -> bool:
     folder = "models--" + model_id.replace("/", "--")
     marker = base_dir / "models" / "hub" / folder / "refs" / "main"
@@ -38,6 +42,9 @@ def _is_cached(base_dir: Path, model_id: str) -> bool:
 
 
 def models_ready(base_dir: Path) -> bool:
+    """Return True if all models are cached OR the user previously chose to skip."""
+    if (base_dir / _SKIP_SENTINEL).exists():
+        return True
     return all(_is_cached(base_dir, m["id"]) for m in MODELS)
 
 
@@ -91,6 +98,23 @@ def start():
     _thread = threading.Thread(target=_download_all, args=(BASE_DIR,), daemon=True)
     _thread.start()
     return jsonify({"ok": True})
+
+
+@bp.route("/api/first-run/skip", methods=["POST"])
+def skip():
+    """User chose to skip model downloads and use the harness without PII guard."""
+    with _lock:
+        _state["skipped"] = True
+        _state["done"] = True
+    # Write a sentinel so launch.py doesn't re-open the first-run page next launch
+    try:
+        from config import BASE_DIR
+        sentinel = BASE_DIR / _SKIP_SENTINEL
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.touch()
+    except Exception:
+        pass
+    return jsonify({"ok": True, "skipped": True})
 
 
 @bp.route("/api/first-run/status")

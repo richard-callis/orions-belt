@@ -348,12 +348,32 @@ def approve_step(step_id: str, approved: bool = True) -> bool:
     if run:
         if approved:
             run.status = "running"
+            db.session.commit()
+            # Resume execution so the approved tool actually runs
+            agent = Agent.query.get(run.agent_id)
+            from app.models.work import Task
+            task = Task.query.get(run.task_id)
+            if agent and task:
+                try:
+                    _execute_run(run, agent, task)
+                except Exception as e:
+                    run.status = "failed"
+                    run.error_message = str(e)
+                    run.completed_at = _now()
+                    db.session.commit()
+                    log.error("agent.resume_after_approval run=%s: %s", run.id, e)
+                finally:
+                    if run.tokens_used:
+                        _record_token_usage(run.agent_id, run.id, run.tokens_used)
+                    if agent.status == "running":
+                        agent.status = "idle"
+                        db.session.commit()
         else:
             run.status = "cancelled"
             run.completed_at = _now()
             run.error_message = "Step rejected by user"
+            db.session.commit()
 
-    db.session.commit()
     return True
 
 
