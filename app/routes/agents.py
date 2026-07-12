@@ -167,7 +167,15 @@ def start_run(agent_id):
             return jsonify({"error": error_holder["error"]}), 500
         if run_holder.get("run"):
             return jsonify(run_holder["run"]), 202
-        # Still running in background — return accepted
+        # Still running in background — run_agent commits the run record early,
+        # so look it up and return its id so the client can poll/stream it.
+        db.session.expire_all()
+        recent = (AgentRun.query
+                  .filter_by(agent_id=agent_id, task_id=task_id)
+                  .order_by(AgentRun.created_at.desc())
+                  .first())
+        if recent:
+            return jsonify(recent.to_dict()), 202
         return jsonify({"status": "accepted", "agent_id": agent_id, "task_id": task_id}), 202
     except Exception as e:
         return jsonify({"error": str(e)}), 500

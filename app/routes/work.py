@@ -45,9 +45,14 @@ def _provision_project_folder(project: Project) -> None:
     projects_root = Config.PROJECTS_DIR
     folder_path = projects_root / folder_name
 
-    # Avoid collisions with existing project folders by appending a short ID
-    if folder_path.exists() and not (folder_path / ".project_id").exists():
-        folder_path = projects_root / f"{folder_name}-{project.id[:8]}"
+    # Avoid collisions: if the folder exists and isn't already THIS project's
+    # (empty, or owned by a different project), use a unique suffixed folder
+    # instead of hijacking it / overwriting another project's .project_id.
+    if folder_path.exists():
+        id_file = folder_path / ".project_id"
+        owner = id_file.read_text(encoding="utf-8").strip() if id_file.exists() else None
+        if owner != project.id:
+            folder_path = projects_root / f"{folder_name}-{project.id[:8]}"
 
     try:
         folder_path.mkdir(parents=True, exist_ok=True)

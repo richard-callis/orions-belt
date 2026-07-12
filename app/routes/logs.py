@@ -158,7 +158,10 @@ def api_logs():
     stream = request.args.get("stream", "")
     q = request.args.get("q", "").strip()
     range_str = request.args.get("range", "24h")
-    limit = request.args.get("limit", 100)
+    try:
+        limit = min(int(request.args.get("limit", 100)), 1000)
+    except (ValueError, TypeError):
+        return jsonify({"error": "limit must be an integer"}), 400
 
     entries, stats = _fetch_entries(stream, q or None, range_str, limit)
     if entries is None:
@@ -172,7 +175,10 @@ def api_logs_export():
     stream = request.args.get("stream", "")
     q = request.args.get("q", "").strip()
     range_str = request.args.get("range", "24h")
-    limit = request.args.get("limit", 500)
+    try:
+        limit = min(int(request.args.get("limit", 500)), 5000)
+    except (ValueError, TypeError):
+        return jsonify({"error": "limit must be an integer"}), 400
 
     entries, _ = _fetch_entries(stream, q or None, range_str, limit)
     if entries is None:

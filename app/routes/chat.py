@@ -670,6 +670,11 @@ def stream_messages(session_id):
         # Persist user message before streaming begins
         _save_user_message(session_id, prompt)
 
+        # Bump the session's updated_at so the (updated_at desc) session list
+        # reflects activity, not just renames.
+        session.updated_at = _now()
+        db.session.commit()
+
         # Prepend user message
         history.append({"role": "user", "content": prompt})
 

@@ -125,7 +125,10 @@ def delete_memory(memory_id):
 def search_memories():
     """Semantic search across memories using embedding similarity."""
     query = request.args.get("q", "").strip()
-    top_k = min(int(request.args.get("k", 10)), 50)
+    try:
+        top_k = min(int(request.args.get("k", 10)), 50)
+    except (ValueError, TypeError):
+        return jsonify({"error": "k must be an integer"}), 400
 
     if not query:
         return jsonify({"error": "q parameter is required"}), 400

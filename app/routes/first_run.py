@@ -68,6 +68,9 @@ def _download_all(base_dir: Path):
         except Exception as exc:
             with _lock:
                 _state["error"] = str(exc)
+                # Allow the user to retry — otherwise /start returns
+                # "already_started" forever until the app is restarted.
+                _state["started"] = False
             return
 
     with _lock:
