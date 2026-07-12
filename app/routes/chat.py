@@ -367,6 +367,81 @@ def messages_endpoint(session_id):
     })
 
 
+# ── Tool Approval Endpoints ───────────────────────────────────────────────────
+
+@bp.route("/api/approvals", methods=["GET"])
+def list_approvals():
+    """List tool approvals, optionally filtered by session and status."""
+    from app.models.chat_approval import PendingToolApproval
+    q = PendingToolApproval.query
+    session_id = request.args.get("session_id")
+    if session_id:
+        q = q.filter_by(session_id=session_id)
+    status = request.args.get("status", "pending")
+    if status:
+        q = q.filter_by(status=status)
+    rows = q.order_by(PendingToolApproval.created_at.desc()).limit(50).all()
+    return jsonify([a.to_dict() for a in rows])
+
+
+@bp.route("/api/approvals/<approval_id>", methods=["POST"])
+def resolve_approval(approval_id):
+    """Approve (execute) or reject a pending high-tier tool call from chat."""
+    from app.models.chat_approval import PendingToolApproval
+    approval = PendingToolApproval.query.get(approval_id)
+    if not approval:
+        return jsonify({"error": "Approval not found"}), 404
+    if approval.status != "pending":
+        return jsonify({"error": f"Already {approval.status}"}), 409
+
+    body = request.get_json() or {}
+    approved = bool(body.get("approved", False))
+    approval.resolved_at = _now()
+
+    if not approved:
+        approval.status = "rejected"
+        db.session.commit()
+        _append_session_note(approval.session_id,
+                             f"[User rejected the action '{approval.tool_name}'.]")
+        return jsonify(approval.to_dict())
+
+    # Approved — execute the tool now (the same privileged path chat uses).
+    try:
+        args = json.loads(approval.tool_args) if approval.tool_args else {}
+    except (ValueError, TypeError):
+        args = {}
+    try:
+        result = _run_tool(approval.tool_name, args,
+                           session_id=approval.session_id, run_id=approval.run_id)
+        approval.status = "executed"
+        approval.result = str(result)
+    except Exception as e:
+        approval.status = "failed"
+        approval.result = f"Error: {e}"
+    db.session.commit()
+
+    _append_session_note(
+        approval.session_id,
+        f"[Approved action '{approval.tool_name}' result]\n{approval.result}",
+    )
+    return jsonify(approval.to_dict())
+
+
+def _append_session_note(session_id, note):
+    """Append an outcome note to the session as a user-role message so the model
+    sees it on the next turn (avoids duplicating the pending tool_call pairing)."""
+    msg = Message(
+        id=str(uuid.uuid4()),
+        session_id=session_id,
+        role="user",
+        content=note,
+        created_at=_now(),
+        token_count=len(note) // 4,
+    )
+    db.session.add(msg)
+    db.session.commit()
+
+
 # ── SSE Streaming Endpoint ────────────────────────────────────────────────────
 
 @bp.route("/api/sessions/<session_id>/stream", methods=["POST"])
@@ -655,6 +730,36 @@ def _run_tool(tool_name, args, session_id=None, run_id=None):
         )
     finally:
         loop.close()
+
+
+# Tools at or above this tier are NOT auto-executed in chat — they require
+# explicit user approval (mirrors the agent runner's TIER_HARD_STOP=3). This
+# stops untrusted content (web/email/SQL/file results fed to the model) from
+# driving an unattended destructive action.
+CHAT_APPROVAL_TIER = 3
+
+
+def _tool_tier_map() -> dict:
+    """Map tool name → tier from the MCPTool registry (one query)."""
+    from app.models.mcp_tool import MCPTool
+    return {t.name: t.tier for t in MCPTool.query.all()}
+
+
+def _create_tool_approval(session_id, run_id, tool_name, args, tool_call_id, tier):
+    """Persist a pending high-tier tool call awaiting user approval."""
+    from app.models.chat_approval import PendingToolApproval
+    approval = PendingToolApproval(
+        session_id=session_id,
+        run_id=run_id,
+        tool_name=tool_name,
+        tool_args=json.dumps(args) if not isinstance(args, str) else args,
+        tool_call_id=tool_call_id,
+        tier=tier,
+        status="pending",
+    )
+    db.session.add(approval)
+    db.session.commit()
+    return approval
 
 
 import re as _re
@@ -949,6 +1054,8 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
                     ],
                 })
 
+            tier_map = _tool_tier_map()
+            approval_gated = False
             for tc in pending_tool_calls.values():
                 try:
                     args = json.loads(tc["args"]) if tc["args"] else {}
@@ -961,22 +1068,38 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
 
                 yield _sse_format("tool_call", {"tool": tc["name"], "input": tc["args"]})
 
-                try:
-                    result = _run_tool(tc["name"], args, session_id=session_id, run_id=run_id)
-                except Exception as e:
-                    result = f"Error: {e}"
+                is_text_call = tc["id"].startswith("txt_")
 
-                # Persist tool result
-                _save_tool_message(session_id, "tool", str(result),
-                                   tool_name=tc["name"], tool_call_id=tc["id"])
-
-                yield _sse_format("tool_result", {"tool": tc["name"], "output": str(result)})
+                # Tier gate: high-tier (destructive) tools are not auto-executed.
+                tier = tier_map.get(tc["name"], 0)
+                if tier >= CHAT_APPROVAL_TIER:
+                    approval = _create_tool_approval(
+                        session_id, run_id, tc["name"], args, tc["id"], tier
+                    )
+                    approval_gated = True
+                    result = "[Awaiting user approval — this action was NOT executed.]"
+                    _save_tool_message(session_id, "tool", result,
+                                       tool_name=tc["name"], tool_call_id=tc["id"])
+                    yield _sse_format("approval_required", {
+                        "approval_id": approval.id,
+                        "tool": tc["name"],
+                        "input": tc["args"],
+                        "tier": tier,
+                    })
+                else:
+                    try:
+                        result = _run_tool(tc["name"], args, session_id=session_id, run_id=run_id)
+                    except Exception as e:
+                        result = f"Error: {e}"
+                    # Persist tool result
+                    _save_tool_message(session_id, "tool", str(result),
+                                       tool_name=tc["name"], tool_call_id=tc["id"])
+                    yield _sse_format("tool_result", {"tool": tc["name"], "output": str(result)})
 
                 # Native tool calls use the `tool` role so the provider can
                 # track call/result pairs.  Text-based calls use `user` role
                 # because providers that dropped the tools field will reject
                 # messages with role="tool" (they don't know about tool calls).
-                is_text_call = tc["id"].startswith("txt_")
                 if is_text_call:
                     messages.append({
                         "role": "user",
@@ -988,6 +1111,11 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
                         "tool_call_id": tc["id"],
                         "content": str(result),
                     })
+
+            # Stop the turn loop after gating so nothing else runs unattended;
+            # the user approves the pending call(s) out-of-band.
+            if approval_gated:
+                break
 
         except httpx.TimeoutException as e:
             # Transient — retry with backoff (harness FALLBACK recovery)
@@ -1122,6 +1250,8 @@ def _stream_ollama_gen(base_url, model, system_prompt, history,
             if not pending_tool_calls:
                 break
 
+            tier_map = _tool_tier_map()
+            approval_gated = False
             for tc in pending_tool_calls.values():
                 try:
                     args = json.loads(tc["args"]) if tc["args"] else {}
@@ -1136,17 +1266,37 @@ def _stream_ollama_gen(base_url, model, system_prompt, history,
 
                 yield _sse_format("tool_call", {"tool": tc["name"], "input": tc["args"]})
 
-                try:
-                    result = _run_tool(tc["name"], args, session_id=session_id, run_id=run_id)
-                except Exception as e:
-                    result = f"Error: {e}"
+                # Tier gate: high-tier (destructive) tools are not auto-executed.
+                tier = tier_map.get(tc["name"], 0)
+                if tier >= CHAT_APPROVAL_TIER:
+                    approval = _create_tool_approval(
+                        session_id, run_id, tc["name"], args, tc_id, tier
+                    )
+                    approval_gated = True
+                    result = "[Awaiting user approval — this action was NOT executed.]"
+                    _save_tool_message(session_id, "tool", result,
+                                       tool_name=tc["name"], tool_call_id=tc_id)
+                    yield _sse_format("approval_required", {
+                        "approval_id": approval.id,
+                        "tool": tc["name"],
+                        "input": tc["args"],
+                        "tier": tier,
+                    })
+                else:
+                    try:
+                        result = _run_tool(tc["name"], args, session_id=session_id, run_id=run_id)
+                    except Exception as e:
+                        result = f"Error: {e}"
+                    # Persist tool result
+                    _save_tool_message(session_id, "tool", str(result),
+                                       tool_name=tc["name"], tool_call_id=tc_id)
+                    yield _sse_format("tool_result", {"tool": tc["name"], "output": str(result)})
 
-                # Persist tool result
-                _save_tool_message(session_id, "tool", str(result),
-                                   tool_name=tc["name"], tool_call_id=tc_id)
-
-                yield _sse_format("tool_result", {"tool": tc["name"], "output": str(result)})
                 messages.append({"role": "tool", "content": str(result)})
+
+            # Stop the turn loop after gating so nothing else runs unattended.
+            if approval_gated:
+                break
 
         except httpx.TimeoutException:
             # Transient — retry with backoff (harness FALLBACK recovery)
