@@ -59,6 +59,10 @@ class ToolError(Exception):
 # run_sql_query is excluded: results are connector-scoped and the cache has no
 # authorization dimension, so caching would leak results across agent contexts.
 CACHEABLE_TOOLS = {"read_file", "list_directory", "search_files"}
+# Tools that mutate the filesystem — after one succeeds, the read caches above
+# are stale and must be invalidated so a follow-up read sees fresh content.
+WRITE_TOOLS = {"create_file", "append_to_file", "modify_file", "create_directory",
+               "delete_file", "move_file"}
 
 
 # ── Tier system ───────────────────────────────────────────────────────────────
@@ -182,8 +186,11 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
     # Enforce directory-level tier caps (read_only, max_tier) for path-based tools.
     # _get_effective_tier returns min(tool.tier, directory.max_tier); if that is
     # lower than the tool's natural tier the directory does not allow this operation.
-    path_arg = args.get("path") or args.get("src") or args.get("dest") or args.get("source") or args.get("destination") or ""
-    if path_arg:
+    # Check EVERY path argument — move_file has both source and destination, and
+    # writing into a read_only directory must be blocked regardless of which arg
+    # it arrives in.
+    path_args = [args.get(k) for k in ("path", "src", "dest", "source", "destination") if args.get(k)]
+    for path_arg in path_args:
         effective_tier = _get_effective_tier(str(path_arg), tool.tier)
         if effective_tier < tool.tier:
             tier_names = {TIER_READ: "read-only (Tier 0)", TIER_CREATE: "create (Tier 1)",
@@ -246,6 +253,13 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
             from app.services.mcp.cache import get_tool_cache
             get_tool_cache().set(tool_name, args, result)
 
+        # Invalidate stale read caches after a successful write.
+        if tool_name in WRITE_TOOLS and not (isinstance(result, str) and result.startswith("Error:")):
+            from app.services.mcp.cache import get_tool_cache
+            cache = get_tool_cache()
+            for read_tool in CACHEABLE_TOOLS:
+                cache.invalidate(read_tool)
+
         is_error = isinstance(result, str) and result.startswith("Error:")
         if is_error:
             log.warning("mcp.result tool=%s elapsed=%dms result=%s", tool_name, elapsed_ms, result[:300])
@@ -255,7 +269,7 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         _log_audit(
             tool_name,
             TIER_READ if tool.tier <= TIER_READ else tool.tier,
-            g.current_user or "",
+            getattr(g, "current_user", None) or "",
             getattr(g, "orions_belt_session_id", None),
             getattr(g, "orions_belt_run_id", None),
             input_params,
@@ -267,7 +281,7 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         log.warning("mcp.error  tool=%s elapsed=%dms category=%s %s",
                      tool_name, elapsed_ms, e.category, e.message)
         _log_audit(
-            tool_name, tool.tier, g.current_user or "",
+            tool_name, tool.tier, getattr(g, "current_user", None) or "",
             getattr(g, "orions_belt_session_id", None),
             getattr(g, "orions_belt_run_id", None),
             input_params,
@@ -279,7 +293,7 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         err_msg = str(e)
         log.error("mcp.error  tool=%s elapsed=%dms error=%s", tool_name, elapsed_ms, err_msg, exc_info=True)
         _log_audit(
-            tool_name, tool.tier, g.current_user or "",
+            tool_name, tool.tier, getattr(g, "current_user", None) or "",
             getattr(g, "orions_belt_session_id", None),
             getattr(g, "orions_belt_run_id", None),
             input_params,
@@ -302,12 +316,16 @@ def _log_audit(tool_name: str, tier: int, caller: str, session_id: str | None,
         result: Tool output/result string.
         error: Optional error message.
     """
+    # Outcome reflects what actually happened (this runs AFTER execution):
+    #   error     → the tool raised/returned an error (not a policy rejection)
+    #   approved  → a Tier-3 tool ran, which only happens after explicit approval
+    #   auto      → Tier 0-2 ran automatically (audited; Tier 2 is warn-level)
     if error:
-        outcome = "rejected"
-    elif tier <= TIER_READ:
-        outcome = "auto"
-    else:
+        outcome = "error"
+    elif tier >= TIER_DELETE:
         outcome = "approved"
+    else:
+        outcome = "auto"
     log = AuditLog(
         tool_name=tool_name,
         tier=tier,
@@ -677,12 +695,36 @@ async def _handle_search_emails(tool_name: str, args: dict) -> str:
         return "Error: pywin32 not installed (Windows-only)"
 
     outlook = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
-    inbox = outlook.DefaultFolder(6)
-    query = args.get("query", "")
-    count = args.get("count", 20)
+    inbox = outlook.GetDefaultFolder(6)  # 6 = olFolderInbox
+    query = (args.get("query") or "").lower()
+    try:
+        count = int(args.get("count", 20))
+    except (ValueError, TypeError):
+        count = 20
+    count = max(1, min(count, 100))
 
+    items = inbox.Items
+    try:
+        items.Sort("[ReceivedTime]", True)  # newest first
+    except Exception:
+        pass
+
+    # Filter FIRST, then take up to `count` matches — the old code sliced the
+    # newest `count` emails and searched only those.
     results = []
-    for item in list(inbox.Items)[:count]:
-        if not query or query.lower() in (item.Subject or "").lower():
-            results.append(f"  {item.Subject} — {item.SenderName} — {item.ReceivedOn.strftime('%Y-%m-%d')}")
+    for item in items:
+        try:
+            subject = item.Subject or ""
+        except Exception:
+            continue  # non-mail item (meeting request, etc.)
+        if query and query not in subject.lower():
+            continue
+        try:
+            received = item.ReceivedTime.strftime('%Y-%m-%d')
+        except Exception:
+            received = "?"
+        sender = getattr(item, "SenderName", "") or ""
+        results.append(f"  {subject} — {sender} — {received}")
+        if len(results) >= count:
+            break
     return "\n".join(results) if results else "No matching emails found."
