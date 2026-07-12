@@ -227,6 +227,38 @@ def list_settings():
     return jsonify(result)
 
 
+def _prepare_providers_for_save(new_list):
+    """Encrypt plaintext api_keys and preserve stored secrets for masked entries.
+
+    Prevents a client that round-trips a GET (which returns masked keys) through
+    a save from replacing real keys with mask strings, and ensures plaintext
+    keys are encrypted at rest.
+    """
+    from app.services.crypto import encrypt_data
+    if not isinstance(new_list, list):
+        return new_list
+
+    existing = {}
+    row = Setting.query.get("llm.providers")
+    if row and row.value:
+        try:
+            for p in json.loads(row.value):
+                if p.get("id"):
+                    existing[p["id"]] = p.get("api_key", "")
+        except Exception:
+            pass
+
+    for p in new_list:
+        raw_key = p.get("api_key", "")
+        if not raw_key or str(raw_key).startswith("*"):
+            # masked/empty → keep the stored (already-encrypted) key
+            p["api_key"] = existing.get(p.get("id"), "")
+        elif _looks_plaintext(raw_key):
+            p["api_key"] = encrypt_data(raw_key)
+        # else: already looks encrypted — leave as-is
+    return new_list
+
+
 @bp.route("/api/settings/<key>", methods=["PUT"])
 def set_setting(key):
     """Set a single setting value."""
@@ -243,6 +275,8 @@ def set_setting(key):
     _JSON_KEYS = {"llm.providers"}
     _BOOL_KEYS = {"debug.llm", "pii.guard.enabled"}
     if key in _JSON_KEYS:
+        if key == "llm.providers":
+            value = _prepare_providers_for_save(value)
         Setting.set(key, value, value_type="json")
     elif key in _BOOL_KEYS:
         Setting.set(key, bool(value) if not isinstance(value, bool) else value, value_type="bool")
