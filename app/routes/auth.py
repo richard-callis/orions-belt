@@ -17,13 +17,12 @@ def login():
     username = data.get("username", "").strip()
     password = data.get("password", "")
 
-    if not username or not password:
-        return jsonify({"error": "Username and password required"}), 400
-
     stored_user = Setting.get("auth.username")
     stored_hash = Setting.get("auth.password_hash")
 
-    # No credentials configured — auto-login mode for local-only installs
+    # No credentials configured — auto-login mode for local-only installs.
+    # Checked BEFORE requiring username/password so the desktop launcher's
+    # empty-body login POST succeeds on a fresh install.
     if not stored_user or not stored_hash:
         import secrets
         token = secrets.token_hex(32)
@@ -33,6 +32,10 @@ def login():
         resp = make_response(jsonify({"ok": True, "username": "admin"}))
         resp.set_cookie("orions_belt_session", token, httponly=True, samesite="Lax", max_age=86400 * 7)
         return resp
+
+    # Credentials ARE configured — now a username/password is required.
+    if not username or not password:
+        return jsonify({"error": "Username and password required"}), 400
 
     if username != stored_user:
         return jsonify({"error": "Invalid credentials"}), 401

@@ -153,6 +153,46 @@ class MemoryService:
         log.debug("Memory Service: stored '%s'", title)
         return mem
 
+    def reindex(self, mem) -> bool:
+        """Re-embed an edited memory and rewrite its LanceDB record.
+
+        `mem` is a Memory ORM row already updated in SQLite. Keeps the vector
+        index in sync after a content edit (search reads exclusively from
+        LanceDB, so without this an edited memory is recalled by its old text).
+        Returns True if the vector index was refreshed.
+        """
+        self._ensure_initialized()
+
+        import numpy as np
+        vec = self._embed(mem.content)
+
+        # Keep the SQLite embedding copy consistent too.
+        mem.embedding = np.array(vec, dtype="float32").tobytes() if vec else None
+        if not vec:
+            return False
+
+        try:
+            from app.services.memory.lance_store import get_lance_store
+            store = get_lance_store()
+            store.delete(mem.id)  # remove stale vector, then re-add with same id
+            store.add({
+                "id":                 mem.id,
+                "title":              mem.title,
+                "content":            mem.content,
+                "memory_type":        mem.memory_type,
+                "source":             mem.source,
+                "pinned":             mem.pinned,
+                "scope_project_id":   mem.scope_project_id or "",
+                "scope_epic_id":      mem.scope_epic_id or "",
+                "scope_task_id":      mem.scope_task_id or "",
+                "scope_connector_id": mem.scope_connector_id or "",
+                "created_at":         mem.created_at.isoformat() if mem.created_at else "",
+            }, vec)
+            return True
+        except Exception as e:
+            log.warning("Memory Service: reindex LanceDB write failed id=%s: %s", mem.id, e)
+            return False
+
     def recall(
         self,
         query: str,

@@ -1086,20 +1086,6 @@ def main():
             maximized=True,
         )
 
-        # On first load, clear auth state if the token file is gone.
-        if not _auth_token_file.exists():
-            def clear_auth_if_needed():
-                if not _auth_token_file.exists():
-                    try:
-                        window.evaluate_js("""
-                            try { localStorage.removeItem('auth_token'); } catch(e){}
-                            document.cookie = 'auth_token=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; SameSite=Lax';
-                        """)
-                    except Exception:
-                        pass
-            # Run after a short delay to let the page load
-            threading.Timer(1.0, clear_auth_if_needed).start()
-
         # 3. System tray (minimize to tray)
         tray = create_tray_icon(window)
 

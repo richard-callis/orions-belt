@@ -5,33 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{% block title %}Orion's Belt{% endblock %} — Orion's Belt</title>
 
-  <!-- Tailwind CSS — CDN Play with custom theme -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      darkMode: 'class',
-      theme: {
-        extend: {
-          colors: {
-            accent: '#00A7E1',
-            'bg-page':    '#0f0f0f',
-            'bg-sidebar': '#141414',
-            'bg-card':    '#1a1a1a',
-            'bg-raised':  '#222222',
-            'border-subtle':  '#1e1e1e',
-            'border-visible': '#2d2d2d',
-            'text-primary':   '#e0e0e0',
-            'text-secondary': '#aaaaaa',
-            'text-muted':     '#666666',
-            'status-healthy': '#22c55e',
-            'status-error':   '#ef4444',
-            'status-warning': '#f59e0b',
-            'status-info':    '#3b82f6',
-          },
-        },
-      },
-    }
-  </script>
+  <!-- Tailwind CSS — vendored local build (no runtime CDN dependency).
+       Rebuild after template/JS changes: ./scripts/build_assets.sh -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/tailwind.css') }}" />
 
   <!-- HTMX (local if available, CDN fallback) -->
   <script>
@@ -288,7 +264,7 @@
           window._authenticated = true;
           // Update status bar
           const userEl = document.getElementById('auth-status-user');
-          if (userEl) userEl.textContent = data.windows_user || '';
+          if (userEl) userEl.textContent = data.username || '';
           document.getElementById('auth-overlay').classList.add('hidden');
           return true;
         } else {

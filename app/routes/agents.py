@@ -138,17 +138,26 @@ def start_run(agent_id):
 
     try:
         from app.services.agents import run_agent
+        from flask import current_app
         import threading
         session_id = body.get("session_id")
+
+        # The worker runs outside the request, so it needs its own app context
+        # for Flask-SQLAlchemy (Model.query) to work.
+        app = current_app._get_current_object()
 
         run_holder = {}
         error_holder = {}
 
         def _run():
-            try:
-                run_holder["run"] = run_agent(agent_id=agent_id, task_id=task_id, session_id=session_id)
-            except Exception as e:
-                error_holder["error"] = str(e)
+            with app.app_context():
+                try:
+                    run = run_agent(agent_id=agent_id, task_id=task_id, session_id=session_id)
+                    # Serialize inside the worker's context — the ORM object is
+                    # bound to this thread's session and detaches once it ends.
+                    run_holder["run"] = run.to_dict() if run else None
+                except Exception as e:
+                    error_holder["error"] = str(e)
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()
@@ -156,8 +165,8 @@ def start_run(agent_id):
 
         if "error" in error_holder:
             return jsonify({"error": error_holder["error"]}), 500
-        if "run" in run_holder:
-            return jsonify(run_holder["run"].to_dict()), 202
+        if run_holder.get("run"):
+            return jsonify(run_holder["run"]), 202
         # Still running in background — return accepted
         return jsonify({"status": "accepted", "agent_id": agent_id, "task_id": task_id}), 202
     except Exception as e:
@@ -250,23 +259,37 @@ def stream_run_status(run_id):
         import time
         run = AgentRun.query.get(run_id)
         if not run:
-            yield f'data: {{"error":"not found"}}\n\n'
+            yield 'data: {"error":"not found"}\n\n'
             return
         prev_status = run.status
 
-        while True:
+        # Emit current status immediately so a client that connects AFTER a
+        # transition still renders the correct initial state.
+        yield f'data: {{"status":"{run.status}"}}\n\n'
+        if run.status in ("completed", "failed", "cancelled"):
+            return
+
+        start = time.monotonic()
+        MAX_SECONDS = 3600  # safety cap so a stuck run never spins a thread forever
+
+        while time.monotonic() - start < MAX_SECONDS:
+            time.sleep(1)  # Check every second
             db.session.expire_all()
             run = AgentRun.query.get(run_id)
             if not run:
-                yield f'data: {{"error":"gone"}}\n\n'
-                break
+                yield 'data: {"error":"gone"}\n\n'
+                return
             if run.status != prev_status:
                 prev_status = run.status
                 yield f'data: {{"status":"{run.status}"}}\n\n'
                 # Terminal states — stop streaming
                 if run.status in ("completed", "failed", "cancelled"):
-                    break
-            time.sleep(1)  # Check every second
+                    return
+            else:
+                # Heartbeat: yielding lets the server observe a client
+                # disconnect (GeneratorExit fires at a yield) instead of
+                # spinning forever on an idle run, and keeps proxies open.
+                yield ': ping\n\n'
 
     return Response(
         stream_with_context(generate()),

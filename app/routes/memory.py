@@ -82,24 +82,26 @@ def update_memory(memory_id):
     body = request.get_json() or {}
     if "title" in body:
         mem.title = body["title"]
+    content_changed = False
     if "content" in body:
         mem.content = body["content"]
-        # Re-compute embedding when content changes
-        try:
-            from app.services.memory import get_memory_service
-            import struct
-            svc = get_memory_service()
-            new_embedding = svc._embed(mem.content)
-            if new_embedding:
-                mem.embedding = struct.pack(f'{len(new_embedding)}f', *new_embedding)
-        except Exception as e:
-            log.warning("memory update: embedding re-generation failed, search recall may degrade: %s", e)
+        content_changed = True
     if "pinned" in body:
         mem.pinned = bool(body["pinned"])
     if "memory_type" in body:
         mem.memory_type = body["memory_type"]
     from datetime import datetime, timezone
     mem.updated_at = datetime.now(timezone.utc)
+
+    # Re-embed and rewrite the LanceDB vector so semantic search reflects the
+    # edit (search reads from LanceDB, not the SQLite blob).
+    if content_changed:
+        try:
+            from app.services.memory import get_memory_service
+            get_memory_service().reindex(mem)
+        except Exception as e:
+            log.warning("memory update: reindex failed, search recall may be stale: %s", e)
+
     db.session.commit()
     return jsonify(mem.to_dict())
 

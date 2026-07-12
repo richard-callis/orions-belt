@@ -28,7 +28,7 @@ def _to_anthropic_messages(messages: list[dict]) -> tuple[str | None, list[dict]
     Anthropic expects system as a top-level param, not in the messages array.
     Tool result messages use role "user" with a tool_result content block.
     """
-    system_prompt = None
+    system_parts: list[str] = []
     out = []
 
     for m in messages:
@@ -36,7 +36,10 @@ def _to_anthropic_messages(messages: list[dict]) -> tuple[str | None, list[dict]
         content = m.get("content")
 
         if role == "system":
-            system_prompt = content
+            # Multiple system messages (agent prompt + injected knowledge +
+            # compaction notices) must all be preserved, not overwritten.
+            if content:
+                system_parts.append(content)
             continue
 
         if role == "tool":
@@ -74,6 +77,7 @@ def _to_anthropic_messages(messages: list[dict]) -> tuple[str | None, list[dict]
         if role in ("user", "assistant") and content:
             out.append({"role": role, "content": content})
 
+    system_prompt = "\n\n".join(system_parts) if system_parts else None
     return system_prompt, out
 
 
@@ -122,24 +126,29 @@ class AnthropicAdapter(LLMAdapter):
 
         try:
             resp = client.messages.create(**kwargs)
-        except anthropic.RateLimitError as e:
-            raise TransientError(f"Anthropic rate limit: {e}")
-        except anthropic.OverloadedError as e:
-            raise TransientError(f"Anthropic overloaded: {e}")
-        except anthropic.BadRequestError as e:
-            if "context" in str(e).lower() or "too long" in str(e).lower():
-                raise ContextTooLargeError(f"Context too large: {e}")
-            raise RuntimeError(f"Anthropic bad request: {e}")
         except anthropic.APIConnectionError as e:
             raise TransientError(f"Anthropic connection error: {e}")
+        except anthropic.RateLimitError as e:
+            raise TransientError(f"Anthropic rate limit: {e}")
+        except anthropic.APIStatusError as e:
+            # RateLimitError is a subclass of APIStatusError (caught above);
+            # this handles 5xx (incl. 529 overloaded) and 400 uniformly without
+            # depending on SDK-version-specific exception classes.
+            status = getattr(e, "status_code", None)
+            if status in (500, 502, 503, 529):
+                raise TransientError(f"Anthropic server error {status}: {e}")
+            if status == 400 and ("context" in str(e).lower() or "too long" in str(e).lower()):
+                raise ContextTooLargeError(f"Context too large: {e}")
+            raise RuntimeError(f"Anthropic API error {status}: {e}")
 
         # Extract text and tool use blocks
         response_text = ""
         tool_calls = []
 
+        text_parts = []
         for block in resp.content:
             if block.type == "text":
-                response_text = block.text
+                text_parts.append(block.text)
             elif block.type == "tool_use":
                 tool_calls.append({
                     "id": block.id,
@@ -147,5 +156,6 @@ class AnthropicAdapter(LLMAdapter):
                     "args": block.input or {},
                 })
 
+        response_text = "".join(text_parts)
         tokens = (resp.usage.input_tokens or 0) + (resp.usage.output_tokens or 0)
         return response_text, tool_calls, tokens

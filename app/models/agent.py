@@ -118,6 +118,7 @@ class AgentRun(db.Model):
             "tokens_used": self.tokens_used,
             "step_count": len(self.steps),
             "plan_approved": self.plan_approved,
+            "plan_xml": self.plan_xml,
             "reviewer_verdict": self.reviewer_verdict,
             "remediation_attempts": self.remediation_attempts,
         }
