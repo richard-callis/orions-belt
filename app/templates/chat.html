@@ -912,7 +912,7 @@ async function streamResponse(userPrompt) {
             if (data.content) {
               totalText += data.content;
               assistantText.innerHTML = formatText(totalText);
-              msgs.scrollTop = msgs.scrollHeight;
+              maybeScroll(msgs);
             }
             break;
 
@@ -1224,6 +1224,15 @@ function formatText(text) {
   );
   return escaped;
 }
+
+// Auto-scroll the transcript only when the user is already near the bottom, so
+// scrolling up to read during generation isn't fought by the stream.
+function maybeScroll(el) {
+  if (!el) return;
+  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  if (nearBottom) el.scrollTop = el.scrollHeight;
+}
+window.maybeScroll = maybeScroll;
 
 async function resolveApproval(id, approved, btn) {
   const wrap = btn.closest('[data-approval]');

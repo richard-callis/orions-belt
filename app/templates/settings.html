@@ -607,19 +607,6 @@ async function activateProvider(providerId) {
   }
 }
 
-async function setProviderActive(providerId) {
-  try {
-    const res = await fetch(`/api/llm/providers/${providerId}/activate`, {
-      method: 'PUT',
-    });
-    if (!res.ok) throw new Error('Failed to activate');
-    activeProviderId = providerId;
-    renderProviders();
-  } catch (e) {
-    console.error('Failed to activate:', e);
-  }
-}
-
 // ── Edit / Delete ─────────────────────────────────────────────────────────────
 
 function editProvider(providerId) {
