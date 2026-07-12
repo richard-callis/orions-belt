@@ -279,7 +279,12 @@ def set_setting(key):
             value = _prepare_providers_for_save(value)
         Setting.set(key, value, value_type="json")
     elif key in _BOOL_KEYS:
-        Setting.set(key, bool(value) if not isinstance(value, bool) else value, value_type="bool")
+        if isinstance(value, str):
+            # "false"/"0"/"no"/"off"/"" are all falsey (bool("false") is True).
+            bool_value = value.strip().lower() not in ("false", "0", "no", "off", "")
+        else:
+            bool_value = bool(value)
+        Setting.set(key, bool_value, value_type="bool")
     else:
         Setting.set(key, value, value_type="string")
 

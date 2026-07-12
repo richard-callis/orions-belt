@@ -42,7 +42,7 @@ class OpenAIAdapter(LLMAdapter):
         try:
             resp = client.chat.completions.create(**kwargs)
         except APIStatusError as e:
-            if e.status_code in (429, 500, 503, 529):
+            if e.status_code in (429, 500, 502, 503, 504, 529):
                 raise TransientError(f"HTTP {e.status_code}: {e.message}")
             raise RuntimeError(f"OpenAI API error {e.status_code}: {e.message}")
         except (APIConnectionError, APITimeoutError) as e:

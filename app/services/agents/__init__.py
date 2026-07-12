@@ -585,7 +585,7 @@ def _execute_run(run, agent, task, session_id: str | None = None):
                 step = AgentStep(
                     id=str(uuid.uuid4()),
                     run_id=run.id,
-                    step_number=(iteration * 10) + tool_calls.index(tc),
+                    step_number=(iteration * 1000) + tool_calls.index(tc),
                     tool_name=tool_name,
                     tool_input=json.dumps(tool_args),
                     blocked=True,
@@ -630,7 +630,7 @@ def _execute_run(run, agent, task, session_id: str | None = None):
                 step = AgentStep(
                     id=str(uuid.uuid4()),
                     run_id=run.id,
-                    step_number=(iteration * 10) + tool_calls.index(tc),
+                    step_number=(iteration * 1000) + tool_calls.index(tc),
                     tool_name=tool_name,
                     tool_input=json.dumps(tool_args),
                     required_approval=(tier >= TIER_HARD_STOP),
@@ -667,7 +667,7 @@ def _execute_run(run, agent, task, session_id: str | None = None):
 
             trace = AgentTrace(
                 run_id=run.id,
-                step=(iteration * 10) + tool_calls.index(tc),
+                step=(iteration * 1000) + tool_calls.index(tc),
                 trace_type="tool_call",
                 tool_name=tool_name,
                 tool_args=json.dumps(tool_args)[:500],

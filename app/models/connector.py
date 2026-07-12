@@ -100,6 +100,8 @@ class AuthorizedDirectory(db.Model):
             "recursive": self.recursive,
             "read_only": self.read_only,
             "max_tier": self.max_tier,
+            "enabled": self.enabled,
+            "notes": self.notes,
             "authorized_at": self.authorized_at.isoformat(),
             "expires_at": self.expires_at.isoformat() if self.expires_at else None,
         }
