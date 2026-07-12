@@ -144,13 +144,22 @@ def list_sessions():
         .limit(50)
         .all()
     )
+    # One grouped count instead of lazy-loading every message of every session.
+    from sqlalchemy import func
+    session_ids = [s.id for s in sessions]
+    counts = dict(
+        db.session.query(Message.session_id, func.count(Message.id))
+        .filter(Message.session_id.in_(session_ids))
+        .group_by(Message.session_id)
+        .all()
+    ) if session_ids else {}
     return jsonify([
         {
             "id": s.id,
             "name": s.name,
             "created_at": s.created_at.isoformat() if s.created_at else None,
             "updated_at": s.updated_at.isoformat() if s.updated_at else None,
-            "message_count": len(s.messages),
+            "message_count": counts.get(s.id, 0),
             "linked_epic_id": s.linked_epic_id,
             "linked_feature_id": s.linked_feature_id,
             "linked_task_id": s.linked_task_id,
@@ -724,8 +733,11 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
         body = {"model": model, "messages": messages, "stream": True}
         if tool_defs:
             body["tools"] = tool_defs
-        if "openai" in base_url:
-            body["stream_options"] = {"include_usage": True}
+        # include_usage is part of the OpenAI streaming spec that compatible
+        # servers (llama-server, OpenRouter, LM Studio) mirror; request it for
+        # all of them so token usage is captured, not just api.openai.com. If a
+        # strict server rejects it, the stream=False fallback drops it.
+        body["stream_options"] = {"include_usage": True}
 
         url = f"{base_url.rstrip('/')}/chat/completions"
         headers = {"Content-Type": "application/json"}
@@ -801,11 +813,12 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
                             log.warning("llm.json_error payload=%s", payload[:200])
                             continue
 
-                        # Parse usage chunk (OpenAI sends this as a separate final chunk)
+                        # Parse usage chunk (OpenAI sends this as a separate final
+                        # chunk). Accumulate across turns in a multi-tool-call loop.
                         usage = chunk.get("usage")
                         if usage:
-                            llm_log.tokens_in = usage.get("prompt_tokens", 0)
-                            llm_log.tokens_out = usage.get("completion_tokens", 0)
+                            llm_log.tokens_in += usage.get("prompt_tokens", 0) or 0
+                            llm_log.tokens_out += usage.get("completion_tokens", 0) or 0
 
                         choices = chunk.get("choices", [])
                         if not choices:
@@ -1109,6 +1122,10 @@ def _stream_ollama_gen(base_url, model, system_prompt, history,
                             }
 
                         if done:
+                            # Final chunk carries token counts (accumulate
+                            # across turns in a multi-tool-call conversation).
+                            llm_log.tokens_in += chunk.get("prompt_eval_count", 0) or 0
+                            llm_log.tokens_out += chunk.get("eval_count", 0) or 0
                             break
 
             # After stream — append assistant message and execute any tool calls

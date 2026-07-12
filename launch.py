@@ -929,6 +929,15 @@ def _migrate_schema(app):
         ],
         "agent_traces": [],
     }
+    # Indexes on hot FK columns (idempotent; also declared index=True on the
+    # models so fresh installs get them via create_all).
+    indexes = [
+        ("ix_messages_session_id",           "messages",            "session_id"),
+        ("ix_agent_runs_agent_id",           "agent_runs",          "agent_id"),
+        ("ix_agent_steps_run_id",            "agent_steps",         "run_id"),
+        ("ix_token_usage_agent_id",          "token_usage",         "agent_id"),
+        ("ix_chat_room_messages_room_id",    "chat_room_messages",  "room_id"),
+    ]
     with db.engine.connect() as conn:
         for table, additions in cols.items():
             # Fetch existing column names
@@ -942,6 +951,13 @@ def _migrate_schema(app):
                         f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}"
                     ))
                     print(f"[migrate] added {table}.{col_name}")
+        for idx_name, table, column in indexes:
+            try:
+                conn.execute(db.text(
+                    f"CREATE INDEX IF NOT EXISTS {idx_name} ON {table} ({column})"
+                ))
+            except Exception as e:
+                print(f"[migrate] index {idx_name} skipped: {e}")
         conn.commit()
 
 

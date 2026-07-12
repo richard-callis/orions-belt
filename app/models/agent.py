@@ -67,7 +67,7 @@ class AgentRun(db.Model):
     __tablename__ = "agent_runs"
 
     id = db.Column(db.String(36), primary_key=True, default=_uuid)
-    agent_id = db.Column(db.String(36), db.ForeignKey("agents.id"), nullable=False)
+    agent_id = db.Column(db.String(36), db.ForeignKey("agents.id"), nullable=False, index=True)
     task_id = db.Column(db.String(36), db.ForeignKey("tasks.id"), nullable=False)
 
     # Each run gets its own session for full context tracking
@@ -129,7 +129,7 @@ class AgentStep(db.Model):
     __tablename__ = "agent_steps"
 
     id = db.Column(db.String(36), primary_key=True, default=_uuid)
-    run_id = db.Column(db.String(36), db.ForeignKey("agent_runs.id"), nullable=False)
+    run_id = db.Column(db.String(36), db.ForeignKey("agent_runs.id"), nullable=False, index=True)
     step_number = db.Column(db.Integer, nullable=False)
     created_at = db.Column(db.DateTime, default=_now)
 
@@ -157,7 +157,7 @@ class TokenUsage(db.Model):
     __tablename__ = "token_usage"
 
     id = db.Column(db.String(36), primary_key=True, default=_uuid)
-    agent_id = db.Column(db.String(36), db.ForeignKey("agents.id"), nullable=False)
+    agent_id = db.Column(db.String(36), db.ForeignKey("agents.id"), nullable=False, index=True)
     run_id = db.Column(db.String(36), db.ForeignKey("agent_runs.id"), nullable=True)
     tokens_used = db.Column(db.Integer, nullable=False, default=0)
     period_day = db.Column(db.String(10), nullable=False)    # YYYY-MM-DD
