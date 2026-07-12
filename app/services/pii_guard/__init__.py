@@ -394,11 +394,17 @@ class PIIGuard:
         try:
             from app.models.pii import PIIHashEntry
             tokens = re.findall(r"\[PII:[A-Z_]+:([a-f0-9]+)\]", text)
+            from app.services.crypto import decrypt_data
             for token in tokens:
                 entry = PIIHashEntry.query.filter_by(hash_token=token).first()
                 if entry:
                     placeholder = f"[PII:{entry.entity_type}:{token}]"
-                    text = text.replace(placeholder, entry.original_value)
+                    # original_value is Fernet-encrypted; fall back to the raw
+                    # value for legacy plaintext rows written before encryption.
+                    original = decrypt_data(entry.original_value)
+                    if original is None:
+                        original = entry.original_value
+                    text = text.replace(placeholder, original)
         except Exception as e:
             log.debug(f"PII Guard: restore error: {e}")
 
@@ -467,6 +473,7 @@ def _replace_with_tokens(
     """
     from app import db
     from app.models.pii import PIIHashEntry
+    from app.services.crypto import encrypt_data
 
     spans_sorted = sorted(spans, key=lambda s: s[0], reverse=True)
     result = text
@@ -478,11 +485,14 @@ def _replace_with_tokens(
         try:
             entry = PIIHashEntry.query.filter_by(hash_token=token).first()
             if not entry:
+                # Encrypt the plaintext PII at rest (SSNs, cards, PHI). The
+                # hash_token/full_hash are derived from the plaintext, so lookup
+                # and restore still work without decrypting for matching.
                 entry = PIIHashEntry(
                     id=str(uuid.uuid4()),
                     hash_token=token,
                     full_hash=full_hash,
-                    original_value=original,
+                    original_value=encrypt_data(original),
                     entity_type=entity_type,
                     detection_source=source,
                     session_id=session_id,

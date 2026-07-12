@@ -91,7 +91,9 @@ _DEFAULT_PROVIDERS = [
 def _get_providers():
     row = Setting.query.get("llm.providers")
     if not row or not row.value:
-        return _DEFAULT_PROVIDERS
+        # Return a copy — callers (add/update) mutate the result, and returning
+        # the module-level default would corrupt it process-wide.
+        return [dict(p) for p in _DEFAULT_PROVIDERS]
     try:
         parsed = json.loads(row.value)
         if isinstance(parsed, list):
@@ -109,7 +111,7 @@ def _get_providers():
             return result
     except Exception as e:
         log.warning("_get_providers: JSON parse failed, falling back to defaults — value=%r, error=%s", (row.value or "")[:200], e)
-    return _DEFAULT_PROVIDERS
+    return [dict(p) for p in _DEFAULT_PROVIDERS]
 
 
 def _looks_plaintext(key: str) -> bool:

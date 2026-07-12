@@ -1198,7 +1198,7 @@ def _save_assistant_message(session_id, content):
         id=str(uuid.uuid4()),
         session_id=session_id,
         role="assistant",
-        content=content[:4000],
+        content=content,
         created_at=_now(),
         token_count=len(content) // 4,
     )
@@ -1214,7 +1214,7 @@ def _save_user_message(session_id, content):
         id=str(uuid.uuid4()),
         session_id=session_id,
         role="user",
-        content=content[:4000],
+        content=content,
         created_at=_now(),
         token_count=len(content) // 4,
     )
@@ -1224,15 +1224,16 @@ def _save_user_message(session_id, content):
 
 def _save_tool_message(session_id, role, content, tool_name=None, tool_call_id=None):
     """Save a tool_call or tool result message to the database."""
+    content = str(content)
     msg = Message(
         id=str(uuid.uuid4()),
         session_id=session_id,
         role=role,
-        content=str(content)[:4000],
+        content=content,
         tool_name=tool_name,
         tool_call_id=tool_call_id,
         created_at=_now(),
-        token_count=len(str(content)) // 4,
+        token_count=len(content) // 4,
     )
     db.session.add(msg)
     db.session.commit()
