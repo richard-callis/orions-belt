@@ -823,6 +823,24 @@ def _strip_tool_call_blocks(text: str) -> str:
 
 def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
                        tool_defs, session_id, run_id, max_turns):
+    """Persist the assistant message even if the client disconnects mid-stream.
+
+    The impl accumulates into `sink["text"]`; this finally-saves it on ANY exit
+    (normal completion, error return, or GeneratorExit on disconnect) so a
+    partial reply the user already saw isn't lost.
+    """
+    sink = {"text": ""}
+    try:
+        yield from _stream_openai_impl(
+            base_url, api_key, model, system_prompt, history,
+            tool_defs, session_id, run_id, max_turns, sink,
+        )
+    finally:
+        _save_assistant_message(session_id, sink["text"])
+
+
+def _stream_openai_impl(base_url, api_key, model, system_prompt, history,
+                        tool_defs, session_id, run_id, max_turns, sink):
     """Synchronous OpenAI-compatible streaming with tool loop.
 
     Uses httpx streaming so text appears token-by-token as it arrives.
@@ -944,6 +962,7 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
                         if content:
                             turn_text += content
                             total_text += content
+                            sink["text"] = total_text
                             log.info("llm.text_chunk len=%d total=%d", len(content), len(total_text))
                             yield _sse_format("text", {"content": content})
 
@@ -1031,6 +1050,7 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
                 if fallback_content:
                     turn_text = fallback_content
                     total_text += fallback_content
+                    sink["text"] = total_text
                     yield _sse_format("text", {"content": fallback_content})
 
             # ── Text-based tool call fallback ─────────────────────────────────
@@ -1172,11 +1192,24 @@ def _stream_openai_gen(base_url, api_key, model, system_prompt, history,
             yield _sse_format("error", {"error": err_str})
             return
 
-    _save_assistant_message(session_id, total_text)
+    # No save here — the _stream_openai_gen wrapper's finally persists sink.
 
 
 def _stream_ollama_gen(base_url, model, system_prompt, history,
                        tool_defs, session_id, run_id, max_turns):
+    """Persist the assistant message even if the client disconnects mid-stream."""
+    sink = {"text": ""}
+    try:
+        yield from _stream_ollama_impl(
+            base_url, model, system_prompt, history,
+            tool_defs, session_id, run_id, max_turns, sink,
+        )
+    finally:
+        _save_assistant_message(session_id, sink["text"])
+
+
+def _stream_ollama_impl(base_url, model, system_prompt, history,
+                        tool_defs, session_id, run_id, max_turns, sink):
     """Synchronous Ollama streaming with tool loop.
 
     Ollama returns newline-delimited JSON (NDJSON), not SSE.
@@ -1244,6 +1277,7 @@ def _stream_ollama_gen(base_url, model, system_prompt, history,
                         if content:
                             turn_text += content
                             total_text += content
+                            sink["text"] = total_text
                             yield _sse_format("text", {"content": content})
 
                         for tc in msg.get("tool_calls") or []:
@@ -1351,8 +1385,7 @@ def _stream_ollama_gen(base_url, model, system_prompt, history,
             yield _sse_format("error", {"error": err_str})
             return
 
-    # Persist
-    _save_assistant_message(session_id, total_text)
+    # No save here — the _stream_ollama_gen wrapper's finally persists sink.
 
 
 def _save_assistant_message(session_id, content):

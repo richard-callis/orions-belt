@@ -66,17 +66,25 @@ class MemoryService:
             log.warning("Memory Service: embedding model unavailable (%s) — recall disabled", e)
 
     def _maybe_migrate(self):
-        """Migrate SQLite embeddings into LanceDB on first startup."""
+        """Backfill LanceDB from SQLite on first startup, and reconcile any
+        rows that later diverged (a Lance write that failed after the SQLite
+        commit) so no memory is left permanently unsearchable."""
         try:
-            from app.services.memory.lance_store import get_lance_store, migrate_from_sqlite
+            from app.services.memory.lance_store import (
+                get_lance_store, migrate_from_sqlite, reconcile_from_sqlite,
+            )
             from app.models.memory import Memory
             store = get_lance_store()
             if store.count() == 0:
                 n = migrate_from_sqlite(Memory)
                 if n:
                     log.info("Memory Service: migrated %d records from SQLite to LanceDB", n)
+            else:
+                n = reconcile_from_sqlite(Memory)
+                if n:
+                    log.info("Memory Service: reconciled %d missing records into LanceDB", n)
         except Exception as e:
-            log.warning("Memory Service: migration skipped — %s", e)
+            log.warning("Memory Service: migration/reconcile skipped — %s", e)
 
     def _embed(self, text: str) -> list[float] | None:
         if not self._model_ready or not self._model:
