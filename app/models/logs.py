@@ -33,7 +33,7 @@ class AuditLog(db.Model):
     target_path = db.Column(db.String(1024), nullable=True)  # file path if applicable
 
     # Outcome
-    outcome = db.Column(db.String(32), nullable=False)       # auto|approved|rejected|blocked
+    outcome = db.Column(db.String(32), nullable=False)       # auto|approved|rejected|blocked|error
     result_summary = db.Column(db.Text, nullable=True)
     error = db.Column(db.Text, nullable=True)
 

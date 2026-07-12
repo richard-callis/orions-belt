@@ -468,7 +468,9 @@ def _execute_run(run, agent, task, session_id: str | None = None):
     ]
     messages = inject_knowledge_context(messages, f"{task.title} {task.description or ''}")
 
-    max_iter = min(agent.max_iterations, 20)
+    # Honor the configured value up to the same hard ceiling the API enforces
+    # (routes cap max_iterations at 50); previously this silently clamped to 20.
+    max_iter = min(agent.max_iterations or 20, 50)
     total_tokens = 0
     plan_checked = run.plan_approved is True  # True if resuming after approval
 

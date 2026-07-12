@@ -91,6 +91,8 @@
     if (outcome === 'auto')     return 'text-status-healthy bg-status-healthy/10';
     if (outcome === 'approved') return 'text-accent bg-accent/10';
     if (outcome === 'blocked')  return 'text-status-error bg-status-error/10';
+    if (outcome === 'error')    return 'text-status-error bg-status-error/10';
+    if (outcome === 'rejected') return 'text-status-error bg-status-error/10';
     return 'text-status-warning bg-status-warning/10';
   }
 
