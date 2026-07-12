@@ -127,8 +127,8 @@ def _extract_plan(text: str) -> dict | None:
     risk_m = re.search(r"<risk_level>\s*(.*?)\s*</risk_level>", inner, re.IGNORECASE)
     risk_level = risk_m.group(1).lower().strip() if risk_m else "low"
 
-    verify_steps = re.findall(r"<verify_step>(.*?)</verify_step>", inner, re.IGNORECASE)
-    rollback_steps = re.findall(r"<rollback_step>(.*?)</rollback_step>", inner, re.IGNORECASE)
+    verify_steps = re.findall(r"<verify_step>(.*?)</verify_step>", inner, re.IGNORECASE | re.DOTALL)
+    rollback_steps = re.findall(r"<rollback_step>(.*?)</rollback_step>", inner, re.IGNORECASE | re.DOTALL)
 
     return {
         "risk_level": risk_level,
@@ -255,7 +255,14 @@ def _run_reviewer(run, result_summary: str, base_url: str, api_key: str, model: 
             [],
             max_retries=2,
         )
-        verdict = "approved" if "APPROVED" in (resp_text or "").upper() else "rejected"
+        # "NOT APPROVED"/"REJECTED" must not read as approved (substring trap).
+        up = (resp_text or "").upper()
+        if "REJECT" in up or "NOT APPROVED" in up:
+            verdict = "rejected"
+        elif "APPROVED" in up:
+            verdict = "approved"
+        else:
+            verdict = "rejected"
     except Exception as e:
         log.warning("reviewer.failed run=%s: %s", run.id, e)
         verdict = "skipped"
