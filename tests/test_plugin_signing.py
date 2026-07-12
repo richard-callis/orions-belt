@@ -67,10 +67,27 @@ class TestPluginWhitelist:
         import app.services.plugins.whitelist as wl
         wl._test_value = None
 
-    def test_no_whitelist_allows_all(self):
+    def test_no_whitelist_denies_by_default(self, app):
+        """Secure by default: with no whitelist and no allow_all, deny."""
         self._inject(None)
         from app.services.plugins.whitelist import is_plugin_allowed
-        assert is_plugin_allowed("any") is True
+        with app.app_context():
+            assert is_plugin_allowed("any") is False
+        self._clear()
+
+    def test_allow_all_setting_permits(self, app):
+        """plugins.allow_all=true opts back into loading every plugin."""
+        self._inject(None)
+        from app.services.plugins.whitelist import is_plugin_allowed
+        from app.models.settings import Setting
+        from app import db
+        with app.app_context():
+            Setting.set("plugins.allow_all", "true", value_type="string")
+            db.session.commit()
+            assert is_plugin_allowed("any") is True
+            Setting.set("plugins.allow_all", "false", value_type="string")
+            db.session.commit()
+            assert is_plugin_allowed("any") is False
         self._clear()
 
     def test_list_allows_named(self):
