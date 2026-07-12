@@ -395,48 +395,36 @@ def stream_messages(session_id):
     if not prompt:
         return jsonify({"error": "prompt is required"}), 400
 
-    # Load message history
-    # SECURITY: cap history_limit to prevent memory exhaustion
+    # Load message history.
+    # history_limit is the recent-window size sent to the model; we load a
+    # larger buffer so compaction has older messages to actually archive when
+    # token usage is high (SECURITY: both are capped to bound memory).
     MAX_HISTORY_LIMIT = 100
     history_limit = min(int(body.get("history_limit", 30)), MAX_HISTORY_LIMIT)
+    CONTEXT_LOAD_LIMIT = 200
 
     raw_history = Message.query.filter_by(session_id=session_id)\
         .order_by(Message.created_at.desc())\
-        .limit(history_limit)\
+        .limit(CONTEXT_LOAD_LIMIT)\
         .all()
     raw_history.reverse()  # chronological order
 
     # Build context for LLM (with compaction state tracking)
     strategy = session.context_strategy or "sliding"
     history, compaction_state = build_context_with_state(
-        raw_history, strategy=strategy
+        raw_history, strategy=strategy, history_limit=history_limit
     )
 
-    # If compaction is needed, save a compaction record and add summary to history
+    # Record a compaction ONLY when messages were actually archived (avoids the
+    # previous bug of writing 0-message records / cards on every request).
     _compaction_event = None
-    if compaction_state.get("threshold_level") in ("compact", "emergency"):
-        # Gather the messages that were compacted (not in history)
-        all_llm_ids = {m.id for m in raw_history}
-        history_ids = {id(m) for m in raw_history[-history_limit:]}
+    archived_ids = set(compaction_state.get("archived_ids") or [])
+    if archived_ids and compaction_state.get("messages_compacted", 0) > 0:
         compacted_msgs = [
             {"id": m.id, "role": m.role, "content": m.content}
             for m in raw_history
-            if m.id not in compaction_state.get("archived_ids", [])
-            or compaction_state.get("threshold_level") == "emergency"
+            if m.id in archived_ids
         ]
-        # If we can't identify compacted messages precisely, use the archived_ids
-        if compaction_state.get("archived_ids"):
-            compacted_msgs = [
-                {"id": m.id, "role": m.role, "content": m.content}
-                for m in raw_history
-                if m.id in compaction_state["archived_ids"]
-            ]
-            if not compacted_msgs:
-                # Fallback: messages not in the recent window
-                compacted_msgs = [
-                    {"id": m.id, "role": m.role, "content": m.content}
-                    for m in raw_history[:-history_limit]
-                ]
 
         record = ContextCompaction(
             session_id=session_id,
