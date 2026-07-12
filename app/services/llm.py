@@ -72,7 +72,12 @@ def truncate_history(messages: list[dict], max_msg_chars: int = 4000) -> list[di
     """
     result = []
     for m in messages:
-        content = m.get("content", "")
+        content = m.get("content")
+        # Assistant tool_calls messages carry content=None; non-str content
+        # (block lists) is passed through untouched.
+        if not isinstance(content, str):
+            result.append(m)
+            continue
         if len(content) > max_msg_chars:
             result.append({**m, "content": content[:max_msg_chars] + "\n[…truncated]"})
         else:

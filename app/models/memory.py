@@ -53,6 +53,7 @@ class Memory(db.Model):
             "scope_project_id": self.scope_project_id,
             "scope_epic_id": self.scope_epic_id,
             "scope_task_id": self.scope_task_id,
+            "scope_connector_id": self.scope_connector_id,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }

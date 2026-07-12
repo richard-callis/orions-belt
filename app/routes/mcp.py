@@ -1,5 +1,6 @@
 import asyncio
 from flask import Blueprint, jsonify, render_template, request
+from sqlalchemy.exc import IntegrityError
 from app import db
 from app.models.mcp_tool import MCPTool
 from app.models.connector import AuthorizedDirectory
@@ -83,15 +84,25 @@ def add_directory():
     if not path:
         return jsonify({"error": "path is required"}), 400
 
+    # Reject duplicates cleanly instead of a 500 on the unique-path constraint.
+    existing = AuthorizedDirectory.query.filter_by(path=path).first()
+    if existing:
+        return jsonify({"error": f"Directory already authorized: {path}"}), 409
+
     d = AuthorizedDirectory(
         path=path,
         alias=body.get("alias", path),
         recursive=body.get("recursive", True),
         read_only=body.get("read_only", False),
         max_tier=body.get("max_tier", 3),
+        enabled=body.get("enabled", True),
     )
     db.session.add(d)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({"error": f"Directory already authorized: {path}"}), 409
     return jsonify({"success": True, "id": d.id}), 201
 
 
