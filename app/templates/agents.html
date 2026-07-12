@@ -554,7 +554,7 @@
       if (card) {
         const statusEl = card.querySelector('.flex.items-center.gap-2.min-w-0');
         if (statusEl) {
-          const badge = statusEl.querySelector('.px-2.py-0\\.5\\.rounded-full');
+          const badge = statusEl.querySelector('.px-2.py-0\\.5.rounded-full');
           if (badge) badge.outerHTML = statusBadge(newStatus);
         }
       }
@@ -746,13 +746,18 @@
         box.classList.remove('hidden');
         box.innerHTML = tasks.map(t => `
           <div class="px-3 py-2 text-xs cursor-pointer hover:bg-bg-card transition-colors flex items-center justify-between"
-               onclick="pickTask('${t.id}', ${JSON.stringify(t.title)})">
-            <span class="text-text-primary truncate">${t.title}</span>
-            <span class="text-[10px] text-text-muted ml-2 flex-shrink-0">${t.status || ''}</span>
+               data-task-id="${escHtml(t.id)}" data-task-title="${escHtml(t.title || '')}"
+               onclick="pickTaskFromEl(this)">
+            <span class="text-text-primary truncate">${escHtml(t.title || '')}</span>
+            <span class="text-[10px] text-text-muted ml-2 flex-shrink-0">${escHtml(t.status || '')}</span>
           </div>`).join('');
       });
     }, 250);
   });
+
+  window.pickTaskFromEl = function (el) {
+    window.pickTask(el.dataset.taskId, el.dataset.taskTitle || '');
+  };
 
   window.pickTask = function (id, title) {
     document.getElementById('run-task-id').value = id;
