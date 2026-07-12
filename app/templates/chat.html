@@ -963,6 +963,29 @@ async function streamResponse(userPrompt) {
             break;
           }
 
+          case 'approval_required': {
+            const apDiv = document.createElement('div');
+            apDiv.className = 'w-full rounded-lg border border-status-warning/40 bg-status-warning/10 text-xs overflow-hidden';
+            apDiv.innerHTML = `
+              <div class="flex items-center gap-2 px-3 py-1.5 border-b border-status-warning/20">
+                <i data-lucide="shield-alert" class="w-3 h-3 text-status-warning"></i>
+                <span class="font-semibold text-status-warning">Approval required</span>
+                <span class="ml-auto px-1.5 py-0.5 rounded text-[10px] border tier-3">Tier ${data.tier ?? 3}</span>
+              </div>
+              <div class="px-3 py-2">
+                <p class="text-text-secondary mb-1">The assistant wants to run <span class="font-mono text-text-primary">${escHtml(data.tool || 'tool')}</span>:</p>
+                <div class="font-mono text-text-muted break-all mb-2">${escHtml(data.input || '{}')}</div>
+                <div class="flex gap-2" data-approval="${escHtml(data.approval_id || '')}">
+                  <button class="px-3 py-1.5 rounded bg-status-healthy/15 text-status-healthy hover:bg-status-healthy/30" onclick="resolveApproval('${escHtml(data.approval_id || '')}', true, this)">Approve &amp; run</button>
+                  <button class="px-3 py-1.5 rounded bg-status-error/15 text-status-error hover:bg-status-error/30" onclick="resolveApproval('${escHtml(data.approval_id || '')}', false, this)">Reject</button>
+                </div>
+              </div>`;
+            toolCallsContainer.appendChild(apDiv);
+            msgs.scrollTop = msgs.scrollHeight;
+            lucide.createIcons({ nodes: [apDiv] });
+            break;
+          }
+
           case 'done':
             // Stream complete — backend already persists the assistant message
             break;
@@ -1201,6 +1224,32 @@ function formatText(text) {
   );
   return escaped;
 }
+
+async function resolveApproval(id, approved, btn) {
+  const wrap = btn.closest('[data-approval]');
+  if (wrap) wrap.innerHTML = `<span class="text-text-muted">${approved ? 'Running…' : 'Rejecting…'}</span>`;
+  try {
+    const r = await fetch(`/chat/api/approvals/${id}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approved }),
+    });
+    const data = await r.json();
+    if (!wrap) return;
+    if (data.status === 'executed') {
+      wrap.innerHTML = `<div class="text-status-healthy mb-1">✓ Executed</div><pre class="whitespace-pre-wrap font-mono text-text-muted max-h-48 overflow-y-auto">${escHtml((data.result || '').slice(0, 2000))}</pre>`;
+    } else if (data.status === 'rejected') {
+      wrap.innerHTML = `<div class="text-status-error">✗ Rejected — not executed</div>`;
+    } else if (data.status === 'failed') {
+      wrap.innerHTML = `<div class="text-status-error">✗ Failed: ${escHtml(data.result || '')}</div>`;
+    } else {
+      wrap.innerHTML = `<div class="text-text-muted">${escHtml(data.error || data.status || 'done')}</div>`;
+    }
+  } catch (e) {
+    if (wrap) wrap.innerHTML = `<div class="text-status-error">Error: ${escHtml(String(e))}</div>`;
+  }
+}
+window.resolveApproval = resolveApproval;
 
 function timeAgo(dateStr) {
   if (!dateStr) return 'now';

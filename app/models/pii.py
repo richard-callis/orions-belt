@@ -24,7 +24,7 @@ class PIIHashEntry(db.Model):
     # Full hash kept separately for verification
 
     full_hash = db.Column(db.String(64), nullable=False)        # SHA-256 hex
-    original_value = db.Column(db.Text, nullable=False)          # plaintext original
+    original_value = db.Column(db.Text, nullable=False)          # Fernet-encrypted original
     entity_type = db.Column(db.String(64), nullable=False)       # PERSON, EMAIL, SSN, etc.
     detection_source = db.Column(db.String(32), nullable=True)   # presidio|ner|llm_judge
 

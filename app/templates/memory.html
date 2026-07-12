@@ -139,7 +139,7 @@ function renderMemories(list) {
       <div class="flex items-start gap-3">
         <div class="flex-1 min-w-0">
           <div class="flex items-center gap-2 mb-2 flex-wrap">
-            <span class="text-xs font-medium text-text-secondary">${m.title || '(untitled)'}</span>
+            <span class="text-xs font-medium text-text-secondary">${escHtml(m.title || '(untitled)')}</span>
             <span class="px-1.5 py-0.5 rounded text-[10px] border ${typeStyle(m.memory_type)}">${(m.memory_type||'').replace(/^./, c=>c.toUpperCase())}</span>
             ${m.pinned ? '<span class="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-accent/10 text-accent border border-accent/20"><i data-lucide="pin" class="w-2.5 h-2.5"></i> Pinned</span>' : ''}
             <span class="ml-auto text-[10px] text-text-muted flex items-center gap-1">

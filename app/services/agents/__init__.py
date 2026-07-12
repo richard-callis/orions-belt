@@ -335,7 +335,7 @@ def approve_plan(run_id: str, blocked_steps: list[str] | None = None) -> bool:
 def approve_step(step_id: str, approved: bool = True) -> bool:
     """Approve or reject a pending Tier 3 agent step."""
     from app import db
-    from app.models.agent import AgentStep, AgentRun
+    from app.models.agent import Agent, AgentStep, AgentRun
 
     step = AgentStep.query.get(step_id)
     if not step:

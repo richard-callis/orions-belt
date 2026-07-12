@@ -63,7 +63,7 @@ class Message(db.Model):
     __tablename__ = "messages"
 
     id = db.Column(db.String(36), primary_key=True, default=_uuid)
-    session_id = db.Column(db.String(36), db.ForeignKey("sessions.id"), nullable=False)
+    session_id = db.Column(db.String(36), db.ForeignKey("sessions.id"), nullable=False, index=True)
     role = db.Column(db.String(16), nullable=False)   # user|assistant|system|tool
     content = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.DateTime, default=_now)

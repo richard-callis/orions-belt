@@ -91,14 +91,22 @@ def update_connector(connector_id):
     if "config" in body and isinstance(body["config"], dict):
         c.config = json.dumps(body["config"])
     if "auth" in body and isinstance(body["auth"], dict):
-        # Only update auth if caller sent a non-empty dict that isn't all masked values
-        auth = body["auth"]
-        has_real_values = any(
-            v and not str(v).startswith("*")
-            for v in auth.values()
-        )
-        if has_real_values:
-            c.set_auth(auth)
+        # Merge into the stored auth: masked placeholders ("****", "*…1234")
+        # mean "unchanged", so only real values overwrite. This prevents editing
+        # one field (e.g. username) from wiping the others' secrets.
+        incoming = body["auth"]
+        try:
+            merged = dict(c.get_auth() or {})
+        except Exception:
+            merged = {}
+        changed = False
+        for k, v in incoming.items():
+            if v is None or str(v).startswith("*"):
+                continue  # masked/empty → keep the stored secret for this field
+            merged[k] = v
+            changed = True
+        if changed:
+            c.set_auth(merged)
 
     db.session.commit()
     return jsonify(c.to_dict())

@@ -29,12 +29,24 @@ def _now():
 # Approximate tokens per character (used for threshold estimation)
 CHARS_PER_TOKEN = 4
 
-# Context compaction thresholds (from harness spec)
-# Based on percentage of context window used
-# The "window" is estimated as history_limit * average_msg_chars / CHARS_PER_TOKEN
+# Context compaction thresholds — percentage of the model's context window used.
 CONTEXT_THRESHOLD_WARN = 70      # 70% — log warning, prepare summary
 CONTEXT_THRESHOLD_COMPACT = 90   # 90% — auto-compact oldest messages
 CONTEXT_THRESHOLD_EMERGENCY = 99  # 99% — emergency reset
+
+# Default assumed model context window in tokens. Used as the denominator for
+# the usage-percentage thresholds above. Configurable via Config.CONTEXT_WINDOW_TOKENS
+# (set it lower for small local models). NOT history_limit*150 — that tiny fake
+# window made every normal conversation read as ">99% — emergency".
+_DEFAULT_CONTEXT_WINDOW = 128000
+
+
+def _context_window_tokens() -> int:
+    try:
+        from config import Config
+        return int(getattr(Config, "CONTEXT_WINDOW_TOKENS", _DEFAULT_CONTEXT_WINDOW))
+    except Exception:
+        return _DEFAULT_CONTEXT_WINDOW
 
 
 def _estimate_tokens(msg: dict) -> int:
@@ -110,10 +122,12 @@ def build_context_with_state(
     context, state = _build_context_with_state(
         messages, strategy, history_limit, summarize_after
     )
-    # Add token usage percentage
-    total_tokens = sum(_estimate_tokens(m) for m in context)
-    estimated_window = history_limit * 150  # ~150 tokens per message average
-    state["token_usage_pct"] = min((total_tokens / max(estimated_window, 1)) * 100, 999)
+    # Add token usage percentage against the real model window. Report the pct
+    # for the FULL history (pre-compaction), so it's consistent with the
+    # threshold_level the state machine computed.
+    total_tokens = sum(_estimate_tokens({"content": m.content}) for m in messages if m.role in ("user", "assistant", "system"))
+    window = _context_window_tokens()
+    state["token_usage_pct"] = min((total_tokens / max(window, 1)) * 100, 999)
     state["needs_compaction"] = state["threshold_level"] in ("compact", "emergency")
     return context, state
 
@@ -139,10 +153,10 @@ def _build_context_with_state(
         "archived_ids": [],
     }
 
-    # Estimate token usage for threshold check
-    estimated_window = history_limit * 150  # ~150 tokens per message average
+    # Estimate token usage for threshold check against the real model window.
+    window = _context_window_tokens()
     total_tokens = sum(_estimate_tokens({"content": m.content}) for m in all_msgs)
-    usage_pct = (total_tokens / max(estimated_window, 1)) * 100
+    usage_pct = (total_tokens / max(window, 1)) * 100
 
     if usage_pct > CONTEXT_THRESHOLD_EMERGENCY:
         # >99% — emergency reset: keep only last N messages + system prompt

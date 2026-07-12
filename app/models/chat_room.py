@@ -87,7 +87,7 @@ class ChatRoomMessage(db.Model):
     __tablename__ = "chat_room_messages"
 
     id          = db.Column(db.String(36), primary_key=True, default=_uuid)
-    room_id     = db.Column(db.String(36), db.ForeignKey("chat_rooms.id"), nullable=False)
+    room_id     = db.Column(db.String(36), db.ForeignKey("chat_rooms.id"), nullable=False, index=True)
     agent_id    = db.Column(db.String(36), db.ForeignKey("agents.id"),     nullable=True)
     # null agent_id = human (or system)
 
