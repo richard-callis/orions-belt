@@ -85,25 +85,41 @@ def sign_plugin(plugin_path: Path) -> Path:
     return sig_path
 
 
+def _require_signature_enabled() -> bool:
+    """True if plugins.require_signature is explicitly truthy (unsigned rejected)."""
+    try:
+        from app.models.settings import Setting
+        row = Setting.query.get("plugins.require_signature")
+        return bool(row and str(row.value).strip().lower() in ("true", "1", "yes", "on"))
+    except Exception:
+        return False
+
+
 def verify_plugin(plugin_path: Path) -> bool:
     """Verify a plugin's .plugin.sig signature.
 
-    Returns True if:
-    - No .plugin.sig sidecar exists (opt-in model — unsigned passes)
-    - Signature is valid
-    Returns False if signature exists but doesn't match.
+    - No sidecar + require_signature off → passes (opt-in model).
+    - No sidecar + require_signature on  → rejected.
+    - Sidecar present → must verify against the public key; a missing key or a
+      bad signature FAILS CLOSED (a signature was clearly intended).
     """
     sig_path = plugin_path.with_suffix(plugin_path.suffix + ".sig")
 
     if not sig_path.exists():
-        # No signature — allowed in opt-in model
+        if _require_signature_enabled():
+            log.warning(
+                "Plugin %s has no signature and plugins.require_signature is on — rejecting",
+                plugin_path,
+            )
+            return False
         return True
 
     try:
         public_key_path = _SIGNING_KEY_DIR / "public.pem"
         if not public_key_path.exists():
-            log.warning("No public key found for signature verification")
-            return True  # can't verify, allow through
+            # A signature exists but we can't verify it — fail closed.
+            log.warning("No public key to verify signed plugin %s — rejecting", plugin_path)
+            return False
 
         with open(public_key_path, "rb") as f:
             public_key = serialization.load_pem_public_key(f.read())

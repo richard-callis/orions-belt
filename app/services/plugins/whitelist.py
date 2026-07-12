@@ -2,7 +2,11 @@
 Orion's Belt — Plugin Whitelist
 
 Checks if a plugin is allowed to load via the `plugins.allowed` setting.
-Default: allow all (backward compatible).
+
+SECURE BY DEFAULT: a plugin in extensions/ is imported and executed with full
+process privileges, so unknown plugins are DENIED unless explicitly allowed.
+- Add plugin names to `plugins.allowed` (JSON array or comma-separated), OR
+- Set `plugins.allow_all=true` to opt into loading every discovered plugin.
 
 Setting format: JSON array of plugin names, e.g. ["my_plugin", "another_plugin"]
 """
@@ -20,21 +24,28 @@ _test_value = None
 def is_plugin_allowed(plugin_name: str) -> bool:
     """Check if a plugin is allowed to load.
 
-    Checks the `plugins.allowed` Setting. If the setting is not set or is
-    empty, all plugins are allowed (opt-in model).
+    Deny-by-default: only plugins listed in `plugins.allowed` load, unless
+    `plugins.allow_all=true` is set. A misconfigured whitelist fails closed.
 
     Args:
         plugin_name: The plugin name (filename without .py).
 
     Returns:
-        True if plugin is allowed or no whitelist is configured.
+        True only if the plugin is explicitly allowed (or allow_all is on).
     """
     # Test injection point
     raw_value = _test_value if _test_value is not None else _get_setting_value()
 
     if not raw_value:
-        # No whitelist configured — allow all
-        return True
+        # No whitelist configured — deny unless the operator opted into allow-all.
+        if _allow_all_enabled():
+            return True
+        log.warning(
+            "Plugin '%s' blocked: not in the plugins.allowed whitelist. Add it "
+            "there, or set plugins.allow_all=true to load all plugins.",
+            plugin_name,
+        )
+        return False
 
     try:
         # Try JSON first (array of strings)
@@ -50,10 +61,19 @@ def is_plugin_allowed(plugin_name: str) -> bool:
         names = [n.strip() for n in raw_value.split(",")]
         return plugin_name in names
     except Exception as e:
-        log.warning("Plugin whitelist check failed for '%s': %s", plugin_name, e)
+        log.warning("Plugin whitelist check failed for '%s': %s — denying", plugin_name, e)
 
-    # If whitelist is misconfigured, allow all (backward compatible)
-    return True
+    # Misconfigured whitelist → fail closed.
+    return False
+
+
+def _allow_all_enabled() -> bool:
+    """True only if plugins.allow_all is explicitly truthy."""
+    try:
+        row = Setting.query.get("plugins.allow_all")
+        return bool(row and str(row.value).strip().lower() in ("true", "1", "yes", "on"))
+    except Exception:
+        return False
 
 
 def _get_setting_value() -> str | None:

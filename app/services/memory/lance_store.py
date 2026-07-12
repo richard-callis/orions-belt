@@ -185,6 +185,16 @@ class LanceStore:
         self._ensure_ready()
         return self._table.count_rows()
 
+    def get_all_ids(self) -> set[str]:
+        """Return the set of memory ids currently in the vector table."""
+        self._ensure_ready()
+        try:
+            tbl = self._table.to_arrow()
+            return set(tbl.column("id").to_pylist())
+        except Exception as e:
+            log.warning("LanceDB get_all_ids failed: %s", e)
+            return set()
+
     @property
     def is_ready(self) -> bool:
         return self._ready
@@ -230,3 +240,43 @@ def migrate_from_sqlite(model) -> int:
 
     log.info("LanceDB migration complete: %d/%d records", migrated, len(memories))
     return migrated
+
+
+def reconcile_from_sqlite(model) -> int:
+    """Add any SQLite memory (with a stored embedding) missing from LanceDB.
+
+    Heals divergence caused by a LanceDB write that failed AFTER the SQLite
+    commit — such a memory would otherwise never be searchable. Vectors are
+    rebuilt from the stored embedding bytes, so no re-embedding is needed.
+
+    Returns the number of records re-indexed.
+    """
+    store = get_lance_store()
+    existing_ids = store.get_all_ids()
+
+    added = 0
+    for m in model.query.all():
+        if m.id in existing_ids or not m.embedding:
+            continue
+        try:
+            vec = np.frombuffer(m.embedding, dtype=np.float32).tolist()
+            store.add({
+                "id":                 m.id,
+                "title":              m.title,
+                "content":            m.content,
+                "memory_type":        m.memory_type,
+                "source":             m.source,
+                "pinned":             m.pinned,
+                "scope_project_id":   m.scope_project_id or "",
+                "scope_epic_id":      m.scope_epic_id or "",
+                "scope_task_id":      m.scope_task_id or "",
+                "scope_connector_id": m.scope_connector_id or "",
+                "created_at":         m.created_at.isoformat() if m.created_at else "",
+            }, vec)
+            added += 1
+        except Exception as e:
+            log.warning("reconcile: skipped id=%s error=%s", m.id, e)
+
+    if added:
+        log.info("LanceDB reconcile: re-indexed %d missing records", added)
+    return added
