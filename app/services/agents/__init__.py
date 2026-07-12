@@ -175,8 +175,12 @@ def _find_approved_pending_step(run_id: str, checkpoint_hash: str):
 
 # ── Remediation loop detection ────────────────────────────────────────────────
 
-def _is_remediation_loop(run_id: str, tool_name: str) -> bool:
-    """Return True if the last 3 completed steps all called the same tool."""
+def _is_remediation_loop(run_id: str, tool_name: str, tool_args: dict | None = None) -> bool:
+    """Return True if the last 3 completed steps repeated the SAME tool AND args.
+
+    Requiring matching args avoids failing legitimate serial use of one tool
+    (e.g. reading three different files with read_file).
+    """
     from app.models.agent import AgentStep
 
     recent = (
@@ -189,7 +193,16 @@ def _is_remediation_loop(run_id: str, tool_name: str) -> bool:
     )
     if len(recent) < 3:
         return False
-    return all(s.tool_name == tool_name for s in recent)
+
+    target = json.dumps(tool_args or {}, sort_keys=True)
+
+    def _norm(raw):
+        try:
+            return json.dumps(json.loads(raw or "{}"), sort_keys=True)
+        except (ValueError, TypeError):
+            return raw or "{}"
+
+    return all(s.tool_name == tool_name and _norm(s.tool_input) == target for s in recent)
 
 
 # ── Role-based tool scoping ───────────────────────────────────────────────────
@@ -552,9 +565,9 @@ def _execute_run(run, agent, task, session_id: str | None = None):
             tool_id = tc.get("id", str(uuid.uuid4()))
             tier = tool_tier_map.get(tool_name, 0)
 
-            if _is_remediation_loop(run.id, tool_name):
+            if _is_remediation_loop(run.id, tool_name, tool_args):
                 run.status = "failed"
-                run.error_message = f"Remediation loop: {tool_name} called 3× in a row"
+                run.error_message = f"Remediation loop: {tool_name} called 3× with identical args"
                 run.completed_at = _now()
                 run.remediation_attempts = (run.remediation_attempts or 0) + 1
                 db.session.commit()
