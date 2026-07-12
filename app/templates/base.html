@@ -235,7 +235,17 @@
 
   <script>
     // ── Init icons ────────────────────────────────────────────
-    lucide.createIcons();
+    // lucide is injected as an async script, so it may not be defined yet at
+    // parse time. Guard every call (an unguarded ReferenceError here would
+    // abort the rest of this block — checkAuth, the htmx hook, etc.).
+    function safeIcons() {
+      if (typeof lucide !== 'undefined') {
+        try { lucide.createIcons(); } catch (e) {}
+      }
+    }
+    window.safeIcons = safeIcons;
+    safeIcons();
+    window.addEventListener('load', safeIcons);
 
     // ── Sidebar collapse ──────────────────────────────────────
     function toggleSidebar() {
@@ -250,7 +260,7 @@
     }
 
     // ── Re-init icons after HTMX swaps ───────────────────────
-    document.body.addEventListener('htmx:afterSwap', () => lucide.createIcons());
+    document.body.addEventListener('htmx:afterSwap', () => safeIcons());
 
     // ── Auth check ────────────────────────────────────────────
     // Runs before PII Guard so we block unauthenticated users first.
@@ -277,7 +287,7 @@
           if (descEl) descEl.textContent = 'Your session could not be verified. Sign in to continue.';
           if (actionsEl) actionsEl.classList.remove('hidden');
           document.getElementById('auth-overlay').classList.remove('hidden');
-          lucide.createIcons();
+          safeIcons();
           return false;
         }
       } catch (e) {
@@ -407,7 +417,7 @@
           }
         }
 
-        lucide.createIcons();
+        safeIcons();
         document.getElementById('pii-modal').classList.remove('hidden');
       } catch (e) {
         console.warn('PII Guard status check failed:', e);

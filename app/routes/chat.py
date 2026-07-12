@@ -670,29 +670,47 @@ def stream_messages(session_id):
         # Persist user message before streaming begins
         _save_user_message(session_id, prompt)
 
+        # Bump the session's updated_at so the (updated_at desc) session list
+        # reflects activity, not just renames.
+        session.updated_at = _now()
+        db.session.commit()
+
         # Prepend user message
         history.append({"role": "user", "content": prompt})
 
         try:
             if use_ollama:
-                yield from _stream_ollama_gen(
+                inner = _stream_ollama_gen(
                     base_url, model, system_prompt, history,
                     tool_defs, session_id, run_id,
                     max_turns,
                 )
             else:
-                yield from _stream_openai_gen(
+                inner = _stream_openai_gen(
                     base_url, llm_api_key, model, system_prompt, history,
                     tool_defs, session_id, run_id,
                     max_turns,
                 )
 
-            # Completion
+            # The inner generators yield an "error" event and return (they don't
+            # raise), so watch the stream to label the turn correctly.
+            had_error = False
+            for chunk in inner:
+                if chunk.startswith("event: error\n"):
+                    had_error = True
+                yield chunk
+
             duration_ms = int((time.time() - start) * 1000)
-            agent_log.event = "completed"
-            agent_log.detail = f"Completed in {duration_ms}ms"
-            db.session.commit()
-            yield _sse_format("done", {})
+            if had_error:
+                agent_log.event = "failed"
+                agent_log.detail = f"Stream reported an error after {duration_ms}ms"
+                db.session.commit()
+                # No "done" — the error event already told the client.
+            else:
+                agent_log.event = "completed"
+                agent_log.detail = f"Completed in {duration_ms}ms"
+                db.session.commit()
+                yield _sse_format("done", {})
 
         except Exception as e:
             agent_log.event = "failed"

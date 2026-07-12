@@ -206,19 +206,22 @@ async function saveMemory() {
 
   const url = _editingId ? `/memory/api/memories/${_editingId}` : '/memory/api/memories';
   const method = _editingId ? 'PATCH' : 'POST';
-  await fetch(url, { method, headers: {'Content-Type':'application/json'}, body: JSON.stringify({title, content, memory_type}) });
+  const res = await fetch(url, { method, headers: {'Content-Type':'application/json'}, body: JSON.stringify({title, content, memory_type}) });
+  if (!res.ok) { alert('Failed to save memory'); return; }
   closeModal();
   loadMemories();
 }
 
 async function togglePin(id, pinned) {
-  await fetch(`/memory/api/memories/${id}`, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({pinned}) });
+  const res = await fetch(`/memory/api/memories/${id}`, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({pinned}) });
+  if (!res.ok) { alert('Failed to update memory'); return; }
   loadMemories();
 }
 
 async function deleteMemory(id) {
   if (!confirm('Delete this memory?')) return;
-  await fetch(`/memory/api/memories/${id}`, { method: 'DELETE' });
+  const res = await fetch(`/memory/api/memories/${id}`, { method: 'DELETE' });
+  if (!res.ok) { alert('Failed to delete memory'); return; }
   loadMemories();
 }
 
