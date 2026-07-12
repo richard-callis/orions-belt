@@ -60,8 +60,12 @@ def _this_month() -> str:
 
 # ── Token budget helpers ──────────────────────────────────────────────────────
 
-def _check_token_budget(agent) -> str | None:
-    """Return error string if agent has exceeded its budget, else None."""
+def _check_token_budget(agent, pending_tokens: int = 0) -> str | None:
+    """Return error string if agent has exceeded its budget, else None.
+
+    pending_tokens counts the current run's in-flight usage (not yet recorded in
+    the ledger) so the budget can be enforced mid-run, not only at start.
+    """
     from app import db
     from app.models.agent import TokenUsage
     from sqlalchemy import func
@@ -71,9 +75,9 @@ def _check_token_budget(agent) -> str | None:
             TokenUsage.agent_id == agent.id,
             TokenUsage.period_day == _today(),
         ).scalar() or 0
-        if used_today >= agent.daily_token_budget:
+        if used_today + pending_tokens >= agent.daily_token_budget:
             return (
-                f"Daily token budget exceeded: {used_today}/{agent.daily_token_budget} "
+                f"Daily token budget exceeded: {used_today + pending_tokens}/{agent.daily_token_budget} "
                 f"tokens used on {_today()}"
             )
 
@@ -82,9 +86,9 @@ def _check_token_budget(agent) -> str | None:
             TokenUsage.agent_id == agent.id,
             TokenUsage.period_month == _this_month(),
         ).scalar() or 0
-        if used_month >= agent.monthly_token_budget:
+        if used_month + pending_tokens >= agent.monthly_token_budget:
             return (
-                f"Monthly token budget exceeded: {used_month}/{agent.monthly_token_budget} "
+                f"Monthly token budget exceeded: {used_month + pending_tokens}/{agent.monthly_token_budget} "
                 f"tokens used in {_this_month()}"
             )
 
@@ -148,6 +152,24 @@ def _find_checkpointed_step(run_id: str, checkpoint_hash: str):
         run_id=run_id,
         checkpoint_hash=checkpoint_hash,
         is_checkpointed=True,
+    ).first()
+
+
+def _find_approved_pending_step(run_id: str, checkpoint_hash: str):
+    """A step the operator already approved but that hasn't executed yet.
+
+    On resume-after-approval the run loop re-reaches the same Tier-3 call; we
+    must EXECUTE the approved step rather than pausing again (which would loop
+    forever).
+    """
+    from app.models.agent import AgentStep
+
+    return AgentStep.query.filter_by(
+        run_id=run_id,
+        checkpoint_hash=checkpoint_hash,
+        required_approval=True,
+        approved=True,
+        is_checkpointed=False,
     ).first()
 
 
@@ -484,6 +506,17 @@ def _execute_run(run, agent, task, session_id: str | None = None):
         total_tokens += tokens_used
         run.tokens_used = total_tokens
 
+        # Enforce the budget mid-run, including this run's in-flight tokens, so a
+        # single long run (or a resumed one) can't blow past the limit.
+        budget_err = _check_token_budget(agent, pending_tokens=total_tokens)
+        if budget_err:
+            run.status = "failed"
+            run.error_message = budget_err
+            run.completed_at = _now()
+            db.session.commit()
+            log.warning("agent.budget_exceeded_midrun run=%s: %s", run.id, budget_err)
+            return
+
         if response_text:
             messages.append({"role": "assistant", "content": response_text})
 
@@ -540,6 +573,13 @@ def _execute_run(run, agent, task, session_id: str | None = None):
                 )
                 db.session.add(step)
                 db.session.commit()
+                # A tool result must follow an assistant tool_calls message or
+                # the provider rejects it (orphan tool message → 400).
+                messages.append({
+                    "role": "assistant", "content": None,
+                    "tool_calls": [{"id": tool_id, "type": "function",
+                                    "function": {"name": tool_name, "arguments": json.dumps(tool_args)}}],
+                })
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_id,
@@ -551,30 +591,40 @@ def _execute_run(run, agent, task, session_id: str | None = None):
             existing = _find_checkpointed_step(run.id, chk_hash)
             if existing:
                 messages.append({
+                    "role": "assistant", "content": None,
+                    "tool_calls": [{"id": tool_id, "type": "function",
+                                    "function": {"name": tool_name, "arguments": json.dumps(tool_args)}}],
+                })
+                messages.append({
                     "role": "tool",
                     "tool_call_id": tool_id,
                     "content": existing.tool_output or "[checkpointed]",
                 })
                 continue
 
-            step = AgentStep(
-                id=str(uuid.uuid4()),
-                run_id=run.id,
-                step_number=(iteration * 10) + tool_calls.index(tc),
-                tool_name=tool_name,
-                tool_input=json.dumps(tool_args),
-                required_approval=(tier >= TIER_HARD_STOP),
-                checkpoint_hash=chk_hash,
-                created_at=_now(),
-            )
-            db.session.add(step)
-            db.session.commit()
-
-            if tier >= TIER_HARD_STOP:
-                run.status = "awaiting_approval"
+            # Resume-after-approval: if the operator already approved this exact
+            # call, execute the existing step now instead of creating a new one
+            # and pausing again (which looped forever).
+            step = _find_approved_pending_step(run.id, chk_hash)
+            if step is None:
+                step = AgentStep(
+                    id=str(uuid.uuid4()),
+                    run_id=run.id,
+                    step_number=(iteration * 10) + tool_calls.index(tc),
+                    tool_name=tool_name,
+                    tool_input=json.dumps(tool_args),
+                    required_approval=(tier >= TIER_HARD_STOP),
+                    checkpoint_hash=chk_hash,
+                    created_at=_now(),
+                )
+                db.session.add(step)
                 db.session.commit()
-                log.info("agent.tier3_pause run=%s step=%s", run.id, step.id)
-                return
+
+                if tier >= TIER_HARD_STOP:
+                    run.status = "awaiting_approval"
+                    db.session.commit()
+                    log.info("agent.tier3_pause run=%s step=%s", run.id, step.id)
+                    return
 
             try:
                 import asyncio
