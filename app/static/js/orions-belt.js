@@ -52,6 +52,77 @@ function invalidateFetchCache(url) {
   else _fetchCache.clear();
 }
 
+// ── Markdown rendering ───────────────────────────────────────────────────────
+// Mirrors ORION web's chat markdown: marked (GFM) → highlight.js code fences →
+// DOMPurify sanitize. Returns a sanitized HTML string safe for innerHTML.
+// Falls back to escaped text if the libs failed to load.
+let _markedConfigured = false;
+
+function _configureMarked() {
+  if (_markedConfigured || typeof marked === 'undefined') return;
+  // marked v5+ dropped the built-in highlight option; code fences are
+  // highlighted after render via hljs.highlightElement (see renderMarkdownInto).
+  try { marked.setOptions({ gfm: true, breaks: true }); } catch (e) {}
+  _markedConfigured = true;
+}
+
+function renderMarkdown(text) {
+  if (!text) return '';
+  if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
+    // Libs unavailable — degrade to escaped text with newlines preserved.
+    return escHtml(text).replace(/\n/g, '<br>');
+  }
+  _configureMarked();
+  let raw;
+  try {
+    raw = marked.parse(String(text));
+  } catch (e) {
+    return escHtml(text).replace(/\n/g, '<br>');
+  }
+  // Sanitize the marked output; keep the safe subset of markdown-produced tags.
+  return DOMPurify.sanitize(raw, {
+    ADD_ATTR: ['target', 'rel'],
+    FORBID_TAGS: ['style', 'form', 'input', 'iframe', 'script'],
+    FORBID_ATTR: ['onerror', 'onload', 'onclick', 'style'],
+  });
+}
+
+// Render a markdown string into an element: sanitize, harden links, and
+// syntax-highlight code fences with highlight.js.
+function renderMarkdownInto(el, text) {
+  if (!el) return;
+  el.innerHTML = renderMarkdown(text);
+  el.querySelectorAll('a[href]').forEach(a => {
+    a.setAttribute('target', '_blank');
+    a.setAttribute('rel', 'noopener noreferrer');
+  });
+  if (typeof hljs !== 'undefined') {
+    el.querySelectorAll('pre code').forEach(block => {
+      try { hljs.highlightElement(block); } catch (e) {}
+    });
+  }
+}
+
+// Highlight @mentions in plain (human) message text — @everyone yellow, other
+// @mentions accent — mirroring ORION web's MessageContent. Escapes everything
+// else and preserves newlines.
+function highlightMentions(text) {
+  if (!text) return '';
+  return String(text)
+    .split(/(@[\w-]+)/g)
+    .map(part => {
+      if (/^@[\w-]+$/.test(part)) {
+        const cls = part.toLowerCase() === '@everyone'
+          ? 'text-status-warning font-semibold'
+          : 'text-accent font-medium';
+        return `<span class="${cls}">${escHtml(part)}</span>`;
+      }
+      return escHtml(part);
+    })
+    .join('')
+    .replace(/\n/g, '<br>');
+}
+
 // Build a compaction summary card element for the chat transcript.
 // Expects: { messages_compacted, summary, timestamp }
 function createCompactionCard(c) {

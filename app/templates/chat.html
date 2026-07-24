@@ -818,8 +818,8 @@ async function streamResponse(userPrompt) {
   const assistantDiv = document.createElement('div');
   assistantDiv.className = 'flex justify-start fade-in';
   assistantDiv.innerHTML = `
-    <div class="max-w-[85%] space-y-2 items-start flex flex-col">
-      <div class="rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-bg-card border border-border-subtle text-text-primary min-h-[1.5em] js-assistant-text"></div>
+    <div class="max-w-[85%] space-y-2 items-start flex flex-col min-w-0">
+      <div class="md-body rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-bg-card border border-border-subtle text-text-primary min-h-[1.5em] js-assistant-text"></div>
       <div class="js-assistant-tool-calls"></div>
       <div class="flex items-center gap-2 text-[10px] text-text-muted px-1">
         <span class="font-mono">Assistant</span>
@@ -911,7 +911,7 @@ async function streamResponse(userPrompt) {
           case 'text':
             if (data.content) {
               totalText += data.content;
-              assistantText.innerHTML = formatText(totalText);
+              renderMarkdownInto(assistantText, totalText);
               maybeScroll(msgs);
             }
             break;
@@ -1071,15 +1071,17 @@ function appendMessage(role, content, toolName, toolCallId) {
       </div>`;
 
   } else if (role === 'assistant') {
+    // Assistant messages render markdown (mirrors ORION web).
     div.innerHTML = `
-      <div class="max-w-[85%] space-y-2 items-start flex flex-col">
-        <div class="rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-bg-card border border-border-subtle text-text-primary">${formatText(content)}</div>
+      <div class="max-w-[85%] space-y-2 items-start flex flex-col min-w-0">
+        <div class="md-body rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-bg-card border border-border-subtle text-text-primary"></div>
         <div class="flex items-center gap-2 text-[10px] text-text-muted px-1">
           <span class="font-mono">Assistant</span>
           <span>·</span>
           <span>${timeAgo(new Date().toISOString())}</span>
         </div>
       </div>`;
+    renderMarkdownInto(div.querySelector('.md-body'), content);
 
   } else if (role === 'tool_call') {
     // LLM tool invocation — shows the call header + args body
@@ -1431,24 +1433,27 @@ function appendRoomMessage(msg, scroll = true) {
     div.innerHTML = `<span class="text-[10px] text-text-muted italic px-3 py-0.5 bg-bg-raised rounded-full">${escHtml(msg.content)}</span>`;
 
   } else if (msg.sender_type === 'human') {
+    // Mirror ORION web: human messages are plain text with @mention highlighting.
     div.className = 'flex justify-end';
     div.innerHTML = `
       <div class="max-w-[75%] flex flex-col items-end gap-1">
-        <div class="rounded-2xl rounded-br-sm px-4 py-2.5 text-sm bg-accent text-white leading-relaxed">${escHtml(msg.content)}</div>
+        <div class="rounded-2xl rounded-br-sm px-4 py-2.5 text-sm bg-accent text-white leading-relaxed whitespace-pre-wrap break-words">${highlightMentions(msg.content)}</div>
         <span class="text-[10px] text-text-muted px-1">${timeAgo(msg.created_at)}</span>
       </div>`;
 
   } else if (msg.sender_type === 'agent') {
+    // Mirror ORION web: agent messages render full markdown.
     div.className = 'flex justify-start gap-2.5';
     div.innerHTML = `
       <div class="w-7 h-7 rounded-full bg-violet-500/20 border border-violet-500/30 flex items-center justify-center flex-shrink-0 mt-1">
         <i data-lucide="bot" class="w-3.5 h-3.5 text-violet-400"></i>
       </div>
-      <div class="max-w-[75%] flex flex-col gap-1">
+      <div class="max-w-[75%] flex flex-col gap-1 min-w-0">
         <span class="text-[10px] text-violet-400 font-medium px-1">${escHtml(msg.agent_name || 'Agent')}</span>
-        <div class="rounded-2xl rounded-tl-sm px-4 py-2.5 text-sm bg-bg-card border border-border-subtle text-text-primary leading-relaxed">${escHtml(msg.content)}</div>
+        <div class="md-body rounded-2xl rounded-tl-sm px-4 py-2.5 text-sm bg-bg-card border border-border-subtle text-text-primary leading-relaxed"></div>
         <span class="text-[10px] text-text-muted px-1">${timeAgo(msg.created_at)}</span>
       </div>`;
+    renderMarkdownInto(div.querySelector('.md-body'), msg.content);
   }
 
   container.appendChild(div);
