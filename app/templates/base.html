@@ -40,6 +40,16 @@
   <!-- Custom CSS -->
   <link rel="stylesheet" href="{{ url_for('static', filename='css/custom.css') }}" />
 
+  <!-- Markdown rendering: highlight.js github-dark theme for code blocks -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/github-dark.min.css') }}" />
+
+  <!-- Markdown libs (vendored, offline-first): marked parser, DOMPurify
+       sanitizer, highlight.js for code fences. Loaded before orions-belt.js
+       so renderMarkdown() can use them. -->
+  <script src="{{ url_for('static', filename='js/marked.umd.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/purify.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/highlight.min.js') }}"></script>
+
   <!-- Shared utilities -->
   <script src="{{ url_for('static', filename='js/orions-belt.js') }}"></script>
 
