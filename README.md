@@ -4,6 +4,8 @@
 
 A local AI project workbench. Chat with LLMs, manage projects hierarchically, spawn agents that execute real work — all running on your machine with full privacy controls and no data leaving your network.
 
+Part of the **Orion suite** — see [**Orion-nebula**](https://github.com/richard-callis/Orion-nebula), the suite's main repository, for the full picture and the other Orion applications.
+
 ---
 
 ## Table of Contents
