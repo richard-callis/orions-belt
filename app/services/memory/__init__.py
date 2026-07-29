@@ -41,6 +41,7 @@ class MemoryService:
         self._model_ready = False
         self._init_lock = threading.Lock()
         self._initialized = False
+        self._lance_warned = False   # log the LanceDB-unavailable warning once
 
     def _ensure_initialized(self):
         if self._initialized:
@@ -201,15 +202,60 @@ class MemoryService:
             log.warning("Memory Service: reindex LanceDB write failed id=%s: %s", mem.id, e)
             return False
 
+    def _semantic_search_sqlite(self, query_vec, k: int, scope_filter: dict | None = None) -> list:
+        """Cosine-similarity search over SQLite-stored embeddings using NumPy.
+
+        The fallback used when LanceDB isn't installed, so semantic recall still
+        works. Embeddings are stored on Memory.embedding as float32 bytes.
+        """
+        import numpy as np
+        from app.models.memory import Memory
+
+        q = Memory.query.filter(Memory.embedding.isnot(None))
+        if scope_filter:
+            field_map = {
+                "project_id":   Memory.scope_project_id,
+                "epic_id":      Memory.scope_epic_id,
+                "task_id":      Memory.scope_task_id,
+                "connector_id": Memory.scope_connector_id,
+            }
+            for key, val in scope_filter.items():
+                col = field_map.get(key)
+                if col is not None and val:
+                    q = q.filter(col == val)
+
+        candidates = q.all()
+        if not candidates:
+            return []
+
+        qv = np.asarray(query_vec, dtype="float32")
+        qn = float(np.linalg.norm(qv)) or 1.0
+
+        scored = []
+        for m in candidates:
+            try:
+                vec = np.frombuffer(m.embedding, dtype="float32")
+                if vec.size == 0 or vec.size != qv.size:
+                    continue
+                denom = (float(np.linalg.norm(vec)) * qn) or 1.0
+                scored.append((float(np.dot(vec, qv)) / denom, m))
+            except Exception:
+                continue
+
+        scored.sort(key=lambda t: t[0], reverse=True)
+        return [m for _, m in scored[:k]]
+
     def recall(
         self,
         query: str,
         top_k: int | None = None,
         scope_filter: dict | None = None,
     ) -> list:
-        """Return the top-k most semantically similar memories via LanceDB ANN search.
+        """Return the top-k most semantically similar memories.
 
-        Falls back to recent SQLite memories if LanceDB or embeddings unavailable.
+        Uses LanceDB ANN search when available, else a NumPy cosine search over
+        the SQLite-stored embeddings. Falls back to recent memories only if no
+        embeddings/model are available.
         """
         self._ensure_initialized()
 
@@ -234,12 +280,17 @@ class MemoryService:
         if not query_vec:
             return pinned[:k]
 
+        rows = []
         try:
             from app.services.memory.lance_store import get_lance_store
             rows = get_lance_store().search(query_vec, top_k=k, scope_filter=scope_filter)
         except Exception as e:
-            log.warning("Memory Service: LanceDB search failed, falling back: %s", e)
-            rows = []
+            # LanceDB is optional (finicky native dep). Log once, then fall back
+            # to a NumPy cosine search over the SQLite-stored embeddings so
+            # semantic recall keeps working without it.
+            if not self._lance_warned:
+                log.warning("Memory Service: LanceDB unavailable (%s) — using NumPy similarity fallback", e)
+                self._lance_warned = True
 
         # Map LanceDB rows back to SQLite Memory objects for API compatibility
         if rows:
@@ -249,7 +300,8 @@ class MemoryService:
             order_map = {r["id"]: i for i, r in enumerate(rows)}
             similar_mems.sort(key=lambda m: order_map.get(m.id, 999))
         else:
-            similar_mems = []
+            # No LanceDB hits — semantic search over SQLite embeddings (numpy).
+            similar_mems = self._semantic_search_sqlite(query_vec, k, scope_filter)
 
         seen_ids = {m.id for m in pinned}
         result = list(pinned)
