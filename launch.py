@@ -904,31 +904,49 @@ def _seed_novas(app):
     db.session.commit()
 
 
+def _column_add_ddl(column, dialect) -> str:
+    """Build a SQLite `ALTER TABLE ADD COLUMN` body for a model column.
+
+    Adds the column as nullable unless it has a usable default, because SQLite
+    cannot add a NOT NULL column without a default. NOT NULL/values on new rows
+    are still enforced by the ORM; existing rows simply get NULL/the default.
+    """
+    type_sql = column.type.compile(dialect=dialect)
+    ddl = f"{column.name} {type_sql}"
+
+    default_sql = None
+    if column.server_default is not None:
+        arg = getattr(column.server_default, "arg", None)
+        text = getattr(arg, "text", None)
+        default_sql = text if text is not None else (str(arg) if arg is not None else None)
+    elif column.default is not None and getattr(column.default, "is_scalar", False):
+        val = column.default.arg
+        if isinstance(val, bool):
+            default_sql = "1" if val else "0"
+        elif isinstance(val, (int, float)):
+            default_sql = str(val)
+        elif isinstance(val, str):
+            default_sql = "'" + val.replace("'", "''") + "'"
+
+    if default_sql is not None:
+        ddl += f" DEFAULT {default_sql}"
+        if not column.nullable:
+            ddl += " NOT NULL"
+    return ddl
+
+
 def _migrate_schema(app):
-    """Add columns introduced after initial release (idempotent)."""
+    """Reconcile the on-disk schema with the models (idempotent).
+
+    create_all() only creates missing TABLES, never missing COLUMNS on tables
+    that already exist. So a database created before a column was added to a
+    model would be missing that column, raising "no such column" at runtime.
+    This introspects every mapped table and ALTER-adds any column the model
+    declares but the database lacks — so column additions never need a
+    hand-maintained migration list again.
+    """
     from app import db
-    cols = {
-        "sessions": [
-            ("archived",     "BOOLEAN NOT NULL DEFAULT 0"),
-            ("archived_at",  "DATETIME"),
-        ],
-        "authorized_directories": [
-            ("enabled", "BOOLEAN NOT NULL DEFAULT 1"),
-        ],
-        "projects": [
-            ("folder_path", "VARCHAR(1024)"),
-        ],
-        "epics": [
-            ("plan", "TEXT"),
-        ],
-        "features": [
-            ("plan", "TEXT"),
-        ],
-        "tasks": [
-            ("plan", "TEXT"),
-        ],
-        "agent_traces": [],
-    }
+
     # Indexes on hot FK columns (idempotent; also declared index=True on the
     # models so fresh installs get them via create_all).
     indexes = [
@@ -938,23 +956,36 @@ def _migrate_schema(app):
         ("ix_token_usage_agent_id",          "token_usage",         "agent_id"),
         ("ix_chat_room_messages_room_id",    "chat_room_messages",  "room_id"),
     ]
+
     with db.engine.connect() as conn:
-        for table, additions in cols.items():
-            # Fetch existing column names
+        dialect = conn.dialect
+        # Which tables actually exist on disk.
+        db_tables = {
+            row[0] for row in conn.execute(db.text(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ))
+        }
+        for table in db.metadata.sorted_tables:
+            if table.name not in db_tables:
+                continue  # create_all handles brand-new tables
             existing = {
                 row[1]
-                for row in conn.execute(db.text(f"PRAGMA table_info({table})"))
+                for row in conn.execute(db.text(f"PRAGMA table_info({table.name})"))
             }
-            for col_name, col_def in additions:
-                if col_name not in existing:
-                    conn.execute(db.text(
-                        f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}"
-                    ))
-                    print(f"[migrate] added {table}.{col_name}")
-        for idx_name, table, column in indexes:
+            for column in table.columns:
+                if column.name in existing:
+                    continue
+                try:
+                    ddl = _column_add_ddl(column, dialect)
+                    conn.execute(db.text(f"ALTER TABLE {table.name} ADD COLUMN {ddl}"))
+                    print(f"[migrate] added {table.name}.{column.name}")
+                except Exception as e:
+                    print(f"[migrate] could not add {table.name}.{column.name}: {e}")
+
+        for idx_name, table_name, column in indexes:
             try:
                 conn.execute(db.text(
-                    f"CREATE INDEX IF NOT EXISTS {idx_name} ON {table} ({column})"
+                    f"CREATE INDEX IF NOT EXISTS {idx_name} ON {table_name} ({column})"
                 ))
             except Exception as e:
                 print(f"[migrate] index {idx_name} skipped: {e}")
