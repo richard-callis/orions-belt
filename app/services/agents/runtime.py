@@ -23,6 +23,11 @@ TIER_HARD_STOP = 3
 
 _DEFAULT_MAX_TOOL_ITERS = 5
 
+# If the same (tool, args) signature is called this many times within one
+# reply's tool loop, stop instead of burning the rest of max_tool_iters on
+# a model stuck repeating itself.
+_MAX_REPEATED_TOOL_CALLS = 3
+
 
 def resolve_active_provider() -> dict:
     """The active LLM provider config (base_url, api_key decrypted, model)."""
@@ -114,7 +119,14 @@ class AgentRuntime:
         attempted or failed (it may not mention it at all), so callers that need
         to actually notify a human of tool activity should inspect this rather
         than parse the reply text.
+
+        Enforces the agent's daily/monthly token budget (if any) before each
+        LLM call, and stops early if the same tool call repeats — both apply
+        here rather than in a caller like _run_goal_pursuit, since tool calls
+        happen inside this loop and a caller never sees the individual calls,
+        only the final text.
         """
+        from app.services.agents import _check_token_budget, _compute_checkpoint_hash, _record_token_usage
         from app.services.llm import build_tool_definitions, retry_with_recovery
 
         tools = self.tools()
@@ -127,41 +139,71 @@ class AgentRuntime:
             convo[0] = {**convo[0], "content": (convo[0].get("content") or "") + dirs_block}
 
         final_text = ""
-        for _ in range(max_tool_iters):
-            text, tool_calls, _tok = retry_with_recovery(
-                self.base_url, self.api_key, self.model, convo, tool_defs, max_retries=2,
-                session_id=session_id, run_id=run_id,
-            )
-            final_text = (text or "").strip()
-            if not tool_calls:
-                break
+        total_tokens = 0
+        call_counts: dict[str, int] = {}
+        try:
+            for _ in range(max_tool_iters):
+                budget_error = _check_token_budget(self.agent, pending_tokens=total_tokens)
+                if budget_error:
+                    final_text = f"[Stopped] {budget_error}"
+                    break
 
-            convo.append({
-                "role": "assistant",
-                "content": text or None,
-                "tool_calls": [
-                    {"id": tc.get("id", ""), "type": "function",
-                     "function": {"name": tc.get("name", ""),
-                                  "arguments": json.dumps(tc.get("args", {}) or {})}}
-                    for tc in tool_calls
-                ],
-            })
-            for tc in tool_calls:
-                name = tc.get("name", "")
-                args = tc.get("args", {}) or {}
-                tier = tier_map.get(name, 0)
-                result = self.run_tool(
-                    name, args, tier=tier, allow_tier=allow_tier,
+                text, tool_calls, tok = retry_with_recovery(
+                    self.base_url, self.api_key, self.model, convo, tool_defs, max_retries=2,
                     session_id=session_id, run_id=run_id,
                 )
-                if tool_log is not None:
-                    result_str = str(result)
-                    tool_log.append({
-                        "name": name, "args": args, "tier": tier, "result": result_str,
-                        "refused": result_str.startswith("[Refused]"),
-                        "error": result_str.startswith("Error"),
-                    })
+                total_tokens += tok or 0
+                final_text = (text or "").strip()
+                if not tool_calls:
+                    break
+
                 convo.append({
-                    "role": "tool", "tool_call_id": tc.get("id", ""), "content": str(result),
+                    "role": "assistant",
+                    "content": text or None,
+                    "tool_calls": [
+                        {"id": tc.get("id", ""), "type": "function",
+                         "function": {"name": tc.get("name", ""),
+                                      "arguments": json.dumps(tc.get("args", {}) or {})}}
+                        for tc in tool_calls
+                    ],
                 })
+                looping = False
+                for tc in tool_calls:
+                    name = tc.get("name", "")
+                    args = tc.get("args", {}) or {}
+                    tier = tier_map.get(name, 0)
+
+                    sig = _compute_checkpoint_hash(name, args)
+                    call_counts[sig] = call_counts.get(sig, 0) + 1
+                    if call_counts[sig] > _MAX_REPEATED_TOOL_CALLS:
+                        result = (f"[Refused] '{name}' called with the same arguments "
+                                  f"{_MAX_REPEATED_TOOL_CALLS}+ times in a row — stopping to "
+                                  "avoid a loop. Try a different approach.")
+                        looping = True
+                    else:
+                        result = self.run_tool(
+                            name, args, tier=tier, allow_tier=allow_tier,
+                            session_id=session_id, run_id=run_id,
+                        )
+                    if tool_log is not None:
+                        result_str = str(result)
+                        tool_log.append({
+                            "name": name, "args": args, "tier": tier, "result": result_str,
+                            "refused": result_str.startswith("[Refused]"),
+                            "error": result_str.startswith("Error"),
+                        })
+                    convo.append({
+                        "role": "tool", "tool_call_id": tc.get("id", ""), "content": str(result),
+                    })
+                if looping:
+                    break
+        finally:
+            if total_tokens > 0:
+                # run_id here is a caller-supplied free-form string (e.g. a
+                # room/goal id), not necessarily a real agent_runs.id — never
+                # pass it as TokenUsage.run_id, which is a real FK.
+                try:
+                    _record_token_usage(self.agent.id, None, total_tokens)
+                except Exception as e:
+                    log.warning("failed to record token usage agent=%s: %s", self.agent.id, e)
         return final_text

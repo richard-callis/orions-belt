@@ -10,7 +10,8 @@ from app.services.agents.runtime import AgentRuntime
 
 
 def _agent(allowed="[]"):
-    return SimpleNamespace(id="a1", name="A1", allowed_tools=allowed, llm_model_override=None)
+    return SimpleNamespace(id="a1", name="A1", allowed_tools=allowed, llm_model_override=None,
+                           daily_token_budget=None, monthly_token_budget=None)
 
 
 class TestAgentRuntimeTools:
@@ -129,4 +130,138 @@ class TestAuthorizedDirsBlock:
             finally:
                 MCPTool.query.filter_by(id="t-read4").delete()
                 AuthorizedDirectory.query.filter_by(path="/data/y").delete()
+                db.session.commit()
+
+
+def _real_agent(**overrides):
+    from app.models.agent import Agent
+    kwargs = dict(id="ra1", name="RealAgent", allowed_tools="[]", llm_model_override=None,
+                 daily_token_budget=None, monthly_token_budget=None, max_iterations=20,
+                 status="idle")
+    kwargs.update(overrides)
+    return Agent(**kwargs)
+
+
+class TestChatReplyTokenBudget:
+    def test_stops_immediately_if_already_over_daily_budget(self, app, monkeypatch):
+        import app.services.llm as llm_mod
+        from app.models.agent import TokenUsage
+        from app.services.agents import _today, _this_month
+
+        called = {"n": 0}
+        def fake_retry(*a, **k):
+            called["n"] += 1
+            return "should not be reached", [], 100
+
+        monkeypatch.setattr(llm_mod, "build_tool_definitions", lambda tools: [])
+        monkeypatch.setattr(llm_mod, "retry_with_recovery", fake_retry)
+        with app.app_context():
+            agent = _real_agent(id="ra-budget1", daily_token_budget=100)
+            db.session.add(agent)
+            db.session.add(TokenUsage(id="tu1", agent_id="ra-budget1", tokens_used=100,
+                                      period_day=_today(), period_month=_this_month()))
+            db.session.commit()
+            try:
+                rt = AgentRuntime(agent, provider={"base_url": "x", "api_key": "y", "model": "m"})
+                reply = rt.chat_reply([{"role": "system", "content": "hi"}])
+                assert reply.startswith("[Stopped]")
+                assert "budget" in reply.lower()
+                assert called["n"] == 0   # never even called the LLM
+            finally:
+                TokenUsage.query.filter_by(agent_id="ra-budget1").delete()
+                agent2 = db.session.get(type(agent), "ra-budget1")
+                if agent2:
+                    db.session.delete(agent2)
+                db.session.commit()
+
+    def test_records_token_usage_after_successful_reply(self, app, monkeypatch):
+        import app.services.llm as llm_mod
+        from app.models.agent import TokenUsage
+
+        monkeypatch.setattr(llm_mod, "build_tool_definitions", lambda tools: [])
+        monkeypatch.setattr(llm_mod, "retry_with_recovery",
+                            lambda *a, **k: ("hello", [], 42))
+        with app.app_context():
+            agent = _real_agent(id="ra-budget2")
+            db.session.add(agent)
+            db.session.commit()
+            try:
+                rt = AgentRuntime(agent, provider={"base_url": "x", "api_key": "y", "model": "m"})
+                reply = rt.chat_reply([{"role": "system", "content": "hi"}])
+                assert reply == "hello"
+                row = TokenUsage.query.filter_by(agent_id="ra-budget2").first()
+                assert row is not None
+                assert row.tokens_used == 42
+                assert row.run_id is None   # never a dangling FK to a fake run_id
+            finally:
+                TokenUsage.query.filter_by(agent_id="ra-budget2").delete()
+                agent2 = db.session.get(type(agent), "ra-budget2")
+                if agent2:
+                    db.session.delete(agent2)
+                db.session.commit()
+
+
+class TestChatReplyLoopDetection:
+    def test_stops_after_repeated_identical_tool_call(self, app, monkeypatch):
+        import app.services.llm as llm_mod
+
+        # Always "calls" the same tool with the same args — a model stuck in a loop.
+        def fake_retry(*a, **k):
+            return "trying again", [{"id": "1", "name": "read_file", "args": {"path": "/x"}}], 1
+
+        monkeypatch.setattr(llm_mod, "build_tool_definitions", lambda tools: [])
+        monkeypatch.setattr(llm_mod, "retry_with_recovery", fake_retry)
+        monkeypatch.setattr(AgentRuntime, "run_tool", lambda self, *a, **k: "some result")
+        with app.app_context():
+            agent = _real_agent(id="ra-loop1")
+            db.session.add(agent)
+            db.session.commit()
+            try:
+                rt = AgentRuntime(agent, provider={"base_url": "x", "api_key": "y", "model": "m"})
+                tool_log = []
+                rt.chat_reply([{"role": "system", "content": "hi"}],
+                              max_tool_iters=10, tool_log=tool_log)
+                # Stopped well before exhausting max_tool_iters=10.
+                assert len(tool_log) < 10
+                assert any(t["refused"] and "loop" in t["result"].lower() for t in tool_log)
+            finally:
+                from app.models.agent import TokenUsage
+                TokenUsage.query.filter_by(agent_id="ra-loop1").delete()
+                agent2 = db.session.get(type(agent), "ra-loop1")
+                if agent2:
+                    db.session.delete(agent2)
+                db.session.commit()
+
+    def test_different_args_not_treated_as_a_loop(self, app, monkeypatch):
+        import app.services.llm as llm_mod
+
+        calls = {"n": 0}
+        def fake_retry(*a, **k):
+            calls["n"] += 1
+            if calls["n"] >= 4:
+                return "done", [], 1
+            return "reading", [{"id": str(calls["n"]), "name": "read_file",
+                               "args": {"path": f"/x{calls['n']}"}}], 1
+
+        monkeypatch.setattr(llm_mod, "build_tool_definitions", lambda tools: [])
+        monkeypatch.setattr(llm_mod, "retry_with_recovery", fake_retry)
+        monkeypatch.setattr(AgentRuntime, "run_tool", lambda self, *a, **k: "ok")
+        with app.app_context():
+            agent = _real_agent(id="ra-loop2")
+            db.session.add(agent)
+            db.session.commit()
+            try:
+                rt = AgentRuntime(agent, provider={"base_url": "x", "api_key": "y", "model": "m"})
+                tool_log = []
+                reply = rt.chat_reply([{"role": "system", "content": "hi"}],
+                                      max_tool_iters=10, tool_log=tool_log)
+                assert reply == "done"
+                assert len(tool_log) == 3   # all 3 distinct-arg calls ran, none refused
+                assert not any(t["refused"] for t in tool_log)
+            finally:
+                from app.models.agent import TokenUsage
+                TokenUsage.query.filter_by(agent_id="ra-loop2").delete()
+                agent2 = db.session.get(type(agent), "ra-loop2")
+                if agent2:
+                    db.session.delete(agent2)
                 db.session.commit()
