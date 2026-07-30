@@ -84,8 +84,8 @@ def create_pii_exception():
 
     if not hash_token:
         return jsonify({"error": "hash_token is required"}), 400
-    if match_mode not in ("exact", "normalized"):
-        return jsonify({"error": "match_mode must be 'exact' or 'normalized'"}), 400
+    if match_mode not in ("exact", "normalized", "regex"):
+        return jsonify({"error": "match_mode must be 'exact', 'normalized', or 'regex'"}), 400
 
     # The anti-poisoning constraint: the value comes ONLY from an existing
     # detection row, never from the request body directly.

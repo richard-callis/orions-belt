@@ -484,6 +484,8 @@ def _filter_exceptions(spans: list) -> list:
         for match_mode, exc_value in candidates:
             if match_mode == "normalized":
                 excepted = _normalize_for_match(value) == _normalize_for_match(exc_value)
+            elif match_mode == "regex":
+                excepted = _regex_match_for_exception(exc_value, value)
             else:  # exact
                 excepted = value == exc_value
             if excepted:
@@ -491,6 +493,35 @@ def _filter_exceptions(spans: list) -> list:
         if not excepted:
             kept.append(span)
     return kept
+
+
+# Patterns/spans beyond this length aren't rejected outright, but there's no
+# realistic PII value or matching need this large — bounding both sides keeps
+# the already-bounded ReDoS exposure (see _regex_match_for_exception) small
+# regardless of the timeout.
+_REGEX_EXCEPTION_MAX_LEN = 256
+
+
+def _regex_match_for_exception(pattern: str, value: str) -> bool:
+    """Match `value` against a PIIException's regex pattern.
+
+    Uses the third-party `regex` module (not stdlib `re`) specifically for
+    its `timeout` parameter — a real wall-clock timeout that works even when
+    called from a background thread (goal pursuit), unlike `signal.alarm`,
+    which only fires on the main thread. A pattern that runs past the
+    timeout, or fails to compile, is treated as "no match" (fails open, same
+    as every other error path in _filter_exceptions) — the exception simply
+    doesn't apply for this span, which is the safe direction: PII stays
+    tokenized rather than a hung/broken pattern silently exempting it.
+    """
+    if len(pattern) > _REGEX_EXCEPTION_MAX_LEN or len(value) > _REGEX_EXCEPTION_MAX_LEN:
+        return False
+    try:
+        import regex
+        return regex.search(pattern, value, timeout=0.05) is not None
+    except Exception as e:
+        log.debug(f"PII Guard: regex exception match failed (pattern={pattern!r}): {e}")
+        return False
 
 
 def _deduplicate_spans(spans: list) -> list:

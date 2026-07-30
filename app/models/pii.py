@@ -55,7 +55,7 @@ class PIIException(db.Model):
 
     id = db.Column(db.String(36), primary_key=True, default=_uuid)
     entity_type = db.Column(db.String(64), nullable=False)
-    match_mode = db.Column(db.String(16), nullable=False, default="exact")  # exact|normalized
+    match_mode = db.Column(db.String(16), nullable=False, default="exact")  # exact|normalized|regex
     value = db.Column(db.Text, nullable=False)  # Fernet-encrypted, mirrors PIIHashEntry.original_value
     source_hash_token = db.Column(db.String(16), nullable=True)  # the detection this was raised from
     created_at = db.Column(db.DateTime, default=_now)

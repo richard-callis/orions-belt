@@ -5,7 +5,7 @@ reveal endpoint.
 from app import db
 from app.models.pii import PIIException, PIIHashEntry
 from app.services.crypto import encrypt_data
-from app.services.pii_guard import _filter_exceptions
+from app.services.pii_guard import _filter_exceptions, _regex_match_for_exception
 
 
 def _make_hash_entry(hash_token, entity_type, value, occurrence_count=1):
@@ -82,6 +82,58 @@ class TestFilterExceptions:
     def test_empty_spans_is_noop(self, app):
         with app.app_context():
             assert _filter_exceptions([]) == []
+
+    def test_regex_match_drops_span(self, app):
+        with app.app_context():
+            exc = PIIException(entity_type="PHONE", match_mode="regex", value=encrypt_data(r"^555-\d{3}-\d{4}$"))
+            db.session.add(exc)
+            db.session.commit()
+            try:
+                spans = [(0, 12, "PHONE", "555-123-4567", "regex")]
+                assert _filter_exceptions(spans) == []
+            finally:
+                PIIException.query.filter_by(id=exc.id).delete()
+                db.session.commit()
+
+    def test_regex_no_match_keeps_span(self, app):
+        with app.app_context():
+            exc = PIIException(entity_type="PHONE", match_mode="regex", value=encrypt_data(r"^555-\d{3}-\d{4}$"))
+            db.session.add(exc)
+            db.session.commit()
+            try:
+                spans = [(0, 12, "PHONE", "212-555-9999", "regex")]
+                assert _filter_exceptions(spans) == spans
+            finally:
+                PIIException.query.filter_by(id=exc.id).delete()
+                db.session.commit()
+
+
+class TestRegexMatchForException:
+    def test_matches_simple_pattern(self):
+        assert _regex_match_for_exception(r"^Orion", "Orion's Belt") is True
+
+    def test_no_match_returns_false(self):
+        assert _regex_match_for_exception(r"^Zeta", "Orion's Belt") is False
+
+    def test_invalid_pattern_fails_safe(self):
+        # Unbalanced parenthesis — a compile error, not a crash.
+        assert _regex_match_for_exception(r"(unclosed", "anything") is False
+
+    def test_catastrophic_pattern_times_out_and_fails_safe(self):
+        # (a|a)* against a non-matching string is the textbook ReDoS shape —
+        # must return False (fail open, not hang or raise) well under a second.
+        import time
+        start = time.time()
+        result = _regex_match_for_exception(r"(a|a)*$", "a" * 40 + "!")
+        elapsed = time.time() - start
+        assert result is False
+        assert elapsed < 1.0
+
+    def test_oversized_pattern_rejected_without_running(self):
+        assert _regex_match_for_exception("a" * 500, "a") is False
+
+    def test_oversized_value_rejected_without_running(self):
+        assert _regex_match_for_exception("a", "a" * 500) is False
 
 
 class TestPIIExceptionModel:
@@ -176,10 +228,27 @@ class TestPiiExceptionsRoutes:
             entry_id = _make_hash_entry("badmode1", "PERSON", "Bob")
         try:
             resp = client.post("/api/pii/exceptions", json={
-                "hash_token": "badmode1", "match_mode": "regex",
+                "hash_token": "badmode1", "match_mode": "fuzzy",
             })
             assert resp.status_code == 400
         finally:
             with app.app_context():
                 PIIHashEntry.query.filter_by(id=entry_id).delete()
+                db.session.commit()
+
+    def test_create_accepts_regex_match_mode(self, app, client):
+        with app.app_context():
+            entry_id = _make_hash_entry("regexok1", "PHONE", "555-123-4567")
+        try:
+            resp = client.post("/api/pii/exceptions", json={
+                "hash_token": "regexok1", "match_mode": "regex",
+            })
+            assert resp.status_code == 201
+            data = resp.get_json()
+            assert data["match_mode"] == "regex"
+            assert data["value"] == "555-123-4567"
+        finally:
+            with app.app_context():
+                PIIHashEntry.query.filter_by(id=entry_id).delete()
+                PIIException.query.filter_by(source_hash_token="regexok1").delete()
                 db.session.commit()
