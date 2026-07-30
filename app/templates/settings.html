@@ -248,6 +248,21 @@
         </div>
       </div>
 
+      <!-- Goal-pursuit round limit -->
+      <div class="rounded-lg border border-border-subtle bg-bg-card p-5 space-y-3">
+        <div class="flex items-center gap-2">
+          <i data-lucide="target" class="w-3.5 h-3.5 text-accent"></i>
+          <h3 class="text-sm font-semibold text-text-primary">Goal-driven agents</h3>
+        </div>
+        <p class="text-xs text-text-muted">Maximum rounds an agent spends autonomously pursuing a room goal before stopping and asking for guidance (1&ndash;50).</p>
+        <div class="flex items-center gap-3">
+          <input id="max-goal-rounds" type="number" min="1" max="50" value="12"
+                 class="w-24 px-2.5 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent" />
+          <button onclick="saveMaxGoalRounds()" class="px-3 py-1.5 rounded text-xs bg-accent/15 text-accent hover:bg-accent/30 transition-colors">Save</button>
+          <span id="max-goal-rounds-status" class="text-[11px] text-text-muted"></span>
+        </div>
+      </div>
+
       <!-- Active tools notice -->
       <div class="rounded-lg border border-border-subtle bg-bg-card p-4">
         <div class="flex items-center gap-2 mb-2">
@@ -794,7 +809,7 @@ const _origShowSection = showSection;
 // Patch showSection to lazy-load data per section
 window.showSection = function(id) {
   _origShowSection(id);
-  if (id === 'prompts') { loadPrompts(); loadMaxAgentTurns(); }
+  if (id === 'prompts') { loadPrompts(); loadMaxAgentTurns(); loadMaxGoalRounds(); }
   if (id === 'pii')     loadPiiToggle();
   if (id === 'llm')     loadDebugToggle();
 };
@@ -839,6 +854,37 @@ async function saveMaxAgentTurns() {
   setTimeout(() => { status.textContent = ''; }, 2000);
 }
 window.saveMaxAgentTurns = saveMaxAgentTurns;
+
+// ── Goal-driven agents: max autonomous rounds per goal ─────────────────────────
+
+async function loadMaxGoalRounds() {
+  try {
+    const r = await fetch('/api/settings/agents.max_goal_rounds');
+    const d = await r.json();
+    const v = parseInt(d.data?.value);
+    if (v) document.getElementById('max-goal-rounds').value = v;
+  } catch (_) {}
+}
+
+async function saveMaxGoalRounds() {
+  const el = document.getElementById('max-goal-rounds');
+  let n = parseInt(el.value) || 12;
+  n = Math.max(1, Math.min(n, 50));
+  el.value = n;
+  const status = document.getElementById('max-goal-rounds-status');
+  try {
+    const r = await fetch('/api/settings/agents.max_goal_rounds', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: String(n) }),
+    });
+    status.textContent = r.ok ? 'Saved' : 'Failed';
+  } catch (_) {
+    status.textContent = 'Failed';
+  }
+  setTimeout(() => { status.textContent = ''; }, 2000);
+}
+window.saveMaxGoalRounds = saveMaxGoalRounds;
 
 document.getElementById('debug-llm-toggle').addEventListener('change', async function () {
   await fetch('/api/settings/debug.llm', {
