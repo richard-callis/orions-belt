@@ -100,12 +100,20 @@ class AgentRuntime:
 
     def chat_reply(self, messages: list, max_tool_iters: int = _DEFAULT_MAX_TOOL_ITERS,
                    allow_tier: int = TIER_HARD_STOP - 1,
-                   session_id: str | None = None, run_id: str | None = None) -> str:
+                   session_id: str | None = None, run_id: str | None = None,
+                   tool_log: list | None = None) -> str:
         """Produce one reply, running a bounded MCP tool-calling loop.
 
         `messages` is an OpenAI-style history (system + prior turns). Returns the
         agent's final text. Tool calls up to `allow_tier` are executed and fed
         back; higher-tier calls are refused (see run_tool).
+
+        If `tool_log` is passed (a list), every tool call made during this reply
+        is appended to it as {name, args, tier, result, refused, error} — the
+        model's own final text is not a reliable signal that something was
+        attempted or failed (it may not mention it at all), so callers that need
+        to actually notify a human of tool activity should inspect this rather
+        than parse the reply text.
         """
         from app.services.llm import build_tool_definitions, retry_with_recovery
 
@@ -139,11 +147,19 @@ class AgentRuntime:
             })
             for tc in tool_calls:
                 name = tc.get("name", "")
+                args = tc.get("args", {}) or {}
+                tier = tier_map.get(name, 0)
                 result = self.run_tool(
-                    name, tc.get("args", {}) or {},
-                    tier=tier_map.get(name, 0), allow_tier=allow_tier,
+                    name, args, tier=tier, allow_tier=allow_tier,
                     session_id=session_id, run_id=run_id,
                 )
+                if tool_log is not None:
+                    result_str = str(result)
+                    tool_log.append({
+                        "name": name, "args": args, "tier": tier, "result": result_str,
+                        "refused": result_str.startswith("[Refused]"),
+                        "error": result_str.startswith("Error"),
+                    })
                 convo.append({
                     "role": "tool", "tool_call_id": tc.get("id", ""), "content": str(result),
                 })

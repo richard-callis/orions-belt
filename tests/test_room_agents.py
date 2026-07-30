@@ -213,6 +213,90 @@ class TestConversationOrchestration:
                 self._cleanup("r-mem-once", ["nova", "atlas"])
 
 
+class TestToolActivityVisibility:
+    """Every tool call an agent makes is persisted as its own visible
+    sender_type='tool' message — not just mentioned (or not) in the agent's
+    own final reply text."""
+
+    def _make_room_and_agent(self, rid, aid):
+        room = ChatRoom(id=rid, name=rid)
+        agent = Agent(id=aid, name="Nova", status="idle")
+        db.session.add_all([room, agent])
+        db.session.commit()
+
+    def _cleanup(self, rid, aid):
+        ChatRoomMessage.query.filter_by(room_id=rid).delete()
+        ChatRoom.query.filter_by(id=rid).delete()
+        Agent.query.filter_by(id=aid).delete()
+        db.session.commit()
+
+    def test_post_tool_activity_persists_one_message_per_call(self, app):
+        import app.routes.chat_rooms as cr
+        with app.app_context():
+            self._make_room_and_agent("r-tool1", "a-tool1")
+            try:
+                tool_log = [
+                    {"name": "read_file", "args": {"path": "/x"}, "tier": 0,
+                     "result": "contents", "error": False, "refused": False},
+                    {"name": "create_directory", "args": {"path": "testing2"}, "tier": 2,
+                     "result": "Error: directory not authorized: testing2", "error": True, "refused": False},
+                ]
+                cr._post_tool_activity("r-tool1", "a-tool1", tool_log)
+                msgs = ChatRoomMessage.query.filter_by(room_id="r-tool1", sender_type="tool").order_by(
+                    ChatRoomMessage.created_at).all()
+                assert len(msgs) == 2
+                import json
+                first = json.loads(msgs[0].content)
+                assert first["tool"] == "read_file"
+                assert first["error"] is False
+                second = json.loads(msgs[1].content)
+                assert second["tool"] == "create_directory"
+                assert second["error"] is True
+                assert "not authorized" in second["result"]
+            finally:
+                self._cleanup("r-tool1", "a-tool1")
+
+    def test_post_tool_activity_noop_on_empty_log(self, app):
+        import app.routes.chat_rooms as cr
+        with app.app_context():
+            self._make_room_and_agent("r-tool2", "a-tool2")
+            try:
+                cr._post_tool_activity("r-tool2", "a-tool2", [])
+                count = ChatRoomMessage.query.filter_by(room_id="r-tool2").count()
+                assert count == 0
+            finally:
+                self._cleanup("r-tool2", "a-tool2")
+
+    def test_generate_agent_reply_surfaces_tool_calls_from_chat_reply(self, app, monkeypatch):
+        import app.routes.chat_rooms as cr
+        from app.services.agents.runtime import AgentRuntime
+
+        def fake_chat_reply(self, messages, **kwargs):
+            tool_log = kwargs.get("tool_log")
+            if tool_log is not None:
+                tool_log.append({"name": "create_directory", "args": {"path": "testing2"},
+                                 "tier": 2, "result": "Error: not authorized: testing2",
+                                 "error": True, "refused": False})
+            return "I tried to make the directory."
+
+        monkeypatch.setattr(AgentRuntime, "chat_reply", fake_chat_reply)
+        with app.app_context():
+            self._make_room_and_agent("r-tool3", "a-tool3")
+            try:
+                agent = Agent.query.get("a-tool3")
+                reply = cr._generate_agent_reply(
+                    agent, {"base_url": "x", "api_key": "y", "model": "m"}, "r-tool3", {"a-tool3": "Nova"})
+                assert reply == "I tried to make the directory."
+                tool_msgs = ChatRoomMessage.query.filter_by(room_id="r-tool3", sender_type="tool").all()
+                assert len(tool_msgs) == 1
+                import json
+                data = json.loads(tool_msgs[0].content)
+                assert data["tool"] == "create_directory"
+                assert data["error"] is True
+            finally:
+                self._cleanup("r-tool3", "a-tool3")
+
+
 class TestPostMessagePiiScan:
     """Human room messages are PII-scanned before persisting (so sanitized text
     is what agents see on every subsequent round, not just the first)."""

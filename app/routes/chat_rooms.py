@@ -92,6 +92,40 @@ def _post_room_system(room_id: str, text: str):
         log.warning("failed to post room system message room=%s: %s", room_id, e)
 
 
+def _post_tool_activity(room_id: str, agent_id: str, tool_log: list):
+    """Persist every tool call from a reply as its own visible room message.
+
+    The agent's own final reply text is not a reliable signal of what it did —
+    it may never mention a tool call at all, let alone one that failed or was
+    refused, silently leaving the human unaware anything was even attempted.
+    Each tool call becomes a sender_type="tool" ChatRoomMessage rendered as a
+    card in the room (mirrors how the old 1:1 chat showed tool calls inline),
+    so activity is visible regardless of what the model chose to say — a
+    failed/refused call is visually distinct, not just buried in a log file.
+    """
+    if not tool_log:
+        return
+    for t in tool_log:
+        args_str = json.dumps(t.get("args") or {})
+        result_str = _sanitize_for_room(t.get("result", ""), room_id)
+        content = json.dumps({
+            "tool": t.get("name", ""),
+            "args": _sanitize_for_room(args_str, room_id),
+            "tier": t.get("tier", 0),
+            "result": result_str,
+            "error": bool(t.get("error")),
+            "refused": bool(t.get("refused")),
+        })
+        db.session.add(ChatRoomMessage(
+            id=_uuid(), room_id=room_id, agent_id=agent_id,
+            sender_type="tool", content=content,
+        ))
+    room = ChatRoom.query.get(room_id)
+    if room:
+        room.updated_at = _now()
+    db.session.commit()
+
+
 def _normalize_handle(name: str) -> str:
     """A comparable @handle for an agent name: lowercased, spaces→hyphens."""
     return re.sub(r"[^a-z0-9-]", "", (name or "").lower().replace(" ", "-"))
@@ -183,7 +217,10 @@ def _generate_agent_reply(agent, provider, room_id, roster, memory_context: str 
     """
     from app.services.agents.runtime import AgentRuntime
     convo = _build_room_history(room_id, agent, roster, memory_context=memory_context)
-    return AgentRuntime(agent, provider).chat_reply(convo)
+    tool_log = []
+    reply = AgentRuntime(agent, provider).chat_reply(convo, tool_log=tool_log)
+    _post_tool_activity(room_id, agent.id, tool_log)
+    return reply
 
 
 def _run_room_conversation(app, room_id: str, human_content: str):
@@ -512,7 +549,10 @@ def _run_goal_pursuit(app, room_id: str, goal_id: str, generation: int):
                 try:
                     convo = _build_goal_history(room_id, agent, roster, goal.goal_text,
                                                 feedback=feedback, memory_context=memory_context)
-                    reply = (runtime.chat_reply(convo, allow_tier=AUTONOMOUS_ALLOW_TIER) or "").strip()
+                    round_tool_log = []
+                    reply = (runtime.chat_reply(convo, allow_tier=AUTONOMOUS_ALLOW_TIER,
+                                                tool_log=round_tool_log) or "").strip()
+                    _post_tool_activity(room_id, agent.id, round_tool_log)
                 except Exception as e:
                     log.warning("goal pursuit round failed goal=%s room=%s: %s", goal_id, room_id, e)
                     _post_room_system(room_id, f"⚠ {agent.name} hit an error working on the goal: {str(e)[:300]}")
