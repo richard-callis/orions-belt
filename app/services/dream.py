@@ -140,16 +140,23 @@ def _build_corpus() -> tuple[str, str | None]:
     nonce = uuid.uuid4().hex[:8]
     lines = [f"<<<CONVERSATION-{nonce}>>>"]
     total = 0
+    latest_included_at = None
     for m in rows:
         label = "Human" if m.sender_type == "human" else ((m.agent.name if m.agent else None) or "Agent")
         line = f"[{label}] {(m.content or '')[:400]}"
         if total + len(line) > _MAX_CORPUS_CHARS:
+            # The char budget cut this window short — advancing the
+            # watermark past here (e.g. to the newest row in the whole
+            # candidate window) would permanently skip every message from
+            # here on, since the next tick's query only looks *after* the
+            # watermark. Stop and only claim what actually made it in.
             break
         lines.append(line)
         total += len(line)
+        latest_included_at = m.created_at
     lines.append(f"<<<END-CONVERSATION-{nonce}>>>")
 
-    latest_at = rows[-1].created_at.isoformat() if rows[-1].created_at else None
+    latest_at = latest_included_at.isoformat() if latest_included_at else None
     return "\n".join(lines), latest_at
 
 

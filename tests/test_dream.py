@@ -145,6 +145,49 @@ class TestBuildCorpus:
             finally:
                 self._cleanup("r-corpus2")
 
+    def test_watermark_only_advances_to_the_last_message_actually_included(self, app):
+        """When the char budget cuts the corpus short, the watermark must
+        advance only to the last message that made it INTO the corpus text —
+        not to the newest message in the whole candidate window. Advancing
+        past a message that was budgeted out would permanently skip it: the
+        next tick's query only looks *after* the watermark."""
+        with app.app_context():
+            rid = "r-corpus-budget"
+            room = ChatRoom(id=rid, name=rid)
+            db.session.add(room)
+            # Each message is long enough (after the 400-char per-line
+            # truncation) to force _build_corpus to stop well before the
+            # last one, given _MAX_CORPUS_CHARS = 12000.
+            n = 40
+            for i in range(n):
+                db.session.add(ChatRoomMessage(
+                    id=f"{rid}-{i}", room_id=rid, sender_type="human",
+                    content=f"MSG-{i:03d}-" + ("x" * 500),
+                ))
+            db.session.commit()
+            try:
+                corpus, latest = dream_mod._build_corpus()
+                assert latest is not None
+
+                # Find the highest-index message actually present in the corpus.
+                included_indices = [i for i in range(n) if f"MSG-{i:03d}-" in corpus]
+                assert included_indices, "expected at least one message in the corpus"
+                assert len(included_indices) < n, (
+                    "test setup didn't actually exceed the char budget — "
+                    "widen the message count/size so this test means something"
+                )
+                last_included = ChatRoomMessage.query.get(f"{rid}-{included_indices[-1]}")
+
+                assert latest == last_included.created_at.isoformat()
+
+                # The specific bug: latest must NOT be the newest message's
+                # timestamp when that message was budgeted out.
+                newest = ChatRoomMessage.query.get(f"{rid}-{n - 1}")
+                if included_indices[-1] != n - 1:
+                    assert latest != newest.created_at.isoformat()
+            finally:
+                self._cleanup(rid)
+
     def test_respects_watermark(self, app):
         with app.app_context():
             self._make_room_with_messages("r-corpus3", [("human", "old message")])
