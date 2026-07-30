@@ -958,6 +958,12 @@ def _stream_openai_impl(base_url, api_key, model, system_prompt, history,
                         if finish:
                             log.info("llm.finish_reason=%s", finish)
 
+                        # Reasoning models stream their thinking separately as
+                        # `reasoning_content` (some servers use `reasoning`).
+                        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                        if reasoning:
+                            yield _sse_format("reasoning", {"content": reasoning})
+
                         content = delta.get("content")
                         if content:
                             turn_text += content
