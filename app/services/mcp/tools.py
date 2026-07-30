@@ -251,6 +251,7 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         # Tier 2: modify operations
         "modify_file": _handle_modify_file,
         "create_directory": _handle_create_directory,
+        "send_email": _handle_send_email,
         # Tier 3: destructive operations
         "delete_file": _handle_delete_file,
         "move_file": _handle_move_file,
@@ -1089,3 +1090,41 @@ async def _handle_search_emails(tool_name: str, args: dict) -> str:
         if len(results) >= count:
             break
     return "\n".join(results) if results else "No matching emails found."
+
+
+async def _handle_send_email(tool_name: str, args: dict) -> str:
+    """Send an email via Outlook COM automation.
+
+    Tier 2 (not Tier 1 like the other create_* tools): an email leaving the
+    machine in the user's name is a materially different kind of effect than
+    creating a local file, and Tier 2 is already refused under autonomous
+    goal pursuit's Tier-1 ceiling while remaining allowed in attended chat —
+    exactly the property wanted here with no new tiering logic required.
+    """
+    to = (args.get("to") or "").strip()
+    subject = (args.get("subject") or "").strip()
+    body = args.get("body") or ""
+    cc = (args.get("cc") or "").strip()
+
+    if not to:
+        return "Error: 'to' is required"
+    if not subject:
+        return "Error: 'subject' is required"
+
+    try:
+        import win32com.client
+    except ImportError:
+        return "Error: pywin32 not installed (Windows-only)"
+
+    try:
+        outlook = win32com.client.Dispatch("Outlook.Application")
+        mail = outlook.CreateItem(0)  # 0 = olMailItem
+        mail.To = to
+        if cc:
+            mail.CC = cc
+        mail.Subject = subject
+        mail.Body = body
+        mail.Send()
+        return f"Email sent to {to}: {subject}"
+    except Exception as e:
+        return f"Error sending email: {e}"

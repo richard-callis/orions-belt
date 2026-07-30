@@ -226,6 +226,22 @@ def _seed_builtin_tools(app):
             }),
         ),
         dict(
+            name="send_email",
+            tier=2,
+            description="Send an email via Outlook (Windows only). Tier 2 — refused during "
+                        "unattended autonomous goal pursuit, allowed in attended chat.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "to": {"type": "string", "description": "Recipient email address(es), semicolon-separated for multiple"},
+                    "subject": {"type": "string", "description": "Email subject"},
+                    "body": {"type": "string", "description": "Email body text"},
+                    "cc": {"type": "string", "description": "CC address(es), optional"},
+                },
+                "required": ["to", "subject", "body"],
+            }),
+        ),
+        dict(
             name="create_word_document",
             tier=1,
             description="Create a Word (.docx) document from plain text. Paragraphs separated "
