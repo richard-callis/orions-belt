@@ -333,6 +333,65 @@ def _seed_builtin_tools(app):
             }),
         ),
         dict(
+            name="create_jira_issue",
+            tier=1,
+            description="Create an issue in a Jira project via a configured jira connector",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Jira connector name as configured in Settings"},
+                    "project_key": {"type": "string", "description": "Jira project key, e.g. 'ENG'"},
+                    "issue_type": {"type": "string", "description": "Issue type, e.g. 'Task', 'Bug', 'Story'"},
+                    "summary": {"type": "string", "description": "Issue summary/title"},
+                    "description": {"type": "string", "description": "Issue description (optional)"},
+                },
+                "required": ["connector", "project_key", "issue_type", "summary"],
+            }),
+        ),
+        dict(
+            name="search_jira_issues",
+            tier=0,
+            description="Search Jira issues by JQL via a configured jira connector (read-only)",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Jira connector name as configured in Settings"},
+                    "jql": {"type": "string", "description": "JQL query, e.g. 'project = ENG AND status = \"In Progress\"'"},
+                    "max_results": {"type": "integer", "description": "Maximum issues to return (default 20, max 50)"},
+                },
+                "required": ["connector", "jql"],
+            }),
+        ),
+        dict(
+            name="create_linear_issue",
+            tier=1,
+            description="Create an issue in Linear via a configured linear connector",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Linear connector name as configured in Settings"},
+                    "team_id": {"type": "string", "description": "Linear team ID"},
+                    "title": {"type": "string", "description": "Issue title"},
+                    "description": {"type": "string", "description": "Issue description (optional)"},
+                },
+                "required": ["connector", "team_id", "title"],
+            }),
+        ),
+        dict(
+            name="search_linear_issues",
+            tier=0,
+            description="Search Linear issues by title via a configured linear connector (read-only)",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Linear connector name as configured in Settings"},
+                    "query": {"type": "string", "description": "Text to search for in issue titles"},
+                    "limit": {"type": "integer", "description": "Maximum issues to return (default 20, max 50)"},
+                },
+                "required": ["connector", "query"],
+            }),
+        ),
+        dict(
             name="create_google_task",
             tier=1,
             description="Create a task in Google Tasks via a configured google connector",

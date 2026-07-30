@@ -248,6 +248,8 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         "git_status": _handle_git_status,
         "git_diff": _handle_git_diff,
         "git_log": _handle_git_log,
+        "search_jira_issues": _handle_search_jira_issues,
+        "search_linear_issues": _handle_search_linear_issues,
         # Tier 1: create operations
         "create_file": _handle_create_file,
         "append_to_file": _handle_append_to_file,
@@ -259,6 +261,8 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         "create_github_issue": _handle_create_github_issue,
         "create_github_pr": _handle_create_github_pr,
         "comment_on_github_pr": _handle_comment_on_github_pr,
+        "create_jira_issue": _handle_create_jira_issue,
+        "create_linear_issue": _handle_create_linear_issue,
         "create_google_task": _handle_create_google_task,
         "post_teams_message": _handle_post_teams_message,
         "create_planner_task": _handle_create_planner_task,
@@ -1703,6 +1707,224 @@ async def _handle_get_github_pr_status(tool_name: str, args: dict) -> str:
         return f"Error: GitHub returned HTTP {resp.status_code}\n{resp.text[:1000]}"
     except Exception as e:
         return f"Error fetching GitHub PR status: {e}"
+
+
+def _get_jira_connector(connector_name: str):
+    """Look up a jira connector and return (base_url, headers, None) or
+    (None, None, error_message)."""
+    from app.services.connector_auth import build_auth_headers
+
+    connector = _get_connector(connector_name)
+    if not connector:
+        return None, None, f"Error: connector '{connector_name}' not found"
+    if connector["type"] != "jira":
+        return None, None, f"Error: connector '{connector_name}' is not a jira connector"
+    base_url = (connector["config"].get("base_url") or "").rstrip("/")
+    if not base_url:
+        return None, None, f"Error: connector '{connector_name}' has no base_url configured"
+    auth = connector.get("auth") or {}
+    if not auth.get("email") or not auth.get("api_token"):
+        return None, None, f"Error: connector '{connector_name}' has no email/api_token configured"
+    headers = build_auth_headers("basic", {"username": auth["email"], "password": auth["api_token"]})
+    headers["Accept"] = "application/json"
+    headers["Content-Type"] = "application/json"
+    return base_url, headers, None
+
+
+async def _handle_create_jira_issue(tool_name: str, args: dict) -> str:
+    """Create an issue in a Jira project via a configured jira connector."""
+    connector_name = args.get("connector", "")
+    project_key = (args.get("project_key") or "").strip()
+    issue_type = (args.get("issue_type") or "").strip()
+    summary = (args.get("summary") or "").strip()
+    description = args.get("description") or ""
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not project_key:
+        return "Error: project_key is required"
+    if not issue_type:
+        return "Error: issue_type is required (e.g. 'Task', 'Bug', 'Story')"
+    if not summary:
+        return "Error: summary is required"
+
+    base_url, headers, err = _get_jira_connector(connector_name)
+    if err:
+        return err
+
+    payload = {
+        "fields": {
+            "project": {"key": project_key},
+            "issuetype": {"name": issue_type},
+            "summary": summary,
+        }
+    }
+    if description:
+        # Jira Cloud's v3 API takes description in Atlassian Document Format,
+        # not plain text — wrap it in the minimal valid ADF document.
+        payload["fields"]["description"] = {
+            "type": "doc", "version": 1,
+            "content": [{"type": "paragraph", "content": [{"type": "text", "text": description}]}],
+        }
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(f"{base_url}/rest/api/3/issue", headers=headers, json=payload)
+        if resp.status_code == 201:
+            data = resp.json()
+            key = data.get("key", "?")
+            return f"Created issue {key}: {summary}\n{base_url}/browse/{key}"
+        return f"Error: Jira returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error creating Jira issue: {e}"
+
+
+_MAX_JIRA_SEARCH_RESULTS = 50
+
+
+async def _handle_search_jira_issues(tool_name: str, args: dict) -> str:
+    """Search Jira issues by JQL via a configured jira connector. Read-only."""
+    connector_name = args.get("connector", "")
+    jql = (args.get("jql") or "").strip()
+    try:
+        max_results = min(int(args.get("max_results") or 20), _MAX_JIRA_SEARCH_RESULTS)
+    except (TypeError, ValueError):
+        max_results = 20
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not jql:
+        return "Error: jql is required"
+
+    base_url, headers, err = _get_jira_connector(connector_name)
+    if err:
+        return err
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(f"{base_url}/rest/api/3/search", headers=headers, params={
+                "jql": jql, "maxResults": max_results, "fields": "summary,status,issuetype",
+            })
+        if resp.status_code == 200:
+            data = resp.json()
+            issues = data.get("issues", [])
+            if not issues:
+                return "No issues found"
+            lines = []
+            for issue in issues:
+                fields = issue.get("fields", {})
+                status = (fields.get("status") or {}).get("name", "?")
+                lines.append(f"{issue.get('key')}: {fields.get('summary', '')} [{status}]")
+            return "\n".join(lines)
+        return f"Error: Jira returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error searching Jira issues: {e}"
+
+
+def _get_linear_connector(connector_name: str):
+    """Look up a linear connector and return (headers, None) or
+    (None, error_message)."""
+    connector = _get_connector(connector_name)
+    if not connector:
+        return None, f"Error: connector '{connector_name}' not found"
+    if connector["type"] != "linear":
+        return None, f"Error: connector '{connector_name}' is not a linear connector"
+    auth = connector.get("auth") or {}
+    if not auth.get("api_key"):
+        return None, f"Error: connector '{connector_name}' has no API key configured"
+    # Linear's API takes the raw key as Authorization — no "Bearer " prefix.
+    return {"Authorization": auth["api_key"], "Content-Type": "application/json"}, None
+
+
+async def _handle_create_linear_issue(tool_name: str, args: dict) -> str:
+    """Create an issue in Linear via a configured linear connector."""
+    connector_name = args.get("connector", "")
+    team_id = (args.get("team_id") or "").strip()
+    title = (args.get("title") or "").strip()
+    description = args.get("description") or ""
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not team_id:
+        return "Error: team_id is required"
+    if not title:
+        return "Error: title is required"
+
+    headers, err = _get_linear_connector(connector_name)
+    if err:
+        return err
+
+    query = {
+        "query": "mutation($input: IssueCreateInput!) { issueCreate(input: $input) "
+                 "{ success issue { identifier url } } }",
+        "variables": {"input": {"teamId": team_id, "title": title, "description": description}},
+    }
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post("https://api.linear.app/graphql", headers=headers, json=query)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("errors"):
+                return f"Error: Linear returned errors: {data['errors']}"
+            result = (data.get("data") or {}).get("issueCreate") or {}
+            if not result.get("success"):
+                return "Error: Linear did not report success creating the issue"
+            issue = result.get("issue") or {}
+            return f"Created issue {issue.get('identifier', '?')}: {title}\n{issue.get('url', '')}"
+        return f"Error: Linear returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error creating Linear issue: {e}"
+
+
+_MAX_LINEAR_SEARCH_RESULTS = 50
+
+
+async def _handle_search_linear_issues(tool_name: str, args: dict) -> str:
+    """Search Linear issues via a configured linear connector. Read-only."""
+    connector_name = args.get("connector", "")
+    search_query = (args.get("query") or "").strip()
+    try:
+        limit = min(int(args.get("limit") or 20), _MAX_LINEAR_SEARCH_RESULTS)
+    except (TypeError, ValueError):
+        limit = 20
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not search_query:
+        return "Error: query is required"
+
+    headers, err = _get_linear_connector(connector_name)
+    if err:
+        return err
+
+    gql = {
+        "query": "query($filter: IssueFilter!, $first: Int!) { issues(filter: $filter, first: $first) "
+                 "{ nodes { identifier title state { name } } } }",
+        "variables": {
+            "filter": {"title": {"containsIgnoreCase": search_query}},
+            "first": limit,
+        },
+    }
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post("https://api.linear.app/graphql", headers=headers, json=gql)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("errors"):
+                return f"Error: Linear returned errors: {data['errors']}"
+            nodes = ((data.get("data") or {}).get("issues") or {}).get("nodes") or []
+            if not nodes:
+                return "No issues found"
+            lines = [f"{n.get('identifier')}: {n.get('title')} [{(n.get('state') or {}).get('name', '?')}]"
+                     for n in nodes]
+            return "\n".join(lines)
+        return f"Error: Linear returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error searching Linear issues: {e}"
 
 
 async def _handle_create_google_task(tool_name: str, args: dict) -> str:
