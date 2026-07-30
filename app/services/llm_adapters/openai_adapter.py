@@ -28,11 +28,12 @@ class OpenAIAdapter(LLMAdapter):
         tool_defs: list[dict],
     ) -> tuple[str, list[dict], int]:
         from openai import OpenAI, APIStatusError, APIConnectionError, APITimeoutError
+        from config import Config
 
         client = OpenAI(
             base_url=self.base_url,
             api_key=self.api_key or "none",
-            timeout=120.0,
+            timeout=float(getattr(Config, "LLM_TIMEOUT", 600)),
         )
 
         kwargs: dict = {"model": self.model, "messages": messages}
