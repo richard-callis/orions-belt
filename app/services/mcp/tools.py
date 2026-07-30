@@ -17,6 +17,7 @@ import shutil
 import sys
 import tempfile
 import time
+import uuid
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -253,6 +254,7 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         "check_calendar_availability": _handle_check_calendar_availability,
         "read_onedrive_file": _handle_read_onedrive_file,
         "query_salesforce": _handle_query_salesforce,
+        "search_documents": _handle_search_documents,
         # Tier 1: create operations
         "create_file": _handle_create_file,
         "append_to_file": _handle_append_to_file,
@@ -498,6 +500,52 @@ def _assert_select_only(query: str) -> str | None:
     if not re.match(r"^SELECT\b", stripped, re.IGNORECASE):
         return "Error: only SELECT queries are permitted via MCP tools"
     return None
+
+
+async def _handle_search_documents(tool_name: str, args: dict) -> str:
+    """Semantic search over locally indexed documents (see
+    app/services/doc_index.py — POST /mcp/api/directories/<id>/reindex to
+    build the index). Tier 0, read-only.
+
+    Deliberately NOT auto-injected into any prompt — called on demand, like
+    any other tool, never spliced into a system prompt the way recalled
+    Memory is. Results are PII-scanned (fails open, same as every other
+    PII-scan call site in this app) and wrapped in explicit delimiters
+    marking them as untrusted document content, not instructions — a
+    returned snippet is attacker-influenceable text arriving through the
+    same untrusted tool-result channel as a file read or a web fetch.
+    """
+    query = (args.get("query") or "").strip()
+    try:
+        top_k = max(1, min(int(args.get("top_k") or 5), 20))
+    except (TypeError, ValueError):
+        top_k = 5
+
+    if not query:
+        return "Error: query is required"
+
+    from app.services.doc_index import search_documents
+
+    try:
+        hits = search_documents(query, top_k=top_k)
+    except Exception as e:
+        return f"Error searching documents: {e}"
+
+    if not hits:
+        return "No matching documents found (or nothing has been indexed yet)"
+
+    nonce = uuid.uuid4().hex[:8]
+    lines = [f"<<<UNTRUSTED-DOCUMENT-CONTENT-{nonce}>>>"]
+    for hit in hits:
+        snippet = hit["content"]
+        try:
+            from app.services.pii_guard import get_pii_guard
+            snippet, _detected, _types = get_pii_guard().scan(snippet, direction="outbound")
+        except Exception as e:
+            log.warning("search_documents: PII scan failed: %s — returning unscanned", e)
+        lines.append(f"\n[{hit['file_path']} — chunk {hit['chunk_index']}, score={hit['score']:.3f}]\n{snippet}")
+    lines.append(f"<<<END-UNTRUSTED-DOCUMENT-CONTENT-{nonce}>>>")
+    return "\n".join(lines)
 
 
 async def _handle_run_sql_query(tool_name: str, args: dict) -> str:

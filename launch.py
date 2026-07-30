@@ -540,6 +540,21 @@ def _seed_builtin_tools(app):
             }),
         ),
         dict(
+            name="search_documents",
+            tier=0,
+            description="Semantic search over locally indexed documents (.txt/.md/.pdf/.docx under authorized "
+                        "directories — index or refresh via the Directories settings page). Read-only; results "
+                        "are explicitly marked as untrusted document content.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Natural-language search query"},
+                    "top_k": {"type": "integer", "description": "Maximum results to return (default 5, max 20)"},
+                },
+                "required": ["query"],
+            }),
+        ),
+        dict(
             name="run_sql_query",
             tier=1,
             description="Run a read-only SELECT query via a configured SQL connector",

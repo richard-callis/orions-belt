@@ -98,6 +98,15 @@ class MemoryService:
             log.debug("Memory Service: embed error: %s", e)
             return None
 
+    def embed(self, text: str) -> list[float] | None:
+        """Public embedding accessor — lets other callers (e.g. document
+        indexing) reuse this service's already-loaded SentenceTransformer
+        instance instead of loading a second copy of the model. Returns
+        None if the model isn't available (e.g. sentence-transformers
+        failed to import), same as the internal _embed."""
+        self._ensure_initialized()
+        return self._embed(text)
+
     def store(
         self,
         title: str,

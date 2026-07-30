@@ -59,6 +59,11 @@ python-pptx>=0.6.23
 openpyxl>=3.1.0
 reportlab>=4.0.0
 
+# Document indexing (search_documents tool) — reportlab above is write-only,
+# this is the read-side PDF text extractor. .docx text extraction reuses
+# python-docx (already a dependency).
+pypdf>=4.0.0
+
 # Desktop launcher
 pywebview>=5.0.0        # Native window via WebView2
 pystray>=0.19.0         # System tray (Discord-style)
