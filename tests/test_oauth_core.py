@@ -579,8 +579,21 @@ class TestLoopbackListenerRealSocket:
             port = flow["port"]
             state = flow["state"]
 
-            # Connect and send nothing — never even a request line.
-            silent = socket.create_connection(("127.0.0.1", port), timeout=2)
+            # Connect and send nothing — never even a request line. Retry:
+            # the real HTTPServer binds asynchronously inside the background
+            # listener thread start_oauth_flow() just kicked off, so the
+            # port may not be accepting connections yet the instant this
+            # test resumes (same race every other real-socket test in this
+            # file already retries around).
+            silent = None
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                try:
+                    silent = socket.create_connection(("127.0.0.1", port), timeout=2)
+                    break
+                except ConnectionRefusedError:
+                    time.sleep(0.05)
+            assert silent is not None, "loopback listener never came up"
             try:
                 time.sleep(1)  # well past the shrunk 0.3s handler timeout
                 # The listener must have moved on and still be waiting for

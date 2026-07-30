@@ -212,13 +212,24 @@ class TestBuildCorpus:
         it. Taking the OLDEST 200 instead means a large backlog is worked
         through in order, one window at a time, with nothing skipped."""
         with app.app_context():
+            from datetime import datetime, timedelta, timezone
+
             rid = "r-corpus-rowcap"
             room = ChatRoom(id=rid, name=rid)
             db.session.add(room)
             n = dream_mod._MAX_CORPUS_MESSAGES + 50
+            # Explicit, strictly-increasing timestamps rather than relying on
+            # the created_at column's real-wall-clock default: 250 rows
+            # added in a tight loop can otherwise land on the same
+            # microsecond under a fast/throttled CI clock, which both makes
+            # the ordering assertion below nondeterministic (SQLite ties
+            # aren't a documented stable sort) and can make the adjacent
+            # last-included/first-excluded pair compare equal instead of <.
+            base = datetime.now(timezone.utc)
             for i in range(n):
                 db.session.add(ChatRoomMessage(
                     id=f"{rid}-{i}", room_id=rid, sender_type="human", content=f"MSG-{i:03d}",
+                    created_at=base + timedelta(microseconds=i),
                 ))
             db.session.commit()
             try:
