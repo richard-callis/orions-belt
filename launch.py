@@ -279,6 +279,60 @@ def _seed_builtin_tools(app):
             }),
         ),
         dict(
+            name="git_status",
+            tier=0,
+            description="Show the working tree status of a git repository under an authorized directory",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path to the git repository (must be an authorized directory)"},
+                },
+                "required": ["path"],
+            }),
+        ),
+        dict(
+            name="git_diff",
+            tier=0,
+            description="Show the diff for a git repository under an authorized directory",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path to the git repository (must be an authorized directory)"},
+                    "ref": {"type": "string", "description": "Optional ref/commit to diff against (default: unstaged working tree changes)"},
+                },
+                "required": ["path"],
+            }),
+        ),
+        dict(
+            name="git_log",
+            tier=0,
+            description="Show recent commit history for a git repository under an authorized directory",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path to the git repository (must be an authorized directory)"},
+                    "limit": {"type": "integer", "description": "Maximum number of commits to show (default 20, max 200)"},
+                },
+                "required": ["path"],
+            }),
+        ),
+        dict(
+            name="git_commit",
+            tier=2,
+            description="Stage specific files and create a commit in a git repository under an authorized directory. "
+                        "Takes explicit paths to stage — never stages everything.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path to the git repository (must be an authorized directory)"},
+                    "message": {"type": "string", "description": "Commit message"},
+                    "paths": {"type": "array", "items": {"type": "string"},
+                             "description": "Files to stage and commit, relative to the repository root or absolute"},
+                },
+                "required": ["path", "message", "paths"],
+            }),
+        ),
+        dict(
             name="create_google_task",
             tier=1,
             description="Create a task in Google Tasks via a configured google connector",

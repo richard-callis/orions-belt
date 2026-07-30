@@ -245,6 +245,9 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         "call_connector": _handle_call_connector,
         "fetch_url": _handle_fetch_url,
         "get_github_pr_status": _handle_get_github_pr_status,
+        "git_status": _handle_git_status,
+        "git_diff": _handle_git_diff,
+        "git_log": _handle_git_log,
         # Tier 1: create operations
         "create_file": _handle_create_file,
         "append_to_file": _handle_append_to_file,
@@ -265,6 +268,7 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         "create_directory": _handle_create_directory,
         "send_email": _handle_send_email,
         "http_request": _handle_http_request,
+        "git_commit": _handle_git_commit,
         # Tier 3: destructive operations
         "delete_file": _handle_delete_file,
         "move_file": _handle_move_file,
@@ -1080,6 +1084,218 @@ async def _handle_run_shell(tool_name: str, args: dict) -> str:
         return f"exit_code={proc.returncode}\nstdout:\n{out}\nstderr:\n{err}"
     except Exception as e:
         return f"Error running shell command: {e}"
+
+
+# ── Git operations ───────────────────────────────────────────────────────────
+# Deliberately narrow: status/diff/log/commit only. No git_push (would need
+# ambient credentials — an SSH agent or credential helper — that live outside
+# this app's encrypted Connector auth model, unlike every other outbound-write
+# path in this app; use create_github_pr instead) and no branch/checkout
+# (switching branches invalidates path-based authorization decisions already
+# made this session, and can silently destroy uncommitted work).
+
+def _authorize_git_repo(path: str) -> tuple:
+    """Return (real_path, None) if `path` is both an authorized directory and
+    a git repo (has a .git dir), else (None, error_message)."""
+    sanitized = _sanitize_path_input(path or "")
+    if not sanitized:
+        return None, "Error: path is required (or contains invalid characters)"
+    real_path = os.path.realpath(sanitized)
+    if _is_blocked_path(real_path):
+        return None, f"Error: access denied — system path blocked: {path}"
+    if not _authorize_path(real_path):
+        return None, f"Error: directory not authorized: {path}{_authorized_dirs_hint()}"
+    if not os.path.isdir(os.path.join(real_path, ".git")):
+        return None, f"Error: not a git repository (no .git directory): {path}"
+    return real_path, None
+
+
+def _reject_flag_like(value: str, label: str) -> str | None:
+    """Return an error if `value` looks like a CLI flag rather than a
+    genuine ref/path — list-form subprocess prevents shell injection, but
+    not an LLM-supplied value like "--upload-pack=..." being interpreted as
+    a git option instead of the argument it's meant to be."""
+    if value and value.startswith("-"):
+        return f"Error: {label} must not start with '-'"
+    return None
+
+
+# A deliberately nonexistent hooks directory — passed as core.hooksPath so
+# git looks for pre-commit/commit-msg/post-commit hooks there instead of the
+# repo's real .git/hooks/, finds nothing, and proceeds without running any.
+# Only git_commit actually risks triggering a hook (status/diff/log don't),
+# but applying it to every call is harmless and one less thing to get wrong.
+_GIT_NO_HOOKS_PATH = "/dev/null/orions-belt-no-hooks"
+
+
+async def _run_git(git_args: list, cwd: str, timeout: float = 30,
+                   identity: tuple | None = None) -> tuple:
+    """Run a git subcommand with the untrusted-repo hardening every git
+    tool needs: a maliciously-configured .git/config can make ordinary
+    read commands (status/diff/log) execute arbitrary commands via
+    core.fsmonitor, diff.external, core.pager, or a *.textconv filter, and
+    a repo's .git/hooks/ can execute arbitrary commands on commit — and
+    since create_file (Tier 1) can write .git/config or a hook script inside
+    an authorized directory, an unhardened git tool would let Tier-1 file
+    write plus a Tier-0/Tier-2 git operation bypass the Tier-3 approval gate
+    run_shell exists to enforce.
+
+    Blocking system/global git config this way also strips out any identity
+    (user.name/user.email) an operator configured globally — pass `identity`
+    as (name, email) for commit-like operations that need one rather than
+    depending on ambient config that's now deliberately unavailable.
+
+    Returns (exit_code, stdout, stderr)."""
+    env = dict(os.environ)
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    full_args = ["git", "--no-pager", "-c", "core.fsmonitor=", "-c", "core.pager=cat",
+                 "-c", f"core.hooksPath={_GIT_NO_HOOKS_PATH}"]
+    if identity:
+        name, email = identity
+        full_args += ["-c", f"user.name={name}", "-c", f"user.email={email}"]
+    full_args += git_args
+    proc = await asyncio.create_subprocess_exec(
+        *full_args, cwd=cwd, env=env,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise
+    return (proc.returncode,
+            stdout.decode("utf-8", errors="replace")[:_MAX_SUBPROCESS_OUTPUT_CHARS],
+            stderr.decode("utf-8", errors="replace")[:_MAX_SUBPROCESS_OUTPUT_CHARS])
+
+
+async def _handle_git_status(tool_name: str, args: dict) -> str:
+    """Show the working tree status of a git repo under an authorized directory."""
+    real_path, err = _authorize_git_repo(args.get("path", ""))
+    if err:
+        return err
+    try:
+        code, out, stderr = await _run_git(["status", "--porcelain=v1", "-b"], cwd=real_path)
+        if code != 0:
+            return f"Error: git status failed\n{stderr}"
+        # -b always emits a "## <branch>" header line even on a clean tree —
+        # "clean" means no lines beyond that one, not an empty result.
+        lines = out.splitlines()
+        if len(lines) <= 1:
+            return f"{out.strip()}\n(clean working tree)" if out.strip() else "(clean working tree)"
+        return out
+    except asyncio.TimeoutError:
+        return "Error: git status timed out"
+    except Exception as e:
+        return f"Error running git status: {e}"
+
+
+async def _handle_git_diff(tool_name: str, args: dict) -> str:
+    """Show the diff for a git repo under an authorized directory."""
+    real_path, err = _authorize_git_repo(args.get("path", ""))
+    if err:
+        return err
+    ref = (args.get("ref") or "").strip()
+    if ref:
+        flag_err = _reject_flag_like(ref, "ref")
+        if flag_err:
+            return flag_err
+
+    # --no-ext-diff / --no-textconv: a repo's .git/config can point
+    # diff.external or a *.textconv filter at an arbitrary command — those
+    # apply even to a read-only `git diff`. -- separates the ref from any
+    # path arguments so a crafted ref can't be parsed as a git option.
+    git_args = ["diff", "--no-ext-diff", "--no-textconv"]
+    if ref:
+        git_args += [ref, "--"]
+    try:
+        code, out, stderr = await _run_git(git_args, cwd=real_path)
+        if code != 0:
+            return f"Error: git diff failed\n{stderr}"
+        return out or "(no differences)"
+    except asyncio.TimeoutError:
+        return "Error: git diff timed out"
+    except Exception as e:
+        return f"Error running git diff: {e}"
+
+
+async def _handle_git_log(tool_name: str, args: dict) -> str:
+    """Show recent commit history for a git repo under an authorized directory."""
+    real_path, err = _authorize_git_repo(args.get("path", ""))
+    if err:
+        return err
+    try:
+        limit = max(1, min(int(args.get("limit") or 20), 200))
+    except (TypeError, ValueError):
+        limit = 20
+
+    try:
+        code, out, stderr = await _run_git(
+            ["log", f"-{limit}", "--pretty=format:%H %ad %an: %s", "--date=short"], cwd=real_path)
+        if code != 0:
+            return f"Error: git log failed\n{stderr}"
+        return out or "(no commits)"
+    except asyncio.TimeoutError:
+        return "Error: git log timed out"
+    except Exception as e:
+        return f"Error running git log: {e}"
+
+
+async def _handle_git_commit(tool_name: str, args: dict) -> str:
+    """Stage explicit paths and create a commit in a git repo under an
+    authorized directory. Tier 2 — mutates repo state, same class of effect
+    as modify_file.
+
+    Takes explicit `paths`, not an "add everything" flag — a blanket
+    `git add -A` is how an agent stages and commits a .env or other file it
+    never meant to, and every path here is itself re-checked through
+    _authorize_path.
+    """
+    real_path, err = _authorize_git_repo(args.get("path", ""))
+    if err:
+        return err
+    message = (args.get("message") or "").strip()
+    if not message:
+        return "Error: message is required"
+    paths = args.get("paths")
+    if not isinstance(paths, list) or not paths:
+        return "Error: paths is required and must be a non-empty list of files to commit"
+
+    real_paths = []
+    for p in paths:
+        sanitized = _sanitize_path_input(str(p))
+        if not sanitized:
+            return f"Error: invalid path: {p!r}"
+        real_p = os.path.realpath(os.path.join(real_path, sanitized) if not os.path.isabs(sanitized) else sanitized)
+        if _is_blocked_path(real_p):
+            return f"Error: access denied — system path blocked: {p}"
+        if not _authorize_path(real_p):
+            return f"Error: path not authorized: {p}{_authorized_dirs_hint()}"
+        if not real_p.startswith(real_path + os.sep) and real_p != real_path:
+            return f"Error: path is outside the target repo: {p}"
+        real_paths.append(os.path.relpath(real_p, real_path))
+
+    # Blocking system/global git config (in _run_git, to stop a malicious
+    # .git/config from executing commands) also strips out any operator
+    # identity normally set there — pass a fixed one explicitly rather than
+    # fail every commit with "unable to auto-detect email address".
+    identity = ("Orion's Belt Agent", "agent@orions-belt.local")
+
+    try:
+        code, out, stderr = await _run_git(["add", "--"] + real_paths, cwd=real_path)
+        if code != 0:
+            return f"Error: git add failed\n{stderr}"
+        code, out, stderr = await _run_git(
+            ["commit", "-m", message, "--"] + real_paths, cwd=real_path, identity=identity)
+        if code != 0:
+            return f"Error: git commit failed\n{stderr}\n{out}"
+        return out
+    except asyncio.TimeoutError:
+        return "Error: git commit timed out"
+    except Exception as e:
+        return f"Error running git commit: {e}"
 
 
 # ── Connector helpers ─────────────────────────────────────────────────────────
