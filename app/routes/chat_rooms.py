@@ -111,7 +111,24 @@ def _mentioned_agents(content: str, agents: list) -> list:
     return hits
 
 
-def _build_room_history(room_id: str, agent, roster: dict) -> list:
+def _inject_memory(query: str, room_id: str) -> str:
+    """Relevant memory context for `query`, or "" on failure/nothing found.
+
+    Mirrors the 1:1 chat path's memory injection. Callers compute this ONCE
+    per conversational burst / goal-pursuit run (not once per agent per
+    round — memory.inject_context() runs an embedding search, so calling it
+    from inside _build_room_history would repeat that search for every agent
+    on every round).
+    """
+    try:
+        from app.services.memory import get_memory_service
+        return get_memory_service().inject_context(query, session_id=room_id) or ""
+    except Exception as e:
+        log.warning("room memory injection failed room=%s: %s", room_id, e)
+        return ""
+
+
+def _build_room_history(room_id: str, agent, roster: dict, memory_context: str = "") -> list:
     """Build an OpenAI-style message list for an agent replying in a room.
 
     The agent's own past messages map to `assistant`; humans map to `user`;
@@ -141,6 +158,8 @@ def _build_room_history(room_id: str, agent, roster: dict) -> list:
             "genuinely needed. If you have nothing to add, reply briefly and stop. "
         )
     sys += "Use the available tools when they help answer or complete the request."
+    if memory_context:
+        sys = memory_context + "\n\n" + sys
 
     msgs = [{"role": "system", "content": sys}]
     for m in history:
@@ -156,14 +175,14 @@ def _build_room_history(room_id: str, agent, roster: dict) -> list:
     return msgs
 
 
-def _generate_agent_reply(agent, provider, room_id, roster) -> str:
+def _generate_agent_reply(agent, provider, room_id, roster, memory_context: str = "") -> str:
     """Produce one agent reply via the shared AgentRuntime (tools + tier gating).
 
     Tools are the AGENT's (its allowed_tools). Tier 0-2 auto-run; Tier 3
     (destructive) are refused in chat and must go through a Task.
     """
     from app.services.agents.runtime import AgentRuntime
-    convo = _build_room_history(room_id, agent, roster)
+    convo = _build_room_history(room_id, agent, roster, memory_context=memory_context)
     return AgentRuntime(agent, provider).chat_reply(convo)
 
 
@@ -203,6 +222,9 @@ def _run_room_conversation(app, room_id: str, human_content: str):
                 return
 
             cap = _max_agent_turns()   # admin-configurable
+            # Computed once for the whole burst — not once per agent per turn,
+            # since inject_context() runs an embedding search.
+            memory_context = _inject_memory(human_content, room_id)
 
             queue = list(_mentioned_agents(human_content, agents) or agents)
             queued_ids = {a.id for a in queue}
@@ -215,7 +237,7 @@ def _run_room_conversation(app, room_id: str, human_content: str):
                 if agent.id == last_id:
                     continue  # no immediate self-reply
                 try:
-                    reply = _generate_agent_reply(agent, prov, room_id, roster)
+                    reply = _generate_agent_reply(agent, prov, room_id, roster, memory_context=memory_context)
                 except Exception as e:
                     db.session.rollback()
                     log.warning("room reply failed agent=%s room=%s: %s", agent.id, room_id, e)
@@ -310,7 +332,7 @@ def _goal_lead_agent(room_id: str, agents: list):
 
 
 def _build_goal_history(room_id: str, agent, roster: dict, goal_text: str,
-                        feedback: str | None = None) -> list:
+                        feedback: str | None = None, memory_context: str = "") -> list:
     """Like _build_room_history, but instructs the agent to autonomously pursue
     the given goal (using tools) instead of just replying conversationally.
 
@@ -318,7 +340,7 @@ def _build_goal_history(room_id: str, agent, roster: dict, goal_text: str,
     (see _judge_goal_completion) so the agent knows why its "done" claim was
     rejected and what's still missing.
     """
-    msgs = _build_room_history(room_id, agent, roster)
+    msgs = _build_room_history(room_id, agent, roster, memory_context=memory_context)
     msgs[0]["content"] += (
         f"\n\n## Active goal\nYou are autonomously working to complete this goal:\n"
         f"\"{goal_text}\"\n\n"
@@ -474,6 +496,10 @@ def _run_goal_pursuit(app, room_id: str, goal_id: str, generation: int):
             from app.services.agents.runtime import AgentRuntime
             runtime = AgentRuntime(agent, prov)
             feedback = None  # reviewer's rejection reason, fed into the next round
+            # Computed once for the whole pursuit, not once per round — the
+            # goal text doesn't change, and inject_context() runs an
+            # embedding search.
+            memory_context = _inject_memory(goal.goal_text, room_id)
 
             for round_num in range(cap):
                 db.session.expire_all()
@@ -484,7 +510,8 @@ def _run_goal_pursuit(app, room_id: str, goal_id: str, generation: int):
                     return  # a newer pursuit for this goal has taken over
 
                 try:
-                    convo = _build_goal_history(room_id, agent, roster, goal.goal_text, feedback=feedback)
+                    convo = _build_goal_history(room_id, agent, roster, goal.goal_text,
+                                                feedback=feedback, memory_context=memory_context)
                     reply = (runtime.chat_reply(convo, allow_tier=AUTONOMOUS_ALLOW_TIER) or "").strip()
                 except Exception as e:
                     log.warning("goal pursuit round failed goal=%s room=%s: %s", goal_id, room_id, e)

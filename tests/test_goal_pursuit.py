@@ -264,6 +264,24 @@ class TestRunGoalPursuit:
             with app.app_context():
                 _cleanup("r-cap", ["lead-agent"])
 
+    def test_memory_lookup_happens_once_per_pursuit_not_per_round(self, app, monkeypatch):
+        from app.services.agents.runtime import AgentRuntime
+        monkeypatch.setattr(AgentRuntime, "chat_reply", lambda self, *a, **k: "working...")
+        monkeypatch.setattr(cr, "_max_goal_rounds", lambda: 3)
+        call_count = {"n": 0}
+        def fake_inject_memory(*a, **k):
+            call_count["n"] += 1
+            return ""
+        monkeypatch.setattr(cr, "_inject_memory", fake_inject_memory)
+        goal_id, gen = self._setup(app, monkeypatch, "r-mem-once")
+        try:
+            with app.app_context():
+                cr._run_goal_pursuit(app, "r-mem-once", goal_id, gen)
+                assert call_count["n"] == 1  # not once per round (3 rounds ran)
+        finally:
+            with app.app_context():
+                _cleanup("r-mem-once", ["lead-agent"])
+
     def test_inactive_goal_never_starts(self, app, monkeypatch):
         monkeypatch.setattr(
             "app.services.agents.runtime.resolve_active_provider",

@@ -72,6 +72,34 @@ class TestBuildRoomHistory:
                 Agent.query.filter(Agent.id.in_(["a1", "a2"])).delete(synchronize_session=False)
                 db.session.commit()
 
+    def test_memory_context_prepended_to_system_prompt(self, app):
+        with app.app_context():
+            a1 = Agent(id="a1", name="Nova", system_prompt="You are Nova.", status="idle")
+            room = ChatRoom(id="r-mem", name="room")
+            db.session.add_all([a1, room])
+            db.session.commit()
+            try:
+                msgs = _build_room_history("r-mem", a1, {"a1": "Nova"}, memory_context="Relevant: the user likes tea.")
+                assert msgs[0]["content"].startswith("Relevant: the user likes tea.")
+            finally:
+                ChatRoom.query.filter_by(id="r-mem").delete()
+                Agent.query.filter_by(id="a1").delete()
+                db.session.commit()
+
+    def test_no_memory_context_by_default(self, app):
+        with app.app_context():
+            a1 = Agent(id="a1", name="Nova", system_prompt="You are Nova.", status="idle")
+            room = ChatRoom(id="r-nomem", name="room")
+            db.session.add_all([a1, room])
+            db.session.commit()
+            try:
+                msgs = _build_room_history("r-nomem", a1, {"a1": "Nova"})
+                assert not msgs[0]["content"].startswith("Relevant")
+            finally:
+                ChatRoom.query.filter_by(id="r-nomem").delete()
+                Agent.query.filter_by(id="a1").delete()
+                db.session.commit()
+
 
 class TestConversationOrchestration:
     """The bounded agent-to-agent burst: cascade via @mention, capped total."""
@@ -165,6 +193,24 @@ class TestConversationOrchestration:
                 assert replies[0].agent_id == "nova"
             finally:
                 self._cleanup("r-tm", ["nova", "atlas"])
+
+    def test_memory_lookup_happens_once_per_burst_not_per_agent(self, app, monkeypatch):
+        # inject_context() runs an embedding search — calling it once per
+        # agent per turn (instead of once per burst) would silently multiply
+        # that cost with every additional agent in the room.
+        import app.routes.chat_rooms as cr
+        monkeypatch.setattr("app.routes.settings._get_active_provider",
+                            lambda: {"base_url": "x", "api_key": "y", "model": "m"})
+        monkeypatch.setattr(cr, "_generate_agent_reply", lambda agent, *a, **k: "just a reply")
+        call_count = {"n": 0}
+        monkeypatch.setattr(cr, "_inject_memory", lambda *a, **k: (call_count.__setitem__("n", call_count["n"] + 1), "")[1])
+        with app.app_context():
+            self._make_room("r-mem-once", [("nova", "Nova"), ("atlas", "Atlas")])
+            try:
+                cr._run_room_conversation(app, "r-mem-once", "hi everyone")
+                assert call_count["n"] == 1
+            finally:
+                self._cleanup("r-mem-once", ["nova", "atlas"])
 
 
 class TestPostMessagePiiScan:
