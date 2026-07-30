@@ -27,6 +27,22 @@ def github_connector(app):
         db.session.commit()
 
 
+class TestIsSafePathSegment:
+    def test_rejects_slashes_and_traversal(self):
+        assert mcp_tools._is_safe_path_segment("../x") is False
+        assert mcp_tools._is_safe_path_segment("a/b") is False
+        assert mcp_tools._is_safe_path_segment("a\\b") is False
+        assert mcp_tools._is_safe_path_segment("") is False
+        assert mcp_tools._is_safe_path_segment(" ") is False
+
+    def test_allows_realistic_provider_ids(self):
+        # GitHub owner/repo, Salesforce sobject, and a Microsoft Graph Teams
+        # channel id (which legitimately contains ':' and '@') must all pass.
+        assert mcp_tools._is_safe_path_segment("my-org") is True
+        assert mcp_tools._is_safe_path_segment("My_Custom__c") is True
+        assert mcp_tools._is_safe_path_segment("19:abc123@thread.tacv2") is True
+
+
 class TestGithubConnectorType:
     def test_create_connector_accepts_github_type(self, app, client):
         resp = client.post("/connectors/api/connectors", json={
@@ -96,6 +112,18 @@ class TestCreateGithubIssue:
             missing_title = _run(mcp_tools._handle_create_github_issue(
                 "create_github_issue", {"connector": "test-github", "owner": "o", "repo": "r"}))
             assert "title is required" in missing_title
+
+    def test_rejects_path_traversal_in_owner_or_repo(self, app, github_connector):
+        with app.app_context():
+            result = _run(mcp_tools._handle_create_github_issue("create_github_issue", {
+                "connector": "test-github", "owner": "../../other-org", "repo": "widget", "title": "t",
+            }))
+            assert "must not contain" in result
+
+            result2 = _run(mcp_tools._handle_create_github_issue("create_github_issue", {
+                "connector": "test-github", "owner": "acme", "repo": "widget/../../secret", "title": "t",
+            }))
+            assert "must not contain" in result2
 
     def test_rejects_wrong_connector_type(self, app):
         with app.app_context():

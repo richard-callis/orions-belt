@@ -280,6 +280,29 @@ class TestTriggerRoutes:
                 ChatRoom.query.filter_by(id="r-route4").delete()
                 db.session.commit()
 
+    def test_update_rejects_invalid_day_of_week(self, app, client):
+        # PATCH used to assign body["day_of_week"] verbatim with no
+        # validation — a non-numeric value reached _compute_next_run's
+        # int(day_of_week) uncaught, producing a 500 instead of a 400.
+        with app.app_context():
+            self._make_room("r-route5")
+        try:
+            create_resp = client.post("/api/chat-rooms/r-route5/triggers", json={
+                "prompt_text": "x", "frequency": "daily", "hour_utc": 9,
+            })
+            trig_id = create_resp.get_json()["id"]
+
+            resp = client.patch(f"/api/chat-rooms/triggers/{trig_id}", json={"day_of_week": "not-a-number"})
+            assert resp.status_code == 400
+
+            resp2 = client.patch(f"/api/chat-rooms/triggers/{trig_id}", json={"day_of_week": 9})
+            assert resp2.status_code == 400
+        finally:
+            with app.app_context():
+                ScheduledTrigger.query.filter_by(room_id="r-route5").delete()
+                ChatRoom.query.filter_by(id="r-route5").delete()
+                db.session.commit()
+
     def test_create_on_missing_room_404s(self, app, client):
         resp = client.post("/api/chat-rooms/does-not-exist/triggers", json={
             "prompt_text": "x", "frequency": "daily",

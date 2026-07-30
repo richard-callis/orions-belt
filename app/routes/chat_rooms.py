@@ -1098,7 +1098,15 @@ def update_room_trigger(trigger_id):
             return jsonify({"error": f"frequency must be one of {_VALID_FREQUENCIES}"}), 400
         trigger.frequency = body["frequency"]
     if "day_of_week" in body:
-        trigger.day_of_week = body["day_of_week"]
+        day_of_week = body["day_of_week"]
+        if day_of_week is not None:
+            try:
+                day_of_week = int(day_of_week)
+            except (TypeError, ValueError):
+                return jsonify({"error": "day_of_week must be an integer 0-6"}), 400
+            if not (0 <= day_of_week <= 6):
+                return jsonify({"error": "day_of_week must be 0-6"}), 400
+        trigger.day_of_week = day_of_week
     if "hour_utc" in body:
         try:
             hour_utc = int(body["hour_utc"])

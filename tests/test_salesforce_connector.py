@@ -92,6 +92,13 @@ class TestCreateSalesforceRecord:
                 "create_salesforce_record", {"connector": "test-salesforce", "sobject_type": "Lead", "fields": {}}))
             assert "fields is required" in r4
 
+    def test_rejects_path_traversal_in_sobject_type(self, app, salesforce_connector):
+        with app.app_context():
+            result = _run(mcp_tools._handle_create_salesforce_record("create_salesforce_record", {
+                "connector": "test-salesforce", "sobject_type": "../Account", "fields": {"a": "b"},
+            }))
+            assert "must not contain" in result
+
     def test_rejects_wrong_connector_type(self, app):
         with app.app_context():
             c = Connector(name="test-rest-not-sf", connector_type="rest_api",

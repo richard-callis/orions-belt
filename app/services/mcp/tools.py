@@ -897,6 +897,31 @@ async def _handle_move_file(tool_name: str, args: dict) -> str:
 
 # ── Connector helpers ─────────────────────────────────────────────────────────
 
+def _is_safe_path_segment(value: str) -> bool:
+    """True if `value` is safe to interpolate directly into a REST API path.
+
+    These identifiers (repo owner/name, Teams team/channel id, Planner plan/
+    bucket id, Salesforce sobject type, ...) are LLM-supplied and go straight
+    into a URL path segment. httpx/the provider will normalize a value like
+    "../something", so an unchecked value could redirect the request to a
+    different endpoint on the same trusted host, still carrying the
+    connector's credentials.
+
+    This is a blocklist, not an allowlist of "plausible id characters" — some
+    real provider ids are not simple alnum/dash tokens (a Microsoft Graph
+    Teams channel id looks like "19:abc123@thread.tacv2"), so an allowlist
+    would reject genuine values. What every real id has in common is that it
+    never needs a path separator or a ".." segment, so that's what's blocked.
+    """
+    if not value or "\x00" in value:
+        return False
+    if "/" in value or "\\" in value:
+        return False
+    if ".." in value:
+        return False
+    return not any(c.isspace() for c in value)
+
+
 def _get_connector(name: str):
     """Get connector config from database."""
     from app.models.connector import Connector
@@ -1070,6 +1095,8 @@ async def _handle_create_github_issue(tool_name: str, args: dict) -> str:
         return "Error: repo is required"
     if not title:
         return "Error: title is required"
+    if not _is_safe_path_segment(owner) or not _is_safe_path_segment(repo):
+        return "Error: owner and repo must not contain '/', '\\', whitespace, or '..'"
 
     connector = _get_connector(connector_name)
     if not connector:
@@ -1201,6 +1228,8 @@ async def _handle_post_teams_message(tool_name: str, args: dict) -> str:
         return "Error: channel_id is required"
     if not message:
         return "Error: message is required"
+    if not _is_safe_path_segment(team_id) or not _is_safe_path_segment(channel_id):
+        return "Error: team_id and channel_id must not contain '/', '\\', whitespace, or '..'"
 
     access_token, err = _get_graph_connector_and_token(connector_name)
     if err:
@@ -1276,6 +1305,8 @@ async def _handle_create_salesforce_record(tool_name: str, args: dict) -> str:
         return "Error: sobject_type is required (e.g. 'Lead', 'Case', 'Account')"
     if not isinstance(fields, dict) or not fields:
         return "Error: fields is required and must be a non-empty object of field name -> value"
+    if not _is_safe_path_segment(sobject_type):
+        return "Error: sobject_type must not contain '/', '\\', whitespace, or '..'"
 
     conn = Connector.query.filter_by(name=connector_name, enabled=True).first()
     if not conn:

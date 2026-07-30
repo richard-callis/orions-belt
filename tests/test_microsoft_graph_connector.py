@@ -87,6 +87,39 @@ class TestPostTeamsMessage:
                 "post_teams_message", {"connector": "test-graph", "team_id": "t", "channel_id": "c"}))
             assert "message is required" in r3
 
+    def test_rejects_path_traversal_in_team_or_channel_id(self, app, graph_connector):
+        with app.app_context():
+            result = _run(mcp_tools._handle_post_teams_message("post_teams_message", {
+                "connector": "test-graph", "team_id": "../other-team", "channel_id": "c", "message": "m",
+            }))
+            assert "must not contain" in result
+
+            result2 = _run(mcp_tools._handle_post_teams_message("post_teams_message", {
+                "connector": "test-graph", "team_id": "t", "channel_id": "c/../../secret", "message": "m",
+            }))
+            assert "must not contain" in result2
+
+    def test_allows_realistic_graph_channel_id_with_colon_and_at(self, app, graph_connector, monkeypatch):
+        # Real Microsoft Graph channel ids look like "19:abc123@thread.tacv2"
+        # — the path-segment check must not reject legitimate ids just
+        # because they contain characters beyond plain alnum/dash.
+        captured = {}
+
+        class FakeResponse:
+            status_code = 201
+            text = ""
+
+        import httpx
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient(captured, FakeResponse()))
+
+        with app.app_context():
+            result = _run(mcp_tools._handle_post_teams_message("post_teams_message", {
+                "connector": "test-graph", "team_id": "team-1",
+                "channel_id": "19:abc123@thread.tacv2", "message": "hi",
+            }))
+        assert "Posted message" in result
+        assert "19:abc123@thread.tacv2" in captured["url"]
+
     def test_rejects_wrong_connector_type(self, app):
         with app.app_context():
             c = Connector(name="test-rest-not-graph", connector_type="rest_api",

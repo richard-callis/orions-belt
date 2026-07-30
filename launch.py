@@ -245,8 +245,10 @@ def _seed_builtin_tools(app):
         ),
         dict(
             name="post_teams_message",
-            tier=1,
-            description="Post a message to a Microsoft Teams channel via a configured microsoft_graph connector",
+            tier=2,
+            description="Post a message to a Microsoft Teams channel via a configured microsoft_graph connector. "
+                        "Tier 2 — same class of effect as send_email (visible to other people, leaves the "
+                        "machine in the user's name), refused during unattended autonomous goal pursuit.",
             input_schema=json.dumps({
                 "type": "object",
                 "properties": {
@@ -276,8 +278,10 @@ def _seed_builtin_tools(app):
         ),
         dict(
             name="create_salesforce_record",
-            tier=1,
-            description="Create a record (Lead, Case, Account, etc.) via a configured salesforce connector",
+            tier=2,
+            description="Create a record (Lead, Case, Account, etc.) via a configured salesforce connector. "
+                        "Tier 2 — a new record is visible org-wide by default, refused during unattended "
+                        "autonomous goal pursuit.",
             input_schema=json.dumps({
                 "type": "object",
                 "properties": {
