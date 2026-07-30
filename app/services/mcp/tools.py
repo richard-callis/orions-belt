@@ -912,10 +912,24 @@ async def _handle_call_connector(tool_name: str, args: dict) -> str:
     try:
         if ctype == "rest_api":
             import httpx
-            url = config.get("url", "") + "/" + action
+            from app.services.connector_auth import (
+                build_auth_headers, validate_action_segment, validate_target_url,
+            )
+
+            action_err = validate_action_segment(action)
+            if action_err:
+                return action_err
+            base_url = (config.get("base_url") or "").rstrip("/")
+            if not base_url:
+                return f"Error: connector '{connector_name}' has no base_url configured"
+            url = f"{base_url}/{action}"
+            url_err = validate_target_url(url)
+            if url_err:
+                return url_err
             method = config.get("method", "GET").upper()
+            headers = build_auth_headers(config.get("auth_type", "none"), connector.get("auth"))
             async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.request(method, url, json=params)
+                resp = await client.request(method, url, json=params, headers=headers)
                 return f"HTTP {resp.status_code}\n{resp.text[:2000]}"
         elif ctype == "sql_server":
             import pyodbc

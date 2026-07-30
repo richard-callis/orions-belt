@@ -149,23 +149,15 @@ def test_connector(connector_id):
 
 
 def _test_rest_api(c: Connector):
+    from app.services.connector_auth import build_auth_headers
+
     cfg = json.loads(c.config or "{}")
     base_url = (cfg.get("base_url") or "").rstrip("/")
     if not base_url:
         return jsonify({"ok": False, "message": "No base_url configured"}), 200
 
     import httpx
-    auth = c.get_auth()
-    headers = {}
-    auth_type = cfg.get("auth_type", "none")
-    if auth_type == "bearer" and auth.get("token"):
-        headers["Authorization"] = f"Bearer {auth['token']}"
-    elif auth_type == "api_key" and auth.get("api_key"):
-        headers[auth.get("header_name", "X-API-Key")] = auth["api_key"]
-    elif auth_type == "basic" and auth.get("username"):
-        import base64
-        creds = base64.b64encode(f"{auth['username']}:{auth.get('password', '')}".encode()).decode()
-        headers["Authorization"] = f"Basic {creds}"
+    headers = build_auth_headers(cfg.get("auth_type", "none"), c.get_auth())
 
     try:
         with httpx.Client(timeout=10.0) as client:
