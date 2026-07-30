@@ -36,6 +36,7 @@ def create_app(config_object="config.Config"):
     from app.routes.chat_rooms import bp as chat_rooms_bp
     from app.routes.system import bp as system_bp
     from app.routes.knowledge import bp as knowledge_bp
+    from app.routes.pii import bp as pii_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(chat_bp)
@@ -51,6 +52,7 @@ def create_app(config_object="config.Config"):
     app.register_blueprint(chat_rooms_bp)
     app.register_blueprint(system_bp)
     app.register_blueprint(knowledge_bp)
+    app.register_blueprint(pii_bp)
 
     # ── Plugin system — load extensions at startup ─────────────────────────────
     try:

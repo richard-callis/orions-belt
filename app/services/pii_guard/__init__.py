@@ -327,6 +327,11 @@ class PIIGuard:
             except Exception as e:
                 log.debug(f"PII Guard: GLiNER scan error: {e}")
 
+        # Exceptions: drop spans a human has explicitly marked as false
+        # positives (see PIIException / app.routes.pii) — before dedup, so an
+        # excepted span never reaches tokenization at all.
+        spans = _filter_exceptions(spans)
+
         # Deduplicate overlapping spans (keep highest-confidence, longest span)
         spans = _deduplicate_spans(spans)
 
@@ -432,6 +437,61 @@ class PIIGuard:
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
+
+def _normalize_for_match(s: str) -> str:
+    """Casefold + collapse whitespace, for "normalized" exception matching
+    (e.g. "Orion's  Belt" and "orion's belt" are treated as equal)."""
+    return " ".join(s.split()).casefold()
+
+
+def _filter_exceptions(spans: list) -> list:
+    """Drop spans matching a human-approved PIIException, before dedup/tokenize.
+
+    Loads all exceptions once per scan (grouped by entity_type) rather than
+    querying per-span — cheap for the small number of exceptions a single
+    user is expected to configure. Fails open (returns spans unchanged) on
+    any error, since exceptions are a false-positive convenience, not a
+    security control — a lookup failure must not silently under-detect PII
+    by some other unrelated path, but here failing open just means no
+    exceptions get applied for this one scan, not any additional exposure.
+    """
+    if not spans:
+        return spans
+    try:
+        from app.models.pii import PIIException
+        exceptions = PIIException.query.all()
+    except Exception as e:
+        log.debug(f"PII Guard: exception lookup failed: {e}")
+        return spans
+    if not exceptions:
+        return spans
+
+    by_type: dict[str, list[tuple[str, str]]] = {}
+    for exc in exceptions:
+        val = exc.decrypted_value()
+        if not val:
+            continue
+        by_type.setdefault(exc.entity_type, []).append((exc.match_mode, val))
+
+    if not by_type:
+        return spans
+
+    kept = []
+    for span in spans:
+        start, end, etype, value, source = span
+        candidates = by_type.get(etype, [])
+        excepted = False
+        for match_mode, exc_value in candidates:
+            if match_mode == "normalized":
+                excepted = _normalize_for_match(value) == _normalize_for_match(exc_value)
+            else:  # exact
+                excepted = value == exc_value
+            if excepted:
+                break
+        if not excepted:
+            kept.append(span)
+    return kept
+
 
 def _deduplicate_spans(spans: list) -> list:
     """Remove overlapping spans, keeping longer ones."""

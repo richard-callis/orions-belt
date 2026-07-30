@@ -194,6 +194,23 @@
           Save PII Settings
         </button>
       </div>
+
+      <!-- Recent detections + false-positive exceptions -->
+      <div class="rounded-lg border border-border-subtle bg-bg-card p-5 space-y-4">
+        <div>
+          <label class="text-xs font-semibold text-text-muted uppercase tracking-wider block mb-1">Recent Detections</label>
+          <p class="text-[11px] text-text-muted mb-3">Reveal a detection to see what it matched, then mark it as an exception if it's a false positive (e.g. your own name or company). Exceptions only affect future scans — text already tokenized stays tokenized.</p>
+          <div id="pii-hashes-list" class="space-y-1.5">
+            <div class="text-xs text-text-muted p-2">Loading…</div>
+          </div>
+        </div>
+        <div class="border-t border-border-subtle pt-4">
+          <label class="text-xs font-semibold text-text-muted uppercase tracking-wider block mb-3">Exceptions</label>
+          <div id="pii-exceptions-list" class="space-y-1.5">
+            <div class="text-xs text-text-muted p-2">Loading…</div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- ── About ──────────────────────────────────────────── -->
@@ -810,7 +827,7 @@ const _origShowSection = showSection;
 window.showSection = function(id) {
   _origShowSection(id);
   if (id === 'prompts') { loadPrompts(); loadMaxAgentTurns(); loadMaxGoalRounds(); }
-  if (id === 'pii')     loadPiiToggle();
+  if (id === 'pii')     { loadPiiToggle(); loadPiiHashes(); loadPiiExceptions(); }
   if (id === 'llm')     loadDebugToggle();
 };
 
@@ -964,5 +981,108 @@ async function loadPiiPipelineStatus() {
   }
 }
 loadPiiPipelineStatus();
+
+// ── PII recent detections + exceptions ──────────────────────────────────────
+
+async function loadPiiHashes() {
+  const el = document.getElementById('pii-hashes-list');
+  if (!el) return;
+  try {
+    const rows = await fetch('/api/pii/hashes').then(r => r.json());
+    if (!rows.length) {
+      el.innerHTML = '<div class="text-xs text-text-muted p-2">No detections yet.</div>';
+      return;
+    }
+    el.innerHTML = rows.map(r => `
+      <div class="flex items-center gap-2 px-2.5 py-1.5 rounded bg-bg-raised text-xs" id="pii-hash-row-${r.hash_token}">
+        <span class="px-1.5 py-0.5 rounded-full bg-accent/10 text-accent font-mono text-[10px]">${escHtml(r.entity_type)}</span>
+        <span class="font-mono text-text-muted">${escHtml(r.hash_token)}</span>
+        <span class="text-text-muted/70">&times;${r.occurrence_count}</span>
+        <span class="flex-1 min-w-0 truncate text-text-secondary" id="pii-hash-value-${r.hash_token}"></span>
+        <button onclick="revealPiiHash('${r.hash_token}')" class="text-[11px] text-accent hover:underline flex-shrink-0">Reveal</button>
+        <button onclick="showExceptForm('${r.hash_token}', '${escHtml(r.entity_type)}')" class="text-[11px] text-text-muted hover:text-accent flex-shrink-0">Except…</button>
+      </div>`).join('');
+  } catch (e) {
+    el.innerHTML = '<div class="text-xs text-text-muted p-2">Could not load detections.</div>';
+  }
+}
+
+async function revealPiiHash(token) {
+  const target = document.getElementById(`pii-hash-value-${token}`);
+  if (!target) return;
+  target.textContent = 'Loading…';
+  try {
+    const r = await fetch(`/api/pii/reveal/${encodeURIComponent(token)}`);
+    const data = await r.json();
+    target.textContent = r.ok ? data.value : (data.error || 'Not found');
+  } catch (e) {
+    target.textContent = 'Error';
+  }
+}
+
+function showExceptForm(token, entityType) {
+  const row = document.getElementById(`pii-hash-row-${token}`);
+  if (!row) return;
+  row.innerHTML = `
+    <span class="px-1.5 py-0.5 rounded-full bg-accent/10 text-accent font-mono text-[10px] flex-shrink-0">${entityType}</span>
+    <span class="text-text-muted flex-shrink-0">Match:</span>
+    <select id="except-mode-${token}" class="px-1.5 py-1 text-[11px] rounded border border-border-visible bg-bg-card text-text-primary">
+      <option value="exact">Exact text only</option>
+      <option value="normalized">Similar (case/spacing-insensitive)</option>
+    </select>
+    <button onclick="submitException('${token}')" class="text-[11px] text-accent hover:underline flex-shrink-0">Add exception</button>
+    <button onclick="loadPiiHashes()" class="text-[11px] text-text-muted hover:text-text-primary flex-shrink-0">Cancel</button>`;
+}
+
+async function submitException(token) {
+  const mode = document.getElementById(`except-mode-${token}`)?.value || 'exact';
+  try {
+    const r = await fetch('/api/pii/exceptions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hash_token: token, match_mode: mode }),
+    });
+    if (!r.ok) {
+      const data = await r.json();
+      alert(data.error || 'Failed to add exception');
+    }
+  } catch (e) {
+    alert('Failed to add exception');
+  }
+  loadPiiHashes();
+  loadPiiExceptions();
+}
+
+async function loadPiiExceptions() {
+  const el = document.getElementById('pii-exceptions-list');
+  if (!el) return;
+  try {
+    const rows = await fetch('/api/pii/exceptions').then(r => r.json());
+    if (!rows.length) {
+      el.innerHTML = '<div class="text-xs text-text-muted p-2">No exceptions configured.</div>';
+      return;
+    }
+    el.innerHTML = rows.map(e => `
+      <div class="flex items-center gap-2 px-2.5 py-1.5 rounded bg-bg-raised text-xs">
+        <span class="px-1.5 py-0.5 rounded-full bg-accent/10 text-accent font-mono text-[10px] flex-shrink-0">${escHtml(e.entity_type)}</span>
+        <span class="flex-1 min-w-0 truncate text-text-secondary">${escHtml(e.value)}</span>
+        <span class="text-[10px] text-text-muted flex-shrink-0">${e.match_mode === 'normalized' ? 'similar' : 'exact'}</span>
+        <button onclick="removeException('${e.id}')" class="text-[11px] text-status-error hover:underline flex-shrink-0">Remove</button>
+      </div>`).join('');
+  } catch (e) {
+    el.innerHTML = '<div class="text-xs text-text-muted p-2">Could not load exceptions.</div>';
+  }
+}
+
+async function removeException(id) {
+  try {
+    await fetch(`/api/pii/exceptions/${id}`, { method: 'DELETE' });
+  } catch (e) {}
+  loadPiiExceptions();
+}
+window.revealPiiHash = revealPiiHash;
+window.showExceptForm = showExceptForm;
+window.submitException = submitException;
+window.removeException = removeException;
 </script>
 {% endblock %}
