@@ -400,6 +400,10 @@ def retry_with_recovery(
                         attempts, max_retries, e, e.strategy)
 
             if e.strategy == "retry_backoff":
+                # On the last attempt, surface the REAL error instead of falling
+                # through to the generic "retry loop exited" message.
+                if attempts >= max_retries:
+                    raise RuntimeError(f"LLM call failed after {max_retries} attempts: {e}")
                 backoff = min(2 ** attempts, 8)
                 log.info("Backing off %ds before retry", backoff)
                 time.sleep(backoff)

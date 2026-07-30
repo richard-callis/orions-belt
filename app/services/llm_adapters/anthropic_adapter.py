@@ -107,7 +107,9 @@ class AnthropicAdapter(LLMAdapter):
     ) -> tuple[str, list[dict], int]:
         import anthropic
 
-        client_kwargs: dict = {"api_key": self.api_key, "timeout": 120.0}
+        from config import Config
+        client_kwargs: dict = {"api_key": self.api_key,
+                               "timeout": float(getattr(Config, "LLM_TIMEOUT", 600))}
         if self.base_url and "api.anthropic.com" not in self.base_url.lower():
             client_kwargs["base_url"] = self.base_url
         client = anthropic.Anthropic(**client_kwargs)
