@@ -218,7 +218,11 @@ def _generate_agent_reply(agent, provider, room_id, roster, memory_context: str 
     from app.services.agents.runtime import AgentRuntime
     convo = _build_room_history(room_id, agent, roster, memory_context=memory_context)
     tool_log = []
-    reply = AgentRuntime(agent, provider).chat_reply(convo, tool_log=tool_log)
+    # session_id/run_id here only attribute LLMLog rows for the usage dashboard
+    # (that field has no FK constraint, unlike TokenUsage.run_id) — room_id and
+    # agent.id, not literal session/run identifiers.
+    reply = AgentRuntime(agent, provider).chat_reply(
+        convo, tool_log=tool_log, session_id=room_id, run_id=agent.id)
     _post_tool_activity(room_id, agent.id, tool_log)
     return reply
 
@@ -551,7 +555,8 @@ def _run_goal_pursuit(app, room_id: str, goal_id: str, generation: int):
                                                 feedback=feedback, memory_context=memory_context)
                     round_tool_log = []
                     reply = (runtime.chat_reply(convo, allow_tier=AUTONOMOUS_ALLOW_TIER,
-                                                tool_log=round_tool_log) or "").strip()
+                                                tool_log=round_tool_log,
+                                                session_id=room_id, run_id=agent.id) or "").strip()
                     _post_tool_activity(room_id, agent.id, round_tool_log)
                 except Exception as e:
                     log.warning("goal pursuit round failed goal=%s room=%s: %s", goal_id, room_id, e)
