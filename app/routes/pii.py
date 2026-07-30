@@ -98,6 +98,19 @@ def create_pii_exception():
     if not original_value:
         return jsonify({"error": "Could not decrypt the referenced detection"}), 500
 
+    if match_mode == "regex":
+        # The detected literal text becomes the pattern as-is (never
+        # hand-authored — see the hash_token lookup above), so it can easily
+        # contain regex metacharacters (phone numbers with unbalanced
+        # parens, etc.) that fail to compile. Reject that at creation time
+        # rather than have it silently never apply at scan time, which looks
+        # to the user like "I added an exception and it did nothing."
+        import regex as regex_mod
+        try:
+            regex_mod.compile(original_value)
+        except regex_mod.error as e:
+            return jsonify({"error": f"This detected text isn't a valid regex pattern: {e}"}), 400
+
     exc = PIIException(
         entity_type=entry.entity_type,
         match_mode=match_mode,

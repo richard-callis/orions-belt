@@ -97,6 +97,30 @@ class TestLogLlmCall:
             # Must not raise — logging failures can't break the LLM call it's observing.
             llm_mod._log_llm_call(adapter, "m", None, None, 1, success=True)
 
+    def test_rolls_back_session_after_failed_commit(self, app, monkeypatch):
+        """A failed commit must roll back the session, not just have its
+        error swallowed — otherwise the shared scoped session is left with
+        a pending failed transaction, and every later query in the same
+        request/thread raises PendingRollbackError even though nothing
+        about the actual LLM call or the caller's own work was at fault."""
+        with app.app_context():
+            adapter = SimpleNamespace(last_usage={"input": 1, "output": 1})
+
+            def broken_commit():
+                raise RuntimeError("db is down")
+
+            rollback_calls = {"n": 0}
+            real_rollback = db.session.rollback
+
+            def spy_rollback():
+                rollback_calls["n"] += 1
+                return real_rollback()
+
+            monkeypatch.setattr(db.session, "commit", broken_commit)
+            monkeypatch.setattr(db.session, "rollback", spy_rollback)
+            llm_mod._log_llm_call(adapter, "m", None, None, 1, success=True)
+            assert rollback_calls["n"] == 1
+
 
 class TestCallLlmSyncLogging:
     def test_logs_success_via_choke_point(self, app, monkeypatch):

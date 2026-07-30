@@ -1284,7 +1284,6 @@ async def _handle_create_salesforce_record(tool_name: str, args: dict) -> str:
         return f"Error: connector '{connector_name}' is not a salesforce connector"
 
     cfg = json.loads(conn.config or "{}")
-    instance_url = (cfg.get("instance_url") or "https://login.salesforce.com").rstrip("/")
     provider_cfg = get_provider_config("salesforce", cfg)
 
     try:
@@ -1293,6 +1292,14 @@ async def _handle_create_salesforce_record(tool_name: str, args: dict) -> str:
         return f"Error: connector '{connector_name}' needs to be reconnected (OAuth consent expired or was never completed)"
     except Exception as e:
         return f"Error: could not obtain a valid Salesforce access token: {e}"
+
+    # The org's real API host, returned by Salesforce alongside the tokens
+    # (persisted by oauth.py's _store_tokens/get_valid_access_token), always
+    # wins over the connector's configured instance_url — that config value
+    # may be nothing more than the generic login.salesforce.com the user
+    # authenticated against, which isn't a valid API host after login.
+    instance_url = (conn.get_auth().get("instance_url") or cfg.get("instance_url")
+                    or "https://login.salesforce.com").rstrip("/")
 
     url = f"{instance_url}/services/data/v59.0/sobjects/{sobject_type}"
     headers = {"Authorization": f"Bearer {access_token}"}

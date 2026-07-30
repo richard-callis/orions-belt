@@ -110,10 +110,18 @@ class TestFilterExceptions:
 
 class TestRegexMatchForException:
     def test_matches_simple_pattern(self):
-        assert _regex_match_for_exception(r"^Orion", "Orion's Belt") is True
+        assert _regex_match_for_exception(r"Orion.*", "Orion's Belt") is True
 
     def test_no_match_returns_false(self):
         assert _regex_match_for_exception(r"^Zeta", "Orion's Belt") is False
+
+    def test_is_a_fullmatch_not_an_unanchored_substring_search(self):
+        # A pattern must match the ENTIRE value, not just appear somewhere in
+        # it — otherwise a narrow exception like "555-1234" would also
+        # exempt "x555-1234x", or worse, a different value that merely
+        # contains it.
+        assert _regex_match_for_exception(r"555-1234", "x555-1234x") is False
+        assert _regex_match_for_exception(r"555-1234", "555-1234") is True
 
     def test_invalid_pattern_fails_safe(self):
         # Unbalanced parenthesis — a compile error, not a crash.
@@ -231,6 +239,24 @@ class TestPiiExceptionsRoutes:
                 "hash_token": "badmode1", "match_mode": "fuzzy",
             })
             assert resp.status_code == 400
+        finally:
+            with app.app_context():
+                PIIHashEntry.query.filter_by(id=entry_id).delete()
+                db.session.commit()
+
+    def test_create_rejects_regex_mode_when_detected_text_does_not_compile(self, app, client):
+        # The detected literal text becomes the pattern verbatim (never
+        # hand-authored) — something like an unbalanced paren in a phone
+        # extension is a totally ordinary detected value but invalid regex
+        # syntax. Reject at creation time rather than silently never apply.
+        with app.app_context():
+            entry_id = _make_hash_entry("badregex1", "PHONE", "555 (ext. 123")
+        try:
+            resp = client.post("/api/pii/exceptions", json={
+                "hash_token": "badregex1", "match_mode": "regex",
+            })
+            assert resp.status_code == 400
+            assert "valid regex" in resp.get_json()["error"]
         finally:
             with app.app_context():
                 PIIHashEntry.query.filter_by(id=entry_id).delete()

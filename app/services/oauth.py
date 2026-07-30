@@ -284,6 +284,12 @@ def _store_tokens(connector_id: str, tokens: dict) -> None:
         "expires_at": expires_at,
         "token_type": tokens.get("token_type", "Bearer"),
     })
+    if tokens.get("instance_url"):
+        # Salesforce returns the org's actual API host here — the connector's
+        # configured instance_url may be nothing more than the generic
+        # login.salesforce.com the user authenticated against, which is not
+        # a valid API host for REST calls after login.
+        auth["instance_url"] = tokens["instance_url"]
     connector.set_auth(auth)
     db.session.commit()
 
@@ -323,6 +329,8 @@ def get_valid_access_token(connector, token_endpoint: str) -> str:
         "refresh_token": tokens["refresh_token"],
         "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=int(tokens.get("expires_in", 3600)))).isoformat(),
     })
+    if tokens.get("instance_url"):
+        auth["instance_url"] = tokens["instance_url"]
     connector.set_auth(auth)
     db.session.commit()
     return tokens["access_token"]

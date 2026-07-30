@@ -513,14 +513,24 @@ def _regex_match_for_exception(pattern: str, value: str) -> bool:
     as every other error path in _filter_exceptions) — the exception simply
     doesn't apply for this span, which is the safe direction: PII stays
     tokenized rather than a hung/broken pattern silently exempting it.
+
+    Uses fullmatch, not search — an *unanchored* substring match on a value
+    that's always sourced from someone's literal detected PII text is the
+    wrong direction to fail open in: "555-1234" as a pattern would then also
+    match "x555-1234x" or, worse, exempt a value it merely contains. A
+    pattern is only a genuine match for the whole span it's approved for.
     """
     if len(pattern) > _REGEX_EXCEPTION_MAX_LEN or len(value) > _REGEX_EXCEPTION_MAX_LEN:
         return False
     try:
         import regex
-        return regex.search(pattern, value, timeout=0.05) is not None
+        return regex.fullmatch(pattern, value, timeout=0.05) is not None
     except Exception as e:
-        log.debug(f"PII Guard: regex exception match failed (pattern={pattern!r}): {e}")
+        # Never log `pattern`/`value` — both are decrypted PII in this path,
+        # and a compile error (e.g. unbalanced parens in a phone number used
+        # as-is) is routine here, not rare, so this would log PII plaintext
+        # on a regular basis rather than as an edge case.
+        log.debug("PII Guard: regex exception match failed: %s", type(e).__name__)
         return False
 
 

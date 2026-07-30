@@ -150,6 +150,57 @@ class TestCreateSalesforceRecord:
             }))
         assert "HTTP 400" in result
 
+    def test_prefers_persisted_instance_url_from_auth_over_config(self, app, monkeypatch):
+        # oauth.py's _store_tokens/get_valid_access_token persist the org's
+        # real API host (returned alongside the tokens) into auth's
+        # instance_url — that must win over the connector's configured
+        # value, which may be nothing more than the generic
+        # login.salesforce.com the user authenticated against.
+        captured = {}
+
+        class FakeResponse:
+            status_code = 201
+            def json(self):
+                return {"id": "abc"}
+            text = ""
+
+        class FakeAsyncClient:
+            def __init__(self, timeout=None):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, url, headers=None, json=None):
+                captured["url"] = url
+                return FakeResponse()
+
+        import httpx
+        monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+        with app.app_context():
+            future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+            c = Connector(name="test-sf-realinstance", connector_type="salesforce",
+                          config='{"instance_url": "https://login.salesforce.com"}')
+            c.set_auth({
+                "client_id": "cid", "client_secret": "secret",
+                "access_token": "tok", "refresh_token": "r", "expires_at": future,
+                "instance_url": "https://acme-real-org.my.salesforce.com",
+            })
+            db.session.add(c)
+            db.session.commit()
+            try:
+                _run(mcp_tools._handle_create_salesforce_record("create_salesforce_record", {
+                    "connector": "test-sf-realinstance", "sobject_type": "Lead", "fields": {"a": "b"},
+                }))
+                assert captured["url"].startswith("https://acme-real-org.my.salesforce.com")
+            finally:
+                Connector.query.filter_by(name="test-sf-realinstance").delete()
+                db.session.commit()
+
     def test_defaults_to_login_salesforce_com_when_no_instance_url(self, app, monkeypatch):
         captured = {}
 

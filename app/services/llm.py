@@ -394,6 +394,11 @@ def _log_llm_call(adapter, model: str, session_id: str | None, run_id: str | Non
         db.session.commit()
     except Exception as e:
         log.debug("LLMLog write failed (non-fatal): %s", e)
+        try:
+            from app import db
+            db.session.rollback()
+        except Exception:
+            pass
 
 
 def _call_llm_sync(

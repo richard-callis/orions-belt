@@ -156,6 +156,32 @@ class TestGetValidAccessToken:
                 Connector.query.filter_by(id="oauth-c2").delete()
                 db.session.commit()
 
+    def test_refresh_persists_instance_url_when_provider_returns_one(self, app, monkeypatch):
+        # Salesforce returns the org's real API host alongside refreshed
+        # tokens — it must be persisted so callers building REST URLs get
+        # the actual org host, not whatever generic domain (e.g.
+        # login.salesforce.com) the connector happened to be configured with.
+        from datetime import datetime, timedelta, timezone
+        monkeypatch.setattr(oauth_mod, "refresh_access_token", lambda *a, **k: {
+            "access_token": "refreshed", "refresh_token": "r2", "expires_in": 3600,
+            "instance_url": "https://acme-org.my.salesforce.com",
+        })
+        with app.app_context():
+            soon = (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()
+            c = self._make_connector("oauth-c2b", {
+                "access_token": "stale", "refresh_token": "r", "expires_at": soon,
+                "client_id": "cid", "client_secret": "secret",
+            })
+            db.session.add(c)
+            db.session.commit()
+            try:
+                oauth_mod.get_valid_access_token(c, "https://x/token")
+                reloaded = Connector.query.get("oauth-c2b")
+                assert reloaded.get_auth()["instance_url"] == "https://acme-org.my.salesforce.com"
+            finally:
+                Connector.query.filter_by(id="oauth-c2b").delete()
+                db.session.commit()
+
     def test_refreshes_when_no_expires_at_recorded(self, app, monkeypatch):
         monkeypatch.setattr(oauth_mod, "refresh_access_token",
                             lambda *a, **k: {"access_token": "refreshed", "refresh_token": "r2", "expires_in": 3600})
@@ -180,6 +206,41 @@ class TestGetValidAccessToken:
                     oauth_mod.get_valid_access_token(c, "https://x/token")
             finally:
                 Connector.query.filter_by(id="oauth-c4").delete()
+                db.session.commit()
+
+
+class TestStoreTokens:
+    def test_persists_instance_url_when_present(self, app):
+        with app.app_context():
+            c = Connector(id="oauth-store1", name="oauth-store1", connector_type="salesforce")
+            c.set_auth({"client_id": "cid", "client_secret": "secret"})
+            db.session.add(c)
+            db.session.commit()
+            try:
+                oauth_mod._store_tokens("oauth-store1", {
+                    "access_token": "a", "refresh_token": "b", "expires_in": 3600,
+                    "instance_url": "https://acme-org.my.salesforce.com",
+                })
+                reloaded = Connector.query.get("oauth-store1")
+                assert reloaded.get_auth()["instance_url"] == "https://acme-org.my.salesforce.com"
+            finally:
+                Connector.query.filter_by(id="oauth-store1").delete()
+                db.session.commit()
+
+    def test_no_instance_url_key_added_when_provider_omits_it(self, app):
+        with app.app_context():
+            c = Connector(id="oauth-store2", name="oauth-store2", connector_type="google")
+            c.set_auth({"client_id": "cid", "client_secret": "secret"})
+            db.session.add(c)
+            db.session.commit()
+            try:
+                oauth_mod._store_tokens("oauth-store2", {
+                    "access_token": "a", "refresh_token": "b", "expires_in": 3600,
+                })
+                reloaded = Connector.query.get("oauth-store2")
+                assert "instance_url" not in reloaded.get_auth()
+            finally:
+                Connector.query.filter_by(id="oauth-store2").delete()
                 db.session.commit()
 
 
