@@ -5,6 +5,7 @@ needed), token exchange/refresh, and get_valid_access_token's refresh
 decision logic. The one thing NOT testable here is the actual browser-based
 consent step against a real provider.
 """
+import socket
 import time
 import urllib.request
 
@@ -67,6 +68,34 @@ class TestExchangeCodeForTokens:
         monkeypatch.setattr("httpx.post", lambda *a, **k: FakeResp())
         with pytest.raises(RuntimeError, match="Token exchange failed"):
             oauth_mod.exchange_code_for_tokens("https://x/token", "cid", "secret", "http://x", "code", "verifier")
+
+    def test_sends_pkce_code_verifier_in_the_request_body(self, monkeypatch):
+        # PKCE is the headline security property of this flow — without the
+        # code_verifier actually reaching the token endpoint, a stolen
+        # authorization code would be redeemable by anyone, not just the
+        # party that generated the matching verifier.
+        class FakeResp:
+            status_code = 200
+            def json(self):
+                return {"access_token": "abc", "refresh_token": "def", "expires_in": 3600}
+            text = ""
+
+        captured = {}
+        def fake_post(url, data=None, timeout=None):
+            captured["url"] = url
+            captured["data"] = data
+            return FakeResp()
+
+        monkeypatch.setattr("httpx.post", fake_post)
+        oauth_mod.exchange_code_for_tokens(
+            "https://x/token", "cid", "secret", "http://x/callback", "auth-code", "the-verifier")
+        assert captured["url"] == "https://x/token"
+        assert captured["data"]["grant_type"] == "authorization_code"
+        assert captured["data"]["code_verifier"] == "the-verifier"
+        assert captured["data"]["code"] == "auth-code"
+        assert captured["data"]["redirect_uri"] == "http://x/callback"
+        assert captured["data"]["client_id"] == "cid"
+        assert captured["data"]["client_secret"] == "secret"
 
 
 class TestRefreshAccessToken:
@@ -209,6 +238,71 @@ class TestGetValidAccessToken:
                 db.session.commit()
 
 
+class TestGetValidAccessTokenConcurrency:
+    def test_concurrent_refresh_calls_only_hit_the_provider_once(self, app):
+        """Several providers this app talks to (Salesforce, Graph) rotate
+        the refresh token on every use. Two callers racing an unsynchronized
+        refresh would both send the same (about-to-be-invalidated) refresh
+        token; the loser's response either fails outright or persists a
+        token the provider has already superseded. Only one actual refresh
+        call should happen per near-expiry window, no matter how many
+        threads observe "needs refresh" at once."""
+        import threading
+        from datetime import datetime, timedelta, timezone
+
+        call_count = {"n": 0}
+        call_lock = threading.Lock()
+
+        def fake_refresh(token_endpoint, client_id, client_secret, refresh_token):
+            with call_lock:
+                call_count["n"] += 1
+            time.sleep(0.15)  # widen the race window so unsynchronized callers would overlap
+            return {"access_token": "refreshed-once", "refresh_token": "r2", "expires_in": 3600}
+
+        with app.app_context():
+            soon = (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()
+            c = Connector(id="oauth-race1", name="oauth-race1", connector_type="google")
+            c.set_auth({
+                "access_token": "stale", "refresh_token": "r", "expires_at": soon,
+                "client_id": "cid", "client_secret": "secret",
+            })
+            db.session.add(c)
+            db.session.commit()
+
+        real_refresh = oauth_mod.refresh_access_token
+        oauth_mod.refresh_access_token = fake_refresh
+
+        results = []
+        errors = []
+
+        def worker():
+            try:
+                with app.app_context():
+                    conn = Connector.query.filter_by(id="oauth-race1").first()
+                    token = oauth_mod.get_valid_access_token(conn, "https://x/token")
+                    results.append(token)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        try:
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10)
+
+            assert not errors, errors
+            assert call_count["n"] == 1, f"expected exactly 1 refresh call, got {call_count['n']}"
+            assert results == ["refreshed-once"] * 4
+        finally:
+            oauth_mod.refresh_access_token = real_refresh
+            with app.app_context():
+                Connector.query.filter_by(id="oauth-race1").delete()
+                db.session.commit()
+            with oauth_mod._connector_locks_meta_lock:
+                oauth_mod._connector_locks.pop("oauth-race1", None)
+
+
 class TestStoreTokens:
     def test_persists_instance_url_when_present(self, app):
         with app.app_context():
@@ -349,3 +443,118 @@ class TestLoopbackListenerRealSocket:
                 db.session.commit()
             with oauth_mod._flows_lock:
                 oauth_mod._flows.pop(flow_id, None)
+
+    def test_binds_loopback_only_not_all_interfaces(self, app, monkeypatch):
+        with app.app_context():
+            c = Connector(id="oauth-loop3", name="oauth-loop3", connector_type="google")
+            c.set_auth({"client_id": "cid", "client_secret": "secret"})
+            db.session.add(c)
+            db.session.commit()
+
+        monkeypatch.setattr(oauth_mod.webbrowser, "open", lambda url: None)
+        try:
+            with app.app_context():
+                result = oauth_mod.start_oauth_flow(
+                    "oauth-loop3", "https://provider.example/authorize", "https://provider.example/token",
+                    "cid", "secret", "some.scope",
+                )
+            flow_id = result["flow_id"]
+            with oauth_mod._flows_lock:
+                port = oauth_mod._flows[flow_id]["port"]
+
+            deadline = time.time() + 5
+            server_address = None
+            while time.time() < deadline:
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=0.2) as s:
+                        server_address = s.getpeername()
+                    break
+                except Exception:
+                    time.sleep(0.05)
+            assert server_address is not None, "loopback listener never came up"
+            assert server_address[0] == "127.0.0.1"
+        finally:
+            with app.app_context():
+                Connector.query.filter_by(id="oauth-loop3").delete()
+                db.session.commit()
+            with oauth_mod._flows_lock:
+                oauth_mod._flows.pop(flow_id, None)
+
+    def test_stray_request_before_callback_does_not_kill_the_flow(self, app, monkeypatch):
+        # handle_request() used to be called exactly once — ANY request that
+        # reached the loopback port first (a favicon fetch, a browser
+        # prefetch, a stray probe) consumed that single call and dropped the
+        # flow into "timed out" while the user was still on the provider's
+        # actual consent screen. The listener must keep waiting past a
+        # request that isn't the real /callback.
+        with app.app_context():
+            c = Connector(id="oauth-loop4", name="oauth-loop4", connector_type="google")
+            c.set_auth({"client_id": "cid", "client_secret": "secret"})
+            db.session.add(c)
+            db.session.commit()
+
+        monkeypatch.setattr(oauth_mod, "exchange_code_for_tokens",
+                            lambda *a, **k: {"access_token": "a", "refresh_token": "b", "expires_in": 3600})
+        monkeypatch.setattr(oauth_mod.webbrowser, "open", lambda url: None)
+
+        try:
+            with app.app_context():
+                result = oauth_mod.start_oauth_flow(
+                    "oauth-loop4", "https://provider.example/authorize", "https://provider.example/token",
+                    "cid", "secret", "some.scope",
+                )
+            flow_id = result["flow_id"]
+            with oauth_mod._flows_lock:
+                flow = oauth_mod._flows[flow_id]
+            port = flow["port"]
+            state = flow["state"]
+
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                try:
+                    urllib.request.urlopen(f"http://127.0.0.1:{port}/favicon.ico", timeout=2)
+                    break
+                except Exception:
+                    time.sleep(0.05)
+
+            # Give the listener a moment to have processed (and survived)
+            # the stray request before sending the real callback.
+            time.sleep(0.2)
+            assert oauth_mod.get_oauth_flow_status(flow_id)["status"] == "waiting"
+
+            urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/callback?code=test-code&state={state}", timeout=2)
+
+            deadline = time.time() + 5
+            status = oauth_mod.get_oauth_flow_status(flow_id)
+            while status["status"] not in ("connected", "error") and time.time() < deadline:
+                time.sleep(0.05)
+                status = oauth_mod.get_oauth_flow_status(flow_id)
+
+            assert status["status"] == "connected", status
+        finally:
+            with app.app_context():
+                Connector.query.filter_by(id="oauth-loop4").delete()
+                db.session.commit()
+            with oauth_mod._flows_lock:
+                oauth_mod._flows.pop(flow_id, None)
+
+
+class TestScheduleFlowCleanup:
+    def test_flow_removed_after_delay(self):
+        with oauth_mod._flows_lock:
+            oauth_mod._flows["cleanup-test-1"] = {"status": "connected"}
+        try:
+            oauth_mod._schedule_flow_cleanup("cleanup-test-1", delay=0.05)
+            deadline = time.time() + 3
+            removed = False
+            while time.time() < deadline:
+                with oauth_mod._flows_lock:
+                    removed = "cleanup-test-1" not in oauth_mod._flows
+                if removed:
+                    break
+                time.sleep(0.02)
+            assert removed, "flow was never cleaned up"
+        finally:
+            with oauth_mod._flows_lock:
+                oauth_mod._flows.pop("cleanup-test-1", None)

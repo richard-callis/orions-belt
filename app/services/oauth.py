@@ -36,6 +36,7 @@ import http.server
 import logging
 import secrets
 import threading
+import time
 import uuid
 import webbrowser
 from datetime import datetime, timedelta, timezone
@@ -51,6 +52,22 @@ _flows_lock = threading.Lock()
 
 _REFRESH_MARGIN = timedelta(minutes=5)
 _CALLBACK_TIMEOUT_SECONDS = 300
+# How long a finished flow (connected or error) stays in _flows after
+# reaching that terminal state, before being dropped. Long enough that the
+# frontend's status-polling loop has certainly observed the final state at
+# least once; short enough to bound how long a flow's client_secret and PKCE
+# code_verifier sit in plaintext in process memory once they're no longer
+# needed for anything.
+_FLOW_RETENTION_AFTER_TERMINAL_SECONDS = 300
+
+
+def _schedule_flow_cleanup(flow_id: str, delay: float = _FLOW_RETENTION_AFTER_TERMINAL_SECONDS) -> None:
+    def _cleanup():
+        with _flows_lock:
+            _flows.pop(flow_id, None)
+    t = threading.Timer(delay, _cleanup)
+    t.daemon = True
+    t.start()
 
 
 class ReAuthRequired(Exception):
@@ -102,10 +119,10 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
 
 
 def _run_loopback_listener(app, flow_id: str):
-    """Runs in a background thread: waits for exactly one /callback request
-    (or times out), then exchanges the code for tokens and updates the
-    flow's status. Binds to 127.0.0.1 only — never 0.0.0.0 — a listener
-    accepting the OAuth redirect must not be reachable from the network.
+    """Runs in a background thread: waits for the /callback request (or
+    times out), then exchanges the code for tokens and updates the flow's
+    status. Binds to 127.0.0.1 only — never 0.0.0.0 — a listener accepting
+    the OAuth redirect must not be reachable from the network.
 
     `app` is the Flask app captured at start_oauth_flow()-call-time (via
     current_app._get_current_object()) — this thread has no app context of
@@ -117,9 +134,18 @@ def _run_loopback_listener(app, flow_id: str):
 
     server = http.server.HTTPServer(("127.0.0.1", flow["port"]), _CallbackHandler)
     server.oauth_result = None
-    server.timeout = _CALLBACK_TIMEOUT_SECONDS
+    deadline = time.monotonic() + _CALLBACK_TIMEOUT_SECONDS
     try:
-        server.handle_request()  # blocks for exactly one request, or times out (returns None)
+        # Keep serving requests until /callback actually hits (the handler
+        # only sets oauth_result for that path — see _CallbackHandler) or
+        # the overall deadline passes. A single handle_request() call is
+        # satisfied by ANY request that reaches this port first — a favicon
+        # fetch, a browser prefetch, a stray port probe — which would
+        # otherwise drop a still-in-progress consent flow into "timed out"
+        # while the user is still sitting on the provider's consent screen.
+        while server.oauth_result is None and time.monotonic() < deadline:
+            server.timeout = max(0.1, deadline - time.monotonic())
+            server.handle_request()
     except Exception as e:
         log.warning("OAuth flow %s: loopback listener error: %s", flow_id, e)
     finally:
@@ -133,18 +159,22 @@ def _run_loopback_listener(app, flow_id: str):
         if not result:
             flow["status"] = "error"
             flow["error"] = "Timed out waiting for the browser redirect."
+            _schedule_flow_cleanup(flow_id)
             return
         if result.get("error"):
             flow["status"] = "error"
             flow["error"] = result.get("error_description") or result["error"]
+            _schedule_flow_cleanup(flow_id)
             return
         if result.get("state") != flow["state"]:
             flow["status"] = "error"
             flow["error"] = "State mismatch — possible CSRF, aborting."
+            _schedule_flow_cleanup(flow_id)
             return
         if not result.get("code"):
             flow["status"] = "error"
             flow["error"] = "No authorization code in the callback."
+            _schedule_flow_cleanup(flow_id)
             return
         flow["code"] = result["code"]
         flow["status"] = "exchanging"
@@ -163,6 +193,8 @@ def _run_loopback_listener(app, flow_id: str):
         with _flows_lock:
             _flows[flow_id]["status"] = "error"
             _flows[flow_id]["error"] = str(e)
+    finally:
+        _schedule_flow_cleanup(flow_id)
 
 
 def start_oauth_flow(connector_id: str, authorize_endpoint: str, token_endpoint: str,
@@ -294,6 +326,31 @@ def _store_tokens(connector_id: str, tokens: dict) -> None:
     db.session.commit()
 
 
+_connector_locks: dict[str, threading.Lock] = {}
+_connector_locks_meta_lock = threading.Lock()
+
+
+def _lock_for_connector(connector_id: str) -> threading.Lock:
+    with _connector_locks_meta_lock:
+        lock = _connector_locks.get(connector_id)
+        if lock is None:
+            lock = threading.Lock()
+            _connector_locks[connector_id] = lock
+        return lock
+
+
+def _needs_refresh(auth: dict) -> bool:
+    access_token = auth.get("access_token")
+    expires_at_raw = auth.get("expires_at")
+    if not (access_token and expires_at_raw):
+        return True
+    try:
+        expires_at = datetime.fromisoformat(expires_at_raw)
+    except ValueError:
+        return True
+    return datetime.now(timezone.utc) >= (expires_at - _REFRESH_MARGIN)
+
+
 def get_valid_access_token(connector, token_endpoint: str) -> str:
     """Return a usable access token for `connector`, refreshing first if
     it's expired or within 5 minutes of expiring. Persists a refreshed
@@ -302,35 +359,41 @@ def get_valid_access_token(connector, token_endpoint: str) -> str:
     from app import db
 
     auth = connector.get_auth()
-    access_token = auth.get("access_token")
     refresh_token = auth.get("refresh_token")
-    expires_at_raw = auth.get("expires_at")
-
     if not refresh_token:
         raise ReAuthRequired("Connector has never completed the OAuth consent flow.")
 
-    needs_refresh = True
-    if access_token and expires_at_raw:
-        try:
-            expires_at = datetime.fromisoformat(expires_at_raw)
-            needs_refresh = datetime.now(timezone.utc) >= (expires_at - _REFRESH_MARGIN)
-        except ValueError:
-            needs_refresh = True
+    if not _needs_refresh(auth):
+        return auth["access_token"]
 
-    if not needs_refresh:
-        return access_token
+    # Two concurrent callers (e.g. two rooms using the same connector) can
+    # both observe "needs refresh" at once. Several providers (Salesforce,
+    # Graph) rotate the refresh token on every use, so letting both actually
+    # call refresh_access_token unsynchronized means the loser persists (or
+    # the provider rejects) a refresh_token that's already been superseded —
+    # breaking the connector until a full manual reconnect.
+    with _lock_for_connector(connector.id):
+        # Re-read after acquiring the lock: another thread may have already
+        # refreshed and committed while this one was waiting, in which case
+        # this thread's in-memory `auth` (read before the lock) is stale.
+        db.session.refresh(connector)
+        auth = connector.get_auth()
+        refresh_token = auth.get("refresh_token")
+        if not refresh_token:
+            raise ReAuthRequired("Connector has never completed the OAuth consent flow.")
+        if not _needs_refresh(auth):
+            return auth["access_token"]
 
-    config = connector.get_auth()  # client_id/secret live alongside tokens in auth_config
-    tokens = refresh_access_token(
-        token_endpoint, config.get("client_id", ""), config.get("client_secret", ""), refresh_token,
-    )
-    auth.update({
-        "access_token": tokens["access_token"],
-        "refresh_token": tokens["refresh_token"],
-        "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=int(tokens.get("expires_in", 3600)))).isoformat(),
-    })
-    if tokens.get("instance_url"):
-        auth["instance_url"] = tokens["instance_url"]
-    connector.set_auth(auth)
-    db.session.commit()
-    return tokens["access_token"]
+        tokens = refresh_access_token(
+            token_endpoint, auth.get("client_id", ""), auth.get("client_secret", ""), refresh_token,
+        )
+        auth.update({
+            "access_token": tokens["access_token"],
+            "refresh_token": tokens["refresh_token"],
+            "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=int(tokens.get("expires_in", 3600)))).isoformat(),
+        })
+        if tokens.get("instance_url"):
+            auth["instance_url"] = tokens["instance_url"]
+        connector.set_auth(auth)
+        db.session.commit()
+        return tokens["access_token"]
