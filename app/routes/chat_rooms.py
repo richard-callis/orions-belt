@@ -1,15 +1,23 @@
 """
 Chat Rooms API — group chat spaces for agents and the user.
 """
+import logging
+import re
+import threading
 import uuid
 from datetime import datetime, timezone
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 
 from app import db
 from app.models.chat_room import ChatRoom, ChatRoomMember, ChatRoomMessage
 
+log = logging.getLogger("orions-belt.rooms")
+
 bp = Blueprint("chat_rooms", __name__, url_prefix="/api/chat-rooms")
+
+# How many prior room messages to feed an agent as conversational context.
+_ROOM_HISTORY_LIMIT = 40
 
 
 def _now():
@@ -18,6 +26,120 @@ def _now():
 
 def _uuid():
     return str(uuid.uuid4())
+
+
+# ── Agent replies in rooms ────────────────────────────────────────────────────
+
+def _normalize_handle(name: str) -> str:
+    """A comparable @handle for an agent name: lowercased, spaces→hyphens."""
+    return re.sub(r"[^a-z0-9-]", "", (name or "").lower().replace(" ", "-"))
+
+
+def _mentioned_agents(content: str, agents: list) -> list:
+    """Agents explicitly @mentioned in the message (by full handle or first name)."""
+    tokens = {t.lower() for t in re.findall(r"@([\w-]+)", content or "")}
+    if not tokens:
+        return []
+    hits = []
+    for a in agents:
+        handle = _normalize_handle(a.name)
+        first = (a.name or "").lower().split(" ")[0] if a.name else ""
+        if handle in tokens or (first and first in tokens):
+            hits.append(a)
+    return hits
+
+
+def _build_room_history(room_id: str, agent, Agent) -> list:
+    """Build an OpenAI-style message list for an agent replying in a room.
+
+    The agent's own past messages map to `assistant`; humans map to `user`;
+    OTHER agents' messages are shown as user turns prefixed with their name so a
+    multi-agent room stays coherent.
+    """
+    history = (
+        ChatRoomMessage.query.filter_by(room_id=room_id)
+        .order_by(ChatRoomMessage.created_at.desc())
+        .limit(_ROOM_HISTORY_LIMIT)
+        .all()
+    )
+    history.reverse()
+
+    sys = agent.system_prompt or f"You are {agent.name}, a helpful AI assistant."
+    sys += (
+        f"\n\nYou are '{agent.name}', a participant in a multi-party chat room with the "
+        "user and possibly other agents. Reply conversationally as yourself, in the first "
+        "person. Do not role-play other participants or prefix your reply with your own name. "
+        "Keep replies focused; ask for clarification when needed."
+    )
+    msgs = [{"role": "system", "content": sys}]
+
+    for m in history:
+        if m.sender_type == "system":
+            continue
+        if m.sender_type == "agent" and m.agent_id == agent.id:
+            msgs.append({"role": "assistant", "content": m.content})
+        elif m.sender_type == "agent":
+            other = Agent.query.get(m.agent_id) if m.agent_id else None
+            label = other.name if other else "Another agent"
+            msgs.append({"role": "user", "content": f"[{label}]: {m.content}"})
+        else:  # human
+            msgs.append({"role": "user", "content": m.content})
+    return msgs
+
+
+def _trigger_agent_replies(app, room_id: str, human_content: str):
+    """Generate replies from the room's agent members to a human message.
+
+    Runs in a background thread so the POST returns immediately; the front-end's
+    poll picks up the replies. Only human messages trigger this, so agents never
+    loop replying to each other.
+    """
+    with app.app_context():
+        try:
+            from app.models.agent import Agent
+            from app.services.llm import retry_with_recovery
+            from app.routes.settings import _get_active_provider
+
+            members = (
+                ChatRoomMember.query.filter_by(room_id=room_id)
+                .filter(ChatRoomMember.agent_id.isnot(None))
+                .all()
+            )
+            agents = [a for a in (Agent.query.get(m.agent_id) for m in members) if a]
+            if not agents:
+                return
+
+            # Speaker selection: @mentioned agents reply; otherwise everyone does.
+            responders = _mentioned_agents(human_content, agents) or agents
+
+            prov = _get_active_provider() or {}
+            base_url = prov.get("base_url")
+            api_key = prov.get("api_key")
+
+            for agent in responders:
+                try:
+                    model = agent.llm_model_override or prov.get("model")
+                    msgs = _build_room_history(room_id, agent, Agent)
+                    reply, _tc, _tok = retry_with_recovery(
+                        base_url, api_key, model, msgs, [], max_retries=2
+                    )
+                    reply = (reply or "").strip()
+                    if not reply:
+                        continue
+                    db.session.add(ChatRoomMessage(
+                        id=_uuid(), room_id=room_id, agent_id=agent.id,
+                        sender_type="agent", content=reply,
+                    ))
+                    room = ChatRoom.query.get(room_id)
+                    if room:
+                        room.updated_at = _now()
+                    db.session.commit()
+                except Exception as e:
+                    db.session.rollback()
+                    log.warning("room agent reply failed agent=%s room=%s: %s",
+                                getattr(agent, "id", None), room_id, e)
+        except Exception as e:
+            log.warning("room agent trigger failed room=%s: %s", room_id, e)
 
 
 # ── Rooms CRUD ────────────────────────────────────────────────────────────────
@@ -137,7 +259,27 @@ def post_message(room_id):
     db.session.add(msg)
     room.updated_at = _now()
     db.session.commit()
-    return jsonify(msg.to_dict()), 201
+    result = msg.to_dict()
+
+    # A human message triggers the room's agent members to reply (in a
+    # background thread so this request returns immediately; the client poll
+    # delivers the replies). Agent-authored messages never trigger, so agents
+    # can't loop replying to each other.
+    if sender_type == "human":
+        has_agents = (
+            ChatRoomMember.query.filter_by(room_id=room_id)
+            .filter(ChatRoomMember.agent_id.isnot(None))
+            .first()
+        )
+        if has_agents:
+            app = current_app._get_current_object()
+            threading.Thread(
+                target=_trigger_agent_replies,
+                args=(app, room_id, content),
+                daemon=True,
+            ).start()
+
+    return jsonify(result), 201
 
 
 @bp.route("/<room_id>/messages", methods=["GET"])
