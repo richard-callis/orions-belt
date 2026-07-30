@@ -37,7 +37,8 @@ class OllamaAdapter(LLMAdapter):
         except ImportError:
             raise RuntimeError("ollama package not installed — run: pip install ollama")
 
-        client = ollama.Client(host=self.host, timeout=120.0)
+        from config import Config
+        client = ollama.Client(host=self.host, timeout=float(getattr(Config, "LLM_TIMEOUT", 600)))
 
         # Filter out unsupported roles for Ollama
         ollama_messages = [
