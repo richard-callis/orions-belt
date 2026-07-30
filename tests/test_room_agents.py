@@ -72,6 +72,32 @@ class TestBuildRoomHistory:
                 Agent.query.filter(Agent.id.in_(["a1", "a2"])).delete(synchronize_session=False)
                 db.session.commit()
 
+    def test_tool_activity_messages_excluded_from_llm_history(self, app):
+        """sender_type="tool" rows (posted by _post_tool_activity) must never
+        be replayed into the LLM as a user turn — the else-branch in
+        _build_room_history used to catch anything that wasn't "system" or
+        "agent" and label it as human, which would hand raw/untrusted tool
+        output to the model as if the user had said it."""
+        with app.app_context():
+            a1 = Agent(id="a1", name="Nova", system_prompt="You are Nova.", status="idle")
+            room = ChatRoom(id="r-tool-hist", name="room")
+            db.session.add_all([a1, room])
+            db.session.commit()
+            db.session.add(ChatRoomMessage(
+                id="m-tool1", room_id="r-tool-hist", sender_type="tool", agent_id="a1",
+                content='{"tool": "read_file", "args": "{}", "result": "SECRET FILE CONTENTS", "error": false, "refused": false}',
+            ))
+            db.session.commit()
+            try:
+                msgs = _build_room_history("r-tool-hist", a1, {"a1": "Nova"})
+                assert all("SECRET FILE CONTENTS" not in (m.get("content") or "") for m in msgs)
+                assert len(msgs) == 1  # only the system prompt — no turn was synthesized for it
+            finally:
+                ChatRoomMessage.query.filter_by(room_id="r-tool-hist").delete()
+                ChatRoom.query.filter_by(id="r-tool-hist").delete()
+                Agent.query.filter_by(id="a1").delete()
+                db.session.commit()
+
     def test_memory_context_prepended_to_system_prompt(self, app):
         with app.app_context():
             a1 = Agent(id="a1", name="Nova", system_prompt="You are Nova.", status="idle")
@@ -98,6 +124,121 @@ class TestBuildRoomHistory:
             finally:
                 ChatRoom.query.filter_by(id="r-nomem").delete()
                 Agent.query.filter_by(id="a1").delete()
+                db.session.commit()
+
+
+class TestRoomBusyTracking:
+    def test_room_not_busy_by_default(self):
+        import app.routes.chat_rooms as cr
+        assert cr._is_room_busy("some-room-never-marked") is False
+
+    def test_mark_and_release(self):
+        import app.routes.chat_rooms as cr
+        cr._mark_room_busy("r-busy-test")
+        try:
+            assert cr._is_room_busy("r-busy-test") is True
+        finally:
+            cr._mark_room_free("r-busy-test")
+        assert cr._is_room_busy("r-busy-test") is False
+
+    def test_run_room_conversation_marks_and_releases(self, app, monkeypatch):
+        import app.routes.chat_rooms as cr
+        monkeypatch.setattr("app.routes.settings._get_active_provider",
+                            lambda: {"base_url": "x", "api_key": "y", "model": "m"})
+        seen_busy_during_run = {"v": None}
+
+        def fake_reply(agent, *a, **k):
+            seen_busy_during_run["v"] = cr._is_room_busy("r-busy-run")
+            return "reply"
+
+        monkeypatch.setattr(cr, "_generate_agent_reply", fake_reply)
+        with app.app_context():
+            db.session.add(ChatRoom(id="r-busy-run", name="r-busy-run"))
+            db.session.add(Agent(id="a-busy-run", name="A", status="idle"))
+            db.session.add(ChatRoomMember(id="m-busy-run", room_id="r-busy-run", agent_id="a-busy-run"))
+            db.session.commit()
+            try:
+                cr._run_room_conversation(app, "r-busy-run", "hi")
+                assert seen_busy_during_run["v"] is True   # busy while the reply was generated
+                assert cr._is_room_busy("r-busy-run") is False  # released after
+            finally:
+                ChatRoomMessage.query.filter_by(room_id="r-busy-run").delete()
+                ChatRoomMember.query.filter_by(room_id="r-busy-run").delete()
+                ChatRoom.query.filter_by(id="r-busy-run").delete()
+                Agent.query.filter_by(id="a-busy-run").delete()
+                db.session.commit()
+
+    def test_run_room_conversation_releases_even_on_exception(self, app, monkeypatch):
+        import app.routes.chat_rooms as cr
+        monkeypatch.setattr("app.routes.settings._get_active_provider",
+                            lambda: {"base_url": "x", "api_key": "y", "model": "m"})
+
+        def broken_reply(agent, *a, **k):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(cr, "_generate_agent_reply", broken_reply)
+        with app.app_context():
+            db.session.add(ChatRoom(id="r-busy-exc", name="r-busy-exc"))
+            db.session.add(Agent(id="a-busy-exc", name="A", status="idle"))
+            db.session.add(ChatRoomMember(id="m-busy-exc", room_id="r-busy-exc", agent_id="a-busy-exc"))
+            db.session.commit()
+            try:
+                cr._run_room_conversation(app, "r-busy-exc", "hi")
+                assert cr._is_room_busy("r-busy-exc") is False
+            finally:
+                ChatRoomMessage.query.filter_by(room_id="r-busy-exc").delete()
+                ChatRoomMember.query.filter_by(room_id="r-busy-exc").delete()
+                ChatRoom.query.filter_by(id="r-busy-exc").delete()
+                Agent.query.filter_by(id="a-busy-exc").delete()
+                db.session.commit()
+
+    def test_allow_tier_threaded_to_chat_reply(self, app, monkeypatch):
+        import app.routes.chat_rooms as cr
+        from app.services.agents.runtime import AgentRuntime
+
+        captured = {}
+        def fake_chat_reply(self, messages, **kwargs):
+            captured["allow_tier"] = kwargs.get("allow_tier")
+            return "ok"
+
+        monkeypatch.setattr(AgentRuntime, "chat_reply", fake_chat_reply)
+        with app.app_context():
+            db.session.add(ChatRoom(id="r-tier1", name="r-tier1"))
+            agent = Agent(id="a-tier1", name="A", status="idle")
+            db.session.add(agent)
+            db.session.commit()
+            try:
+                cr._generate_agent_reply(agent, {"base_url": "x", "api_key": "y", "model": "m"},
+                                         "r-tier1", {"a-tier1": "A"}, allow_tier=1)
+                assert captured["allow_tier"] == 1
+            finally:
+                ChatRoom.query.filter_by(id="r-tier1").delete()
+                Agent.query.filter_by(id="a-tier1").delete()
+                db.session.commit()
+
+    def test_allow_tier_omitted_uses_chat_reply_default(self, app, monkeypatch):
+        import app.routes.chat_rooms as cr
+        from app.services.agents.runtime import AgentRuntime
+
+        captured = {}
+        def fake_chat_reply(self, messages, **kwargs):
+            captured["allow_tier"] = kwargs.get("allow_tier", "DEFAULT_NOT_PASSED")
+            return "ok"
+
+        monkeypatch.setattr(AgentRuntime, "chat_reply", fake_chat_reply)
+        with app.app_context():
+            db.session.add(ChatRoom(id="r-tier2", name="r-tier2"))
+            agent = Agent(id="a-tier2", name="A", status="idle")
+            db.session.add(agent)
+            db.session.commit()
+            try:
+                cr._generate_agent_reply(agent, {"base_url": "x", "api_key": "y", "model": "m"},
+                                         "r-tier2", {"a-tier2": "A"})
+                # allow_tier kwarg not passed at all — chat_reply's own default applies.
+                assert captured["allow_tier"] == "DEFAULT_NOT_PASSED"
+            finally:
+                ChatRoom.query.filter_by(id="r-tier2").delete()
+                Agent.query.filter_by(id="a-tier2").delete()
                 db.session.commit()
 
 
@@ -211,6 +352,110 @@ class TestConversationOrchestration:
                 assert call_count["n"] == 1
             finally:
                 self._cleanup("r-mem-once", ["nova", "atlas"])
+
+
+class TestToolActivityVisibility:
+    """Every tool call an agent makes is persisted as its own visible
+    sender_type='tool' message — not just mentioned (or not) in the agent's
+    own final reply text."""
+
+    def _make_room_and_agent(self, rid, aid):
+        room = ChatRoom(id=rid, name=rid)
+        agent = Agent(id=aid, name="Nova", status="idle")
+        db.session.add_all([room, agent])
+        db.session.commit()
+
+    def _cleanup(self, rid, aid):
+        ChatRoomMessage.query.filter_by(room_id=rid).delete()
+        ChatRoom.query.filter_by(id=rid).delete()
+        Agent.query.filter_by(id=aid).delete()
+        db.session.commit()
+
+    def test_post_tool_activity_persists_one_message_per_call(self, app):
+        import app.routes.chat_rooms as cr
+        with app.app_context():
+            self._make_room_and_agent("r-tool1", "a-tool1")
+            try:
+                tool_log = [
+                    {"name": "read_file", "args": {"path": "/x"}, "tier": 0,
+                     "result": "contents", "error": False, "refused": False},
+                    {"name": "create_directory", "args": {"path": "testing2"}, "tier": 2,
+                     "result": "Error: directory not authorized: testing2", "error": True, "refused": False},
+                ]
+                cr._post_tool_activity("r-tool1", "a-tool1", tool_log)
+                msgs = ChatRoomMessage.query.filter_by(room_id="r-tool1", sender_type="tool").order_by(
+                    ChatRoomMessage.created_at).all()
+                assert len(msgs) == 2
+                import json
+                first = json.loads(msgs[0].content)
+                assert first["tool"] == "read_file"
+                assert first["error"] is False
+                second = json.loads(msgs[1].content)
+                assert second["tool"] == "create_directory"
+                assert second["error"] is True
+                assert "not authorized" in second["result"]
+            finally:
+                self._cleanup("r-tool1", "a-tool1")
+
+    def test_post_tool_activity_noop_on_empty_log(self, app):
+        import app.routes.chat_rooms as cr
+        with app.app_context():
+            self._make_room_and_agent("r-tool2", "a-tool2")
+            try:
+                cr._post_tool_activity("r-tool2", "a-tool2", [])
+                count = ChatRoomMessage.query.filter_by(room_id="r-tool2").count()
+                assert count == 0
+            finally:
+                self._cleanup("r-tool2", "a-tool2")
+
+    def test_post_tool_activity_truncates_large_results(self, app):
+        """A tool like read_file can return up to 64KB; the room message is
+        display-only (the UI itself only shows the first 2000 chars), so the
+        persisted/PII-scanned result must be capped rather than stored in
+        full on every tool call."""
+        import app.routes.chat_rooms as cr
+        with app.app_context():
+            self._make_room_and_agent("r-tool4", "a-tool4")
+            try:
+                huge = "x" * 100_000
+                tool_log = [{"name": "read_file", "args": {"path": "/x"}, "tier": 0,
+                            "result": huge, "error": False, "refused": False}]
+                cr._post_tool_activity("r-tool4", "a-tool4", tool_log)
+                msg = ChatRoomMessage.query.filter_by(room_id="r-tool4", sender_type="tool").first()
+                import json
+                data = json.loads(msg.content)
+                assert len(data["result"]) <= 4096
+            finally:
+                self._cleanup("r-tool4", "a-tool4")
+
+    def test_generate_agent_reply_surfaces_tool_calls_from_chat_reply(self, app, monkeypatch):
+        import app.routes.chat_rooms as cr
+        from app.services.agents.runtime import AgentRuntime
+
+        def fake_chat_reply(self, messages, **kwargs):
+            tool_log = kwargs.get("tool_log")
+            if tool_log is not None:
+                tool_log.append({"name": "create_directory", "args": {"path": "testing2"},
+                                 "tier": 2, "result": "Error: not authorized: testing2",
+                                 "error": True, "refused": False})
+            return "I tried to make the directory."
+
+        monkeypatch.setattr(AgentRuntime, "chat_reply", fake_chat_reply)
+        with app.app_context():
+            self._make_room_and_agent("r-tool3", "a-tool3")
+            try:
+                agent = Agent.query.get("a-tool3")
+                reply = cr._generate_agent_reply(
+                    agent, {"base_url": "x", "api_key": "y", "model": "m"}, "r-tool3", {"a-tool3": "Nova"})
+                assert reply == "I tried to make the directory."
+                tool_msgs = ChatRoomMessage.query.filter_by(room_id="r-tool3", sender_type="tool").all()
+                assert len(tool_msgs) == 1
+                import json
+                data = json.loads(tool_msgs[0].content)
+                assert data["tool"] == "create_directory"
+                assert data["error"] is True
+            finally:
+                self._cleanup("r-tool3", "a-tool3")
 
 
 class TestPostMessagePiiScan:

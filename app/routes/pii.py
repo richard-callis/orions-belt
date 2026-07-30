@@ -84,8 +84,8 @@ def create_pii_exception():
 
     if not hash_token:
         return jsonify({"error": "hash_token is required"}), 400
-    if match_mode not in ("exact", "normalized"):
-        return jsonify({"error": "match_mode must be 'exact' or 'normalized'"}), 400
+    if match_mode not in ("exact", "normalized", "regex"):
+        return jsonify({"error": "match_mode must be 'exact', 'normalized', or 'regex'"}), 400
 
     # The anti-poisoning constraint: the value comes ONLY from an existing
     # detection row, never from the request body directly.
@@ -97,6 +97,19 @@ def create_pii_exception():
     original_value = decrypt_data(entry.original_value) or entry.original_value
     if not original_value:
         return jsonify({"error": "Could not decrypt the referenced detection"}), 500
+
+    if match_mode == "regex":
+        # The detected literal text becomes the pattern as-is (never
+        # hand-authored — see the hash_token lookup above), so it can easily
+        # contain regex metacharacters (phone numbers with unbalanced
+        # parens, etc.) that fail to compile. Reject that at creation time
+        # rather than have it silently never apply at scan time, which looks
+        # to the user like "I added an exception and it did nothing."
+        import regex as regex_mod
+        try:
+            regex_mod.compile(original_value)
+        except regex_mod.error as e:
+            return jsonify({"error": f"This detected text isn't a valid regex pattern: {e}"}), 400
 
     exc = PIIException(
         entity_type=entry.entity_type,

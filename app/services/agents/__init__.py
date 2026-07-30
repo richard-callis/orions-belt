@@ -570,7 +570,25 @@ def _execute_run(run, agent, task, session_id: str | None = None):
             tool_name = tc.get("name", "")
             tool_args = tc.get("args", {})
             tool_id = tc.get("id", str(uuid.uuid4()))
-            tier = tool_tier_map.get(tool_name, 0)
+
+            if tool_name not in tool_tier_map:
+                # An unrecognized name (hallucinated, or one this agent was
+                # never granted) must never default to tier 0 — that would
+                # skip both the role/allowlist filter above and the Tier-3
+                # approval pause below, letting a destructive call through
+                # unchecked. Refuse it outright instead.
+                messages.append({
+                    "role": "assistant", "content": None,
+                    "tool_calls": [{"id": tool_id, "type": "function",
+                                    "function": {"name": tool_name, "arguments": json.dumps(tool_args)}}],
+                })
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_id,
+                    "content": f"[Refused] '{tool_name}' is not available to this agent.",
+                })
+                continue
+            tier = tool_tier_map[tool_name]
 
             if _is_remediation_loop(run.id, tool_name, tool_args):
                 run.status = "failed"

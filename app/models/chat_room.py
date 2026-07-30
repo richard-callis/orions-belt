@@ -100,7 +100,8 @@ class ChatRoomMessage(db.Model):
     agent_id    = db.Column(db.String(36), db.ForeignKey("agents.id"),     nullable=True)
     # null agent_id = human (or system)
 
-    sender_type = db.Column(db.String(16), default="human")  # human|agent|system
+    sender_type = db.Column(db.String(16), default="human")  # human|agent|system|tool
+    # tool messages store a JSON blob: {tool, args, tier, result, error, refused}
     content     = db.Column(db.Text, nullable=False)
     created_at  = db.Column(db.DateTime, default=_now, index=True)
 

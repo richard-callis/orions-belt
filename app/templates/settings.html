@@ -1029,6 +1029,7 @@ function showExceptForm(token, entityType) {
     <select id="except-mode-${token}" class="px-1.5 py-1 text-[11px] rounded border border-border-visible bg-bg-card text-text-primary">
       <option value="exact">Exact text only</option>
       <option value="normalized">Similar (case/spacing-insensitive)</option>
+      <option value="regex">Regex (treat the detected text as a pattern)</option>
     </select>
     <button onclick="submitException('${token}')" class="text-[11px] text-accent hover:underline flex-shrink-0">Add exception</button>
     <button onclick="loadPiiHashes()" class="text-[11px] text-text-muted hover:text-text-primary flex-shrink-0">Cancel</button>`;
@@ -1066,7 +1067,7 @@ async function loadPiiExceptions() {
       <div class="flex items-center gap-2 px-2.5 py-1.5 rounded bg-bg-raised text-xs">
         <span class="px-1.5 py-0.5 rounded-full bg-accent/10 text-accent font-mono text-[10px] flex-shrink-0">${escHtml(e.entity_type)}</span>
         <span class="flex-1 min-w-0 truncate text-text-secondary">${escHtml(e.value)}</span>
-        <span class="text-[10px] text-text-muted flex-shrink-0">${e.match_mode === 'normalized' ? 'similar' : 'exact'}</span>
+        <span class="text-[10px] text-text-muted flex-shrink-0">${e.match_mode === 'normalized' ? 'similar' : e.match_mode === 'regex' ? 'regex' : 'exact'}</span>
         <button onclick="removeException('${e.id}')" class="text-[11px] text-status-error hover:underline flex-shrink-0">Remove</button>
       </div>`).join('');
   } catch (e) {

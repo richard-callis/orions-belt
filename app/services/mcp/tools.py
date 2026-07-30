@@ -134,6 +134,18 @@ def _authorize_path(path: str) -> bool:
     return False
 
 
+def _authorized_dirs_hint() -> str:
+    """Short " (authorized: alias=/path, ...)" suffix for not-authorized errors,
+    so an agent that guessed a relative/wrong path can self-correct on retry
+    instead of guessing blindly again. Safe to expose — these are directories
+    the user themselves explicitly authorized via Settings, not a leak."""
+    dirs = AuthorizedDirectory.query.filter_by(enabled=True).all()
+    if not dirs:
+        return " (no authorized directories are configured)"
+    listing = ", ".join(f"{d.alias}={d.path}" for d in dirs)
+    return f" (authorized directories: {listing})"
+
+
 def _get_effective_tier(path: str, tool_tier: int) -> int:
     """Calculate effective tier based on path settings."""
     real_path = os.path.realpath(path)
@@ -236,9 +248,15 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         "create_excel": _handle_create_excel,
         "create_pdf": _handle_create_pdf,
         "create_ado_workitem": _handle_create_ado_workitem,
+        "create_github_issue": _handle_create_github_issue,
+        "create_google_task": _handle_create_google_task,
+        "post_teams_message": _handle_post_teams_message,
+        "create_planner_task": _handle_create_planner_task,
+        "create_salesforce_record": _handle_create_salesforce_record,
         # Tier 2: modify operations
         "modify_file": _handle_modify_file,
         "create_directory": _handle_create_directory,
+        "send_email": _handle_send_email,
         # Tier 3: destructive operations
         "delete_file": _handle_delete_file,
         "move_file": _handle_move_file,
@@ -382,7 +400,7 @@ async def _handle_read_file(tool_name: str, args: dict) -> str:
     if _is_blocked_path(real_path):
         return f"Error: access denied — system path blocked: {path}"
     if not _authorize_path(real_path):
-        return f"Error: directory not authorized: {path}"
+        return f"Error: directory not authorized: {path}{_authorized_dirs_hint()}"
 
     try:
         content = Path(real_path).read_text(encoding="utf-8")
@@ -406,7 +424,7 @@ async def _handle_list_directory(tool_name: str, args: dict) -> str:
     if _is_blocked_path(real_path):
         return f"Error: access denied — system path blocked: {path}"
     if not _authorize_path(real_path):
-        return f"Error: directory not authorized: {path}"
+        return f"Error: directory not authorized: {path}{_authorized_dirs_hint()}"
 
     try:
         entries = sorted(Path(real_path).iterdir())
@@ -428,7 +446,7 @@ async def _handle_search_files(tool_name: str, args: dict) -> str:
     pattern = args.get("pattern", "*")
     real_path = os.path.realpath(path)
     if not _authorize_path(real_path):
-        return f"Error: directory not authorized: {path}"
+        return f"Error: directory not authorized: {path}{_authorized_dirs_hint()}"
 
     try:
         matches = list(Path(real_path).glob(f"**/{pattern}"))
@@ -507,7 +525,7 @@ async def _handle_create_file(tool_name: str, args: dict) -> str:
     if _is_blocked_path(real_path):
         return f"Error: access denied — system path blocked: {path}"
     if not _authorize_path(real_path):
-        return f"Error: directory not authorized: {path}"
+        return f"Error: directory not authorized: {path}{_authorized_dirs_hint()}"
     if Path(real_path).exists():
         return f"Error: file already exists: {path}"
 
@@ -530,7 +548,7 @@ async def _handle_append_to_file(tool_name: str, args: dict) -> str:
     if _is_blocked_path(real_path):
         return f"Error: access denied — system path blocked: {path}"
     if not _authorize_path(real_path):
-        return f"Error: directory not authorized: {path}"
+        return f"Error: directory not authorized: {path}{_authorized_dirs_hint()}"
 
     try:
         Path(real_path).parent.mkdir(parents=True, exist_ok=True)
@@ -566,7 +584,7 @@ def _authorize_new_file(path_arg: str) -> tuple[str | None, str | None]:
     if _is_blocked_path(real_path):
         return None, f"Error: access denied — system path blocked: {path}"
     if not _authorize_path(real_path):
-        return None, f"Error: directory not authorized: {path}"
+        return None, f"Error: directory not authorized: {path}{_authorized_dirs_hint()}"
     if Path(real_path).exists():
         return None, f"Error: file already exists: {path}"
     return real_path, None
@@ -796,7 +814,7 @@ async def _handle_modify_file(tool_name: str, args: dict) -> str:
     if _is_blocked_path(real_path):
         return f"Error: access denied — system path blocked: {path}"
     if not _authorize_path(real_path):
-        return f"Error: directory not authorized: {path}"
+        return f"Error: directory not authorized: {path}{_authorized_dirs_hint()}"
 
     try:
         Path(real_path).parent.mkdir(parents=True, exist_ok=True)
@@ -819,7 +837,7 @@ async def _handle_create_directory(tool_name: str, args: dict) -> str:
     # SECURITY FIX: authorization check was missing — added to prevent
     # arbitrary directory creation outside of authorized paths.
     if not _authorize_path(real_path):
-        return f"Error: directory not authorized: {path}"
+        return f"Error: directory not authorized: {path}{_authorized_dirs_hint()}"
 
     try:
         Path(real_path).mkdir(parents=True, exist_ok=True)
@@ -840,7 +858,7 @@ async def _handle_delete_file(tool_name: str, args: dict) -> str:
     if _is_blocked_path(real_path):
         return f"Error: access denied — system path blocked: {path}"
     if not _authorize_path(real_path):
-        return f"Error: directory not authorized: {path}"
+        return f"Error: directory not authorized: {path}{_authorized_dirs_hint()}"
 
     try:
         Path(real_path).unlink()
@@ -864,9 +882,9 @@ async def _handle_move_file(tool_name: str, args: dict) -> str:
         return "Error: access denied — system path blocked"
     # SECURITY FIX: auth checks were missing on both source and destination.
     if not _authorize_path(real_src):
-        return f"Error: source directory not authorized: {src}"
+        return f"Error: source directory not authorized: {src}{_authorized_dirs_hint()}"
     if not _authorize_path(real_dst):
-        return f"Error: destination directory not authorized: {dst}"
+        return f"Error: destination directory not authorized: {dst}{_authorized_dirs_hint()}"
 
     try:
         Path(real_src).rename(real_dst)
@@ -878,6 +896,36 @@ async def _handle_move_file(tool_name: str, args: dict) -> str:
 
 
 # ── Connector helpers ─────────────────────────────────────────────────────────
+
+def _is_safe_path_segment(value: str) -> bool:
+    """True if `value` is safe to interpolate directly into a REST API path.
+
+    These identifiers (repo owner/name, Teams team/channel id, Planner plan/
+    bucket id, Salesforce sobject type, ...) are LLM-supplied and go straight
+    into a URL path segment. httpx/the provider will normalize a value like
+    "../something", so an unchecked value could redirect the request to a
+    different endpoint on the same trusted host, still carrying the
+    connector's credentials.
+
+    This is a blocklist, not an allowlist of "plausible id characters" — some
+    real provider ids are not simple alnum/dash tokens (a Microsoft Graph
+    Teams channel id looks like "19:abc123@thread.tacv2"), so an allowlist
+    would reject genuine values. What every real id has in common is that it
+    never needs a path separator, a ".." segment, or a URL-structural
+    character (query string, fragment, percent-encoding) — none of those
+    blocked characters appear in a genuine id from any provider this app
+    talks to, so refusing them can't reject a real value.
+    """
+    if not value or "\x00" in value:
+        return False
+    if "/" in value or "\\" in value:
+        return False
+    if ".." in value:
+        return False
+    if any(c in value for c in "?#%"):
+        return False
+    return not any(c.isspace() for c in value)
+
 
 def _get_connector(name: str):
     """Get connector config from database."""
@@ -1036,6 +1084,275 @@ async def _handle_create_ado_workitem(tool_name: str, args: dict) -> str:
         return f"Error creating ADO work item: {e}"
 
 
+async def _handle_create_github_issue(tool_name: str, args: dict) -> str:
+    """Create an issue in a GitHub repository via a configured github connector."""
+    connector_name = args.get("connector", "")
+    owner = (args.get("owner") or "").strip()
+    repo = (args.get("repo") or "").strip()
+    title = (args.get("title") or "").strip()
+    body = args.get("body") or ""
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not owner:
+        return "Error: owner is required"
+    if not repo:
+        return "Error: repo is required"
+    if not title:
+        return "Error: title is required"
+    if not _is_safe_path_segment(owner) or not _is_safe_path_segment(repo):
+        return "Error: owner and repo must not contain '/', '\\', whitespace, '..', '?', '#', or '%'"
+
+    connector = _get_connector(connector_name)
+    if not connector:
+        return f"Error: connector '{connector_name}' not found"
+    if connector["type"] != "github":
+        return f"Error: connector '{connector_name}' is not a github connector"
+
+    pat = (connector.get("auth") or {}).get("pat")
+    if not pat:
+        return f"Error: connector '{connector_name}' has no personal access token configured"
+
+    from app.services.connector_auth import build_auth_headers
+
+    url = f"https://api.github.com/repos/{owner}/{repo}/issues"
+    headers = build_auth_headers("bearer", {"token": pat})
+    headers["Accept"] = "application/vnd.github+json"
+
+    payload = {"title": title}
+    if body:
+        payload["body"] = body
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code == 201:
+            data = resp.json()
+            number = data.get("number")
+            html_url = data.get("html_url", "")
+            return f"Created issue #{number} in {owner}/{repo}: {title}\n{html_url}"
+        return f"Error: GitHub returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error creating GitHub issue: {e}"
+
+
+async def _handle_create_google_task(tool_name: str, args: dict) -> str:
+    """Create a task in Google Tasks via a configured google connector."""
+    from app.models.connector import Connector
+    from app.services import oauth
+    from app.services.oauth_providers import get_provider_config
+
+    connector_name = args.get("connector", "")
+    title = (args.get("title") or "").strip()
+    notes = args.get("notes") or ""
+    due = args.get("due") or ""
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not title:
+        return "Error: title is required"
+
+    conn = Connector.query.filter_by(name=connector_name, enabled=True).first()
+    if not conn:
+        return f"Error: connector '{connector_name}' not found"
+    if conn.connector_type != "google":
+        return f"Error: connector '{connector_name}' is not a google connector"
+
+    cfg = json.loads(conn.config or "{}")
+    provider_cfg = get_provider_config("google", cfg)
+
+    try:
+        access_token = oauth.get_valid_access_token(conn, provider_cfg["token_endpoint"])
+    except oauth.ReAuthRequired:
+        return f"Error: connector '{connector_name}' needs to be reconnected (OAuth consent expired or was never completed)"
+    except Exception as e:
+        return f"Error: could not obtain a valid Google access token: {e}"
+
+    payload = {"title": title}
+    if notes:
+        payload["notes"] = notes
+    if due:
+        payload["due"] = due
+
+    try:
+        import httpx
+        headers = {"Authorization": f"Bearer {access_token}"}
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                "https://tasks.googleapis.com/tasks/v1/lists/@default/tasks",
+                headers=headers, json=payload,
+            )
+        if resp.status_code in (200, 201):
+            data = resp.json()
+            return f"Created Google Task: {title}\n{data.get('selfLink', '')}"
+        return f"Error: Google Tasks API returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error creating Google Task: {e}"
+
+
+def _get_graph_connector_and_token(connector_name: str):
+    """Look up a microsoft_graph connector and return (connector, access_token)
+    or (None, error_message) — shared by post_teams_message/create_planner_task
+    since both act on the same Graph OAuth identity."""
+    from app.models.connector import Connector
+    from app.services import oauth
+    from app.services.oauth_providers import get_provider_config
+
+    conn = Connector.query.filter_by(name=connector_name, enabled=True).first()
+    if not conn:
+        return None, f"Error: connector '{connector_name}' not found"
+    if conn.connector_type != "microsoft_graph":
+        return None, f"Error: connector '{connector_name}' is not a microsoft_graph connector"
+
+    cfg = json.loads(conn.config or "{}")
+    provider_cfg = get_provider_config("microsoft_graph", cfg)
+
+    try:
+        access_token = oauth.get_valid_access_token(conn, provider_cfg["token_endpoint"])
+    except oauth.ReAuthRequired:
+        return None, f"Error: connector '{connector_name}' needs to be reconnected (OAuth consent expired or was never completed)"
+    except Exception as e:
+        return None, f"Error: could not obtain a valid Microsoft Graph access token: {e}"
+
+    return access_token, None
+
+
+async def _handle_post_teams_message(tool_name: str, args: dict) -> str:
+    """Post a message to a Microsoft Teams channel via a configured microsoft_graph connector."""
+    connector_name = args.get("connector", "")
+    team_id = (args.get("team_id") or "").strip()
+    channel_id = (args.get("channel_id") or "").strip()
+    message = (args.get("message") or "").strip()
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not team_id:
+        return "Error: team_id is required"
+    if not channel_id:
+        return "Error: channel_id is required"
+    if not message:
+        return "Error: message is required"
+    if not _is_safe_path_segment(team_id) or not _is_safe_path_segment(channel_id):
+        return "Error: team_id and channel_id must not contain '/', '\\', whitespace, '..', '?', '#', or '%'"
+
+    access_token, err = _get_graph_connector_and_token(connector_name)
+    if err:
+        return err
+
+    url = f"https://graph.microsoft.com/v1.0/teams/{team_id}/channels/{channel_id}/messages"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    payload = {"body": {"content": message}}
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code in (200, 201):
+            return f"Posted message to Teams channel {channel_id}"
+        return f"Error: Microsoft Graph returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error posting Teams message: {e}"
+
+
+async def _handle_create_planner_task(tool_name: str, args: dict) -> str:
+    """Create a task in Microsoft Planner via a configured microsoft_graph connector."""
+    connector_name = args.get("connector", "")
+    plan_id = (args.get("plan_id") or "").strip()
+    title = (args.get("title") or "").strip()
+    bucket_id = (args.get("bucket_id") or "").strip()
+    due_date_time = args.get("due_date_time") or ""
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not plan_id:
+        return "Error: plan_id is required"
+    if not title:
+        return "Error: title is required"
+
+    access_token, err = _get_graph_connector_and_token(connector_name)
+    if err:
+        return err
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    payload = {"planId": plan_id, "title": title}
+    if bucket_id:
+        payload["bucketId"] = bucket_id
+    if due_date_time:
+        payload["dueDateTime"] = due_date_time
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post("https://graph.microsoft.com/v1.0/planner/tasks", headers=headers, json=payload)
+        if resp.status_code in (200, 201):
+            data = resp.json()
+            task_id = data.get("id", "")
+            return f"Created Planner task: {title}\n{task_id}"
+        return f"Error: Microsoft Graph returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error creating Planner task: {e}"
+
+
+async def _handle_create_salesforce_record(tool_name: str, args: dict) -> str:
+    """Create a record (Lead, Case, Account, etc.) via a configured salesforce connector."""
+    from app.models.connector import Connector
+    from app.services import oauth
+    from app.services.oauth_providers import get_provider_config
+
+    connector_name = args.get("connector", "")
+    sobject_type = (args.get("sobject_type") or "").strip()
+    fields = args.get("fields")
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not sobject_type:
+        return "Error: sobject_type is required (e.g. 'Lead', 'Case', 'Account')"
+    if not isinstance(fields, dict) or not fields:
+        return "Error: fields is required and must be a non-empty object of field name -> value"
+    if not _is_safe_path_segment(sobject_type):
+        return "Error: sobject_type must not contain '/', '\\', whitespace, '..', '?', '#', or '%'"
+
+    conn = Connector.query.filter_by(name=connector_name, enabled=True).first()
+    if not conn:
+        return f"Error: connector '{connector_name}' not found"
+    if conn.connector_type != "salesforce":
+        return f"Error: connector '{connector_name}' is not a salesforce connector"
+
+    cfg = json.loads(conn.config or "{}")
+    provider_cfg = get_provider_config("salesforce", cfg)
+
+    try:
+        access_token = oauth.get_valid_access_token(conn, provider_cfg["token_endpoint"])
+    except oauth.ReAuthRequired:
+        return f"Error: connector '{connector_name}' needs to be reconnected (OAuth consent expired or was never completed)"
+    except Exception as e:
+        return f"Error: could not obtain a valid Salesforce access token: {e}"
+
+    # The org's real API host, returned by Salesforce alongside the tokens
+    # (persisted by oauth.py's _store_tokens/get_valid_access_token), always
+    # wins over the connector's configured instance_url — that config value
+    # may be nothing more than the generic login.salesforce.com the user
+    # authenticated against, which isn't a valid API host after login.
+    instance_url = (conn.get_auth().get("instance_url") or cfg.get("instance_url")
+                    or "https://login.salesforce.com").rstrip("/")
+
+    url = f"{instance_url}/services/data/v59.0/sobjects/{sobject_type}"
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, headers=headers, json=fields)
+        if resp.status_code == 201:
+            data = resp.json()
+            record_id = data.get("id", "")
+            return f"Created {sobject_type} record: {record_id}\n{instance_url}/{record_id}"
+        return f"Error: Salesforce returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error creating Salesforce record: {e}"
+
+
 async def _handle_search_emails(tool_name: str, args: dict) -> str:
     """Search Outlook emails."""
     try:
@@ -1077,3 +1394,41 @@ async def _handle_search_emails(tool_name: str, args: dict) -> str:
         if len(results) >= count:
             break
     return "\n".join(results) if results else "No matching emails found."
+
+
+async def _handle_send_email(tool_name: str, args: dict) -> str:
+    """Send an email via Outlook COM automation.
+
+    Tier 2 (not Tier 1 like the other create_* tools): an email leaving the
+    machine in the user's name is a materially different kind of effect than
+    creating a local file, and Tier 2 is already refused under autonomous
+    goal pursuit's Tier-1 ceiling while remaining allowed in attended chat —
+    exactly the property wanted here with no new tiering logic required.
+    """
+    to = (args.get("to") or "").strip()
+    subject = (args.get("subject") or "").strip()
+    body = args.get("body") or ""
+    cc = (args.get("cc") or "").strip()
+
+    if not to:
+        return "Error: 'to' is required"
+    if not subject:
+        return "Error: 'subject' is required"
+
+    try:
+        import win32com.client
+    except ImportError:
+        return "Error: pywin32 not installed (Windows-only)"
+
+    try:
+        outlook = win32com.client.Dispatch("Outlook.Application")
+        mail = outlook.CreateItem(0)  # 0 = olMailItem
+        mail.To = to
+        if cc:
+            mail.CC = cc
+        mail.Subject = subject
+        mail.Body = body
+        mail.Send()
+        return f"Email sent to {to}: {subject}"
+    except Exception as e:
+        return f"Error sending email: {e}"

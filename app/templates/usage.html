@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block title %}Usage{% endblock %}
+{% block page_title %}Usage{% endblock %}
+
+{% block content %}
+<div class="p-5 max-w-5xl space-y-6">
+
+  <div class="flex items-center justify-between">
+    <div>
+      <h2 class="text-base font-semibold text-text-primary">LLM Usage &amp; Cost</h2>
+      <p class="text-xs text-text-muted mt-0.5">Every LLM call this app makes is logged here — tokens, latency, and estimated cost.</p>
+    </div>
+    <select id="days-select" onchange="loadUsage()"
+            class="px-2.5 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent">
+      <option value="7">Last 7 days</option>
+      <option value="30" selected>Last 30 days</option>
+      <option value="90">Last 90 days</option>
+    </select>
+  </div>
+
+  <!-- Summary cards -->
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+    <div class="rounded-lg border border-border-subtle bg-bg-card p-4">
+      <div class="text-[10px] text-text-muted uppercase tracking-wider mb-1">Total tokens</div>
+      <div class="text-xl font-semibold text-text-primary" id="stat-tokens">—</div>
+    </div>
+    <div class="rounded-lg border border-border-subtle bg-bg-card p-4">
+      <div class="text-[10px] text-text-muted uppercase tracking-wider mb-1">Estimated cost</div>
+      <div class="text-xl font-semibold text-text-primary" id="stat-cost">—</div>
+    </div>
+    <div class="rounded-lg border border-border-subtle bg-bg-card p-4">
+      <div class="text-[10px] text-text-muted uppercase tracking-wider mb-1">LLM calls</div>
+      <div class="text-xl font-semibold text-text-primary" id="stat-calls">—</div>
+    </div>
+    <div class="rounded-lg border border-border-subtle bg-bg-card p-4">
+      <div class="text-[10px] text-text-muted uppercase tracking-wider mb-1">Errors</div>
+      <div class="text-xl font-semibold text-text-primary" id="stat-errors">—</div>
+    </div>
+  </div>
+
+  <!-- Per-day bar chart -->
+  <div class="rounded-lg border border-border-subtle bg-bg-card p-4">
+    <div class="text-xs font-semibold text-text-muted uppercase tracking-wider mb-3">Tokens per day</div>
+    <div id="day-chart" class="flex items-end gap-1 h-24"></div>
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <!-- By agent -->
+    <div class="rounded-lg border border-border-subtle bg-bg-card p-4">
+      <div class="text-xs font-semibold text-text-muted uppercase tracking-wider mb-3">By agent</div>
+      <div id="agent-table" class="space-y-1.5 text-xs"></div>
+    </div>
+
+    <!-- By model -->
+    <div class="rounded-lg border border-border-subtle bg-bg-card p-4">
+      <div class="text-xs font-semibold text-text-muted uppercase tracking-wider mb-3">By model</div>
+      <div id="model-table" class="space-y-1.5 text-xs"></div>
+    </div>
+  </div>
+
+  <!-- Pricing config -->
+  <div class="rounded-lg border border-border-subtle bg-bg-card p-4">
+    <div class="text-xs font-semibold text-text-muted uppercase tracking-wider mb-1">Model pricing</div>
+    <p class="text-[11px] text-text-muted mb-3">$ per 1M tokens, used to estimate cost. A model with no pricing configured shows no cost (not zero) — this includes local/self-hosted models by default.</p>
+    <div id="pricing-list" class="space-y-1.5 text-xs mb-3"></div>
+    <div class="flex items-center gap-2">
+      <input id="pricing-model" type="text" placeholder="model name (e.g. claude-sonnet-5)"
+             class="flex-1 px-2.5 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent" />
+      <input id="pricing-input" type="number" step="0.01" placeholder="$/1M in"
+             class="w-24 px-2.5 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent" />
+      <input id="pricing-output" type="number" step="0.01" placeholder="$/1M out"
+             class="w-24 px-2.5 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent" />
+      <button onclick="addPricing()" class="px-3 py-1.5 rounded text-xs bg-accent/15 text-accent hover:bg-accent/30 transition-colors">Add</button>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function esc(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function fmtCost(usd) {
+  return usd > 0 ? `$${usd.toFixed(usd < 1 ? 4 : 2)}` : '$0';
+}
+
+async function loadUsage() {
+  const days = document.getElementById('days-select').value;
+  try {
+    const data = await fetch(`/api/usage/summary?days=${days}`).then(r => r.json());
+    document.getElementById('stat-tokens').textContent = (data.totals.tokens_in + data.totals.tokens_out).toLocaleString();
+    document.getElementById('stat-cost').textContent = fmtCost(data.totals.cost_usd);
+    document.getElementById('stat-calls').textContent = data.totals.calls.toLocaleString();
+    document.getElementById('stat-errors').textContent = data.totals.errors.toLocaleString();
+
+    const chart = document.getElementById('day-chart');
+    const max = Math.max(1, ...data.by_day.map(d => d.tokens_in + d.tokens_out));
+    chart.innerHTML = data.by_day.map(d => {
+      const total = d.tokens_in + d.tokens_out;
+      const h = Math.max(2, Math.round((total / max) * 100));
+      return `<div class="flex-1 bg-accent/40 hover:bg-accent/70 transition-colors rounded-t" style="height:${h}%" title="${d.day}: ${total.toLocaleString()} tokens"></div>`;
+    }).join('');
+
+    const agentTable = document.getElementById('agent-table');
+    agentTable.innerHTML = data.by_agent.length
+      ? data.by_agent.map(a => `
+        <div class="flex items-center justify-between px-2 py-1.5 rounded bg-bg-raised">
+          <span class="text-text-secondary truncate">${esc(a.agent_name)}</span>
+          <span class="text-text-muted font-mono flex-shrink-0 ml-2">${(a.tokens_in + a.tokens_out).toLocaleString()} · ${fmtCost(a.cost_usd)}</span>
+        </div>`).join('')
+      : '<div class="text-text-muted p-2">No usage yet.</div>';
+
+    const modelTable = document.getElementById('model-table');
+    modelTable.innerHTML = data.by_model.length
+      ? data.by_model.map(m => `
+        <div class="flex items-center justify-between px-2 py-1.5 rounded bg-bg-raised">
+          <span class="text-text-secondary font-mono truncate">${esc(m.model)}</span>
+          <span class="text-text-muted font-mono flex-shrink-0 ml-2">${(m.tokens_in + m.tokens_out).toLocaleString()} · ${fmtCost(m.cost_usd)}</span>
+        </div>`).join('')
+      : '<div class="text-text-muted p-2">No usage yet.</div>';
+  } catch (e) {
+    console.error('Failed to load usage:', e);
+  }
+}
+
+async function loadPricing() {
+  const el = document.getElementById('pricing-list');
+  try {
+    const pricing = await fetch('/api/usage/pricing').then(r => r.json());
+    const models = Object.keys(pricing);
+    el.innerHTML = models.length
+      ? models.map(m => `
+        <div class="flex items-center gap-2 px-2 py-1.5 rounded bg-bg-raised">
+          <span class="font-mono text-text-secondary flex-1 truncate">${esc(m)}</span>
+          <span class="text-text-muted font-mono">$${pricing[m].input_per_1m ?? 0}/1M in</span>
+          <span class="text-text-muted font-mono">$${pricing[m].output_per_1m ?? 0}/1M out</span>
+          <button onclick="removePricing('${esc(m)}')" class="text-status-error hover:underline">Remove</button>
+        </div>`).join('')
+      : '<div class="text-text-muted p-2">No models priced yet — self-hosted/local models show no cost by default.</div>';
+  } catch (e) {
+    el.innerHTML = '<div class="text-text-muted p-2">Could not load pricing.</div>';
+  }
+}
+
+async function addPricing() {
+  const model = document.getElementById('pricing-model').value.trim();
+  const inputPrice = parseFloat(document.getElementById('pricing-input').value);
+  const outputPrice = parseFloat(document.getElementById('pricing-output').value);
+  if (!model) return;
+  try {
+    const pricing = await fetch('/api/usage/pricing').then(r => r.json());
+    pricing[model] = {
+      input_per_1m: isNaN(inputPrice) ? null : inputPrice,
+      output_per_1m: isNaN(outputPrice) ? null : outputPrice,
+    };
+    await fetch('/api/usage/pricing', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(pricing),
+    });
+    document.getElementById('pricing-model').value = '';
+    document.getElementById('pricing-input').value = '';
+    document.getElementById('pricing-output').value = '';
+    loadPricing();
+  } catch (e) { console.error('Failed to add pricing:', e); }
+}
+
+async function removePricing(model) {
+  try {
+    const pricing = await fetch('/api/usage/pricing').then(r => r.json());
+    delete pricing[model];
+    await fetch('/api/usage/pricing', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(pricing),
+    });
+    loadPricing();
+  } catch (e) { console.error('Failed to remove pricing:', e); }
+}
+window.loadUsage = loadUsage;
+window.addPricing = addPricing;
+window.removePricing = removePricing;
+
+loadUsage();
+loadPricing();
+</script>
+{% endblock %}

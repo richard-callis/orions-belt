@@ -17,6 +17,8 @@ log = logging.getLogger("orions-belt.adapters.openai")
 
 
 class OpenAIAdapter(LLMAdapter):
+    last_usage: dict | None = None
+
     def __init__(self, base_url: str, api_key: str, model: str):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -65,5 +67,10 @@ class OpenAIAdapter(LLMAdapter):
                 "args": args,
             })
 
-        tokens = (resp.usage.total_tokens or 0) if resp.usage else 0
-        return response_text, tool_calls, tokens
+        if resp.usage:
+            input_tokens = resp.usage.prompt_tokens or 0
+            output_tokens = resp.usage.completion_tokens or 0
+        else:
+            input_tokens = output_tokens = 0
+        self.last_usage = {"input": input_tokens, "output": output_tokens, "model": self.model}
+        return response_text, tool_calls, input_tokens + output_tokens

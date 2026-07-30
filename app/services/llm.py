@@ -352,21 +352,87 @@ class ContextTooLargeError(RecoveryError):
         super().__init__(message, strategy="compact_and_retry")
 
 
+def _estimate_llm_cost(model: str, input_tokens: int, output_tokens: int) -> float | None:
+    """Estimated USD cost for one LLM call, or None if the model has no
+    configured pricing (e.g. a local/self-hosted model — cost is genuinely
+    unknown/zero, not "failed to compute")."""
+    import json
+    from app.models.settings import Setting
+    try:
+        raw = Setting.get("llm.model_pricing")
+        pricing = json.loads(raw) if raw else {}
+    except Exception:
+        return None
+    entry = pricing.get(model) if isinstance(pricing, dict) else None
+    if not entry:
+        return None
+    input_price = entry.get("input_per_1m")
+    output_price = entry.get("output_per_1m")
+    if input_price is None and output_price is None:
+        return None
+    return (input_tokens * (input_price or 0) + output_tokens * (output_price or 0)) / 1_000_000
+
+
+def _log_llm_call(adapter, model: str, session_id: str | None, run_id: str | None,
+                   latency_ms: int, success: bool, error: str | None = None) -> None:
+    """Best-effort LLMLog write — logging must never break the actual LLM call
+    it's observing, so any failure here is swallowed (debug-logged only)."""
+    try:
+        from app import db
+        from app.models.logs import LLMLog
+        usage = getattr(adapter, "last_usage", None) or {}
+        input_tokens = usage.get("input", 0)
+        output_tokens = usage.get("output", 0)
+        cost = _estimate_llm_cost(model, input_tokens, output_tokens) if success else None
+        db.session.add(LLMLog(
+            provider=type(adapter).__name__.replace("Adapter", "").lower(),
+            model=model, session_id=session_id, run_id=run_id,
+            tokens_in=input_tokens, tokens_out=output_tokens,
+            latency_ms=latency_ms, estimated_cost_usd=cost,
+            success=success, error=(error[:2000] if error else None),
+        ))
+        db.session.commit()
+    except Exception as e:
+        log.debug("LLMLog write failed (non-fatal): %s", e)
+        try:
+            from app import db
+            db.session.rollback()
+        except Exception:
+            pass
+
+
 def _call_llm_sync(
     base_url: str,
     api_key: str,
     model: str,
     messages: list,
     tool_defs: list,
+    session_id: str | None = None,
+    run_id: str | None = None,
 ) -> tuple[str, list, int]:
     """Make a synchronous LLM call via the appropriate provider adapter.
 
     Returns (response_text, tool_calls, tokens_used).
     Raises TransientError, RoleOrderError, ContextTooLargeError, or RuntimeError.
+
+    Every call (success or failure, including individual retry attempts) is
+    logged to LLMLog via the adapter's `last_usage` — this is the single choke
+    point every LLM call in the app passes through, so it's the one place
+    that can capture usage/cost without threading session_id/run_id through
+    every caller's business logic.
     """
     from app.services.llm_adapters import get_adapter
     adapter = get_adapter(base_url, api_key, model)
-    return adapter.complete(messages, tool_defs)
+    start = time.time()
+    try:
+        result = adapter.complete(messages, tool_defs)
+    except Exception as e:
+        _log_llm_call(adapter, model, session_id, run_id,
+                      int((time.time() - start) * 1000), success=False, error=str(e))
+        raise
+    _log_llm_call(adapter, model, session_id, run_id,
+                  int((time.time() - start) * 1000), success=True)
+    return result
 
 
 def retry_with_recovery(
@@ -376,6 +442,8 @@ def retry_with_recovery(
     messages: list,
     tool_defs: list,
     max_retries: int = 3,
+    session_id: str | None = None,
+    run_id: str | None = None,
 ) -> tuple[str, list, int]:
     """Retry an LLM call with recovery strategies.
 
@@ -384,6 +452,9 @@ def retry_with_recovery(
     2. Role ordering error → drop tools from prompt → retry
     3. Context too large → compact messages → retry
     4. All else fails → raise error
+
+    `session_id`/`run_id` are optional — only used to attribute LLMLog rows,
+    never required for the call itself.
 
     Returns: (response_text, tool_calls, tokens)
     Raises: RuntimeError on unrecoverable failure
@@ -394,7 +465,8 @@ def retry_with_recovery(
     while attempts < max_retries:
         attempts += 1
         try:
-            return _call_llm_sync(base_url, api_key, model, messages, tool_defs)
+            return _call_llm_sync(base_url, api_key, model, messages, tool_defs,
+                                  session_id=session_id, run_id=run_id)
         except RecoveryError as e:
             log.warning("LLM call failed (attempt %d/%d): %s — strategy: %s",
                         attempts, max_retries, e, e.strategy)

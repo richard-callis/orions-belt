@@ -29,6 +29,36 @@ def _uuid():
     return str(uuid.uuid4())
 
 
+# ── Room busy tracking ──────────────────────────────────────────────────────
+#
+# Tracks whether _run_room_conversation/_run_goal_pursuit is currently
+# executing for a room, independent of the goal-generation mechanism (which
+# is about superseding a specific stale goal thread, not "is this room doing
+# anything right now"). Only consulted by scheduled triggers (see
+# app/services/triggers.py) to skip firing into a room with work already in
+# flight rather than piling on — a human posting a second message is
+# intentional and already handled by the existing generation/queue logic, so
+# this deliberately does NOT change that path's behavior.
+
+_room_busy: set[str] = set()
+_room_busy_lock = threading.Lock()
+
+
+def _is_room_busy(room_id: str) -> bool:
+    with _room_busy_lock:
+        return room_id in _room_busy
+
+
+def _mark_room_busy(room_id: str):
+    with _room_busy_lock:
+        _room_busy.add(room_id)
+
+
+def _mark_room_free(room_id: str):
+    with _room_busy_lock:
+        _room_busy.discard(room_id)
+
+
 def _sanitize_for_room(content: str, room_id: str) -> str:
     """Scan text for PII before it's persisted as room-message content.
 
@@ -90,6 +120,45 @@ def _post_room_system(room_id: str, text: str):
     except Exception as e:
         db.session.rollback()
         log.warning("failed to post room system message room=%s: %s", room_id, e)
+
+
+def _post_tool_activity(room_id: str, agent_id: str, tool_log: list):
+    """Persist every tool call from a reply as its own visible room message.
+
+    The agent's own final reply text is not a reliable signal of what it did —
+    it may never mention a tool call at all, let alone one that failed or was
+    refused, silently leaving the human unaware anything was even attempted.
+    Each tool call becomes a sender_type="tool" ChatRoomMessage rendered as a
+    card in the room (mirrors how the old 1:1 chat showed tool calls inline),
+    so activity is visible regardless of what the model chose to say — a
+    failed/refused call is visually distinct, not just buried in a log file.
+    """
+    if not tool_log:
+        return
+    for t in tool_log:
+        args_str = json.dumps(t.get("args") or {})
+        # Cap before persisting/scanning — a tool like read_file can return
+        # up to 64KB, and this row is display-only (the UI itself only shows
+        # the first 2000 chars), so there's no reason to store or PII-scan
+        # the full blob. Matches AgentStep.tool_output's existing 4096 cap.
+        raw_result = str(t.get("result", ""))[:4096]
+        result_str = _sanitize_for_room(raw_result, room_id)
+        content = json.dumps({
+            "tool": t.get("name", ""),
+            "args": _sanitize_for_room(args_str, room_id),
+            "tier": t.get("tier", 0),
+            "result": result_str,
+            "error": bool(t.get("error")),
+            "refused": bool(t.get("refused")),
+        })
+        db.session.add(ChatRoomMessage(
+            id=_uuid(), room_id=room_id, agent_id=agent_id,
+            sender_type="tool", content=content,
+        ))
+    room = ChatRoom.query.get(room_id)
+    if room:
+        room.updated_at = _now()
+    db.session.commit()
 
 
 def _normalize_handle(name: str) -> str:
@@ -163,30 +232,48 @@ def _build_room_history(room_id: str, agent, roster: dict, memory_context: str =
 
     msgs = [{"role": "system", "content": sys}]
     for m in history:
-        if m.sender_type == "system":
-            continue
         if m.sender_type == "agent" and m.agent_id == agent.id:
             msgs.append({"role": "assistant", "content": m.content})
         elif m.sender_type == "agent":
             label = roster.get(m.agent_id, "Another agent")
             msgs.append({"role": "user", "content": f"[{label}]: {m.content}"})
-        else:  # human
+        elif m.sender_type == "human":
             msgs.append({"role": "user", "content": m.content})
+        # else ("system", "tool"): not conversational — never replayed into
+        # an LLM turn. "tool" messages in particular carry raw, untrusted
+        # tool output (file contents, API responses); relabeling that as
+        # something the human said would both blow up context with large
+        # results and hand a prompt-injection vector straight to the model.
     return msgs
 
 
-def _generate_agent_reply(agent, provider, room_id, roster, memory_context: str = "") -> str:
+def _generate_agent_reply(agent, provider, room_id, roster, memory_context: str = "",
+                          allow_tier: int | None = None) -> str:
     """Produce one agent reply via the shared AgentRuntime (tools + tier gating).
 
-    Tools are the AGENT's (its allowed_tools). Tier 0-2 auto-run; Tier 3
-    (destructive) are refused in chat and must go through a Task.
+    Tools are the AGENT's (its allowed_tools). Tier 0-2 auto-run by default;
+    Tier 3 (destructive) are refused in chat and must go through a Task.
+    `allow_tier`, when passed, overrides chat_reply's own attended-chat
+    default — used to cap unattended/trigger-originated replies at the same
+    Tier-1 autonomous ceiling goal pursuit uses (nothing is watching a
+    scheduled trigger's output the way a human watches a chat reply).
     """
     from app.services.agents.runtime import AgentRuntime
     convo = _build_room_history(room_id, agent, roster, memory_context=memory_context)
-    return AgentRuntime(agent, provider).chat_reply(convo)
+    tool_log = []
+    kwargs = {}
+    if allow_tier is not None:
+        kwargs["allow_tier"] = allow_tier
+    # session_id/run_id here only attribute LLMLog rows for the usage dashboard
+    # (that field has no FK constraint, unlike TokenUsage.run_id) — room_id and
+    # agent.id, not literal session/run identifiers.
+    reply = AgentRuntime(agent, provider).chat_reply(
+        convo, tool_log=tool_log, session_id=room_id, run_id=agent.id, **kwargs)
+    _post_tool_activity(room_id, agent.id, tool_log)
+    return reply
 
 
-def _run_room_conversation(app, room_id: str, human_content: str):
+def _run_room_conversation(app, room_id: str, human_content: str, allow_tier: int | None = None):
     """Run one bounded burst of agent activity in response to a human message.
 
     Runs in a background thread (independent of whatever the user is viewing, so
@@ -194,8 +281,13 @@ def _run_room_conversation(app, room_id: str, human_content: str):
     @mentioned agents reply, or all agents if none were mentioned. After that,
     agents an earlier reply @mentions are pulled in — capped at _MAX_AGENT_TURNS
     total so agents can't loop forever.
+
+    `allow_tier` is None for ordinary (attended) human-triggered bursts —
+    chat_reply's own default applies. Scheduled triggers (app/services/
+    triggers.py) pass the autonomous Tier-1 ceiling explicitly.
     """
     with app.app_context():
+        _mark_room_busy(room_id)
         try:
             from app.models.agent import Agent
             from app.services.agents.runtime import resolve_active_provider
@@ -237,7 +329,8 @@ def _run_room_conversation(app, room_id: str, human_content: str):
                 if agent.id == last_id:
                     continue  # no immediate self-reply
                 try:
-                    reply = _generate_agent_reply(agent, prov, room_id, roster, memory_context=memory_context)
+                    reply = _generate_agent_reply(agent, prov, room_id, roster,
+                                                  memory_context=memory_context, allow_tier=allow_tier)
                 except Exception as e:
                     db.session.rollback()
                     log.warning("room reply failed agent=%s room=%s: %s", agent.id, room_id, e)
@@ -271,6 +364,8 @@ def _run_room_conversation(app, room_id: str, human_content: str):
                         queued_ids.add(m.id)
         except Exception as e:
             log.warning("room conversation failed room=%s: %s", room_id, e)
+        finally:
+            _mark_room_free(room_id)
 
 
 # ── Goal-driven agent pursuit ────────────────────────────────────────────────
@@ -462,6 +557,7 @@ def _run_goal_pursuit(app, room_id: str, goal_id: str, generation: int):
     AUTONOMOUS_ALLOW_TIER = TIER_HARD_STOP - 2  # Tier 1: create-only, unattended
 
     with app.app_context():
+        _mark_room_busy(room_id)
         try:
             from app.models.agent import Agent
             from app.models.chat_room_goal import ChatRoomGoal
@@ -512,7 +608,11 @@ def _run_goal_pursuit(app, room_id: str, goal_id: str, generation: int):
                 try:
                     convo = _build_goal_history(room_id, agent, roster, goal.goal_text,
                                                 feedback=feedback, memory_context=memory_context)
-                    reply = (runtime.chat_reply(convo, allow_tier=AUTONOMOUS_ALLOW_TIER) or "").strip()
+                    round_tool_log = []
+                    reply = (runtime.chat_reply(convo, allow_tier=AUTONOMOUS_ALLOW_TIER,
+                                                tool_log=round_tool_log,
+                                                session_id=room_id, run_id=agent.id) or "").strip()
+                    _post_tool_activity(room_id, agent.id, round_tool_log)
                 except Exception as e:
                     log.warning("goal pursuit round failed goal=%s room=%s: %s", goal_id, room_id, e)
                     _post_room_system(room_id, f"⚠ {agent.name} hit an error working on the goal: {str(e)[:300]}")
@@ -563,6 +663,8 @@ def _run_goal_pursuit(app, room_id: str, goal_id: str, generation: int):
             )
         except Exception as e:
             log.warning("goal pursuit failed goal=%s room=%s: %s", goal_id, room_id, e)
+        finally:
+            _mark_room_free(room_id)
 
 
 # ── Rooms CRUD ────────────────────────────────────────────────────────────────
@@ -910,5 +1012,129 @@ def delete_room_goal(goal_id):
     if not goal:
         return jsonify({"error": "Goal not found"}), 404
     db.session.delete(goal)
+    db.session.commit()
+    return "", 204
+
+
+# ── Scheduled Triggers ───────────────────────────────────────────────────────
+
+_VALID_FREQUENCIES = ("daily", "weekly")
+
+
+@bp.route("/<room_id>/triggers", methods=["GET"])
+def list_room_triggers(room_id):
+    from app.models.trigger import ScheduledTrigger
+    triggers = ScheduledTrigger.query.filter_by(room_id=room_id).order_by(
+        ScheduledTrigger.created_at.desc()
+    ).all()
+    return jsonify([t.to_dict() for t in triggers])
+
+
+@bp.route("/<room_id>/triggers", methods=["POST"])
+def create_room_trigger(room_id):
+    from app.models.trigger import ScheduledTrigger
+    from app.services.triggers import _compute_next_run
+
+    room = ChatRoom.query.get(room_id)
+    if not room:
+        return jsonify({"error": "Room not found"}), 404
+
+    body = request.get_json() or {}
+    prompt_text = (body.get("prompt_text") or "").strip()
+    if not prompt_text:
+        return jsonify({"error": "prompt_text is required"}), 400
+
+    frequency = body.get("frequency", "daily")
+    if frequency not in _VALID_FREQUENCIES:
+        return jsonify({"error": f"frequency must be one of {_VALID_FREQUENCIES}"}), 400
+
+    day_of_week = body.get("day_of_week")
+    if frequency == "weekly":
+        if day_of_week is None:
+            return jsonify({"error": "day_of_week is required for weekly triggers (0=Monday..6=Sunday)"}), 400
+        try:
+            day_of_week = int(day_of_week)
+        except (TypeError, ValueError):
+            return jsonify({"error": "day_of_week must be an integer 0-6"}), 400
+        if not (0 <= day_of_week <= 6):
+            return jsonify({"error": "day_of_week must be 0-6"}), 400
+    else:
+        day_of_week = None
+
+    try:
+        hour_utc = int(body.get("hour_utc", 9))
+    except (TypeError, ValueError):
+        return jsonify({"error": "hour_utc must be an integer 0-23"}), 400
+    if not (0 <= hour_utc <= 23):
+        return jsonify({"error": "hour_utc must be 0-23"}), 400
+
+    trigger = ScheduledTrigger(
+        room_id=room_id, prompt_text=prompt_text, frequency=frequency,
+        day_of_week=day_of_week, hour_utc=hour_utc, enabled=bool(body.get("enabled", True)),
+    )
+    trigger.next_run_at = _compute_next_run(frequency, day_of_week, hour_utc)
+    db.session.add(trigger)
+    db.session.commit()
+    return jsonify(trigger.to_dict()), 201
+
+
+@bp.route("/triggers/<trigger_id>", methods=["PATCH"])
+def update_room_trigger(trigger_id):
+    from app.models.trigger import ScheduledTrigger
+    from app.services.triggers import _compute_next_run
+
+    trigger = ScheduledTrigger.query.get(trigger_id)
+    if not trigger:
+        return jsonify({"error": "Trigger not found"}), 404
+
+    body = request.get_json() or {}
+    if "prompt_text" in body:
+        prompt_text = (body["prompt_text"] or "").strip()
+        if not prompt_text:
+            return jsonify({"error": "prompt_text cannot be empty"}), 400
+        trigger.prompt_text = prompt_text
+    if "frequency" in body:
+        if body["frequency"] not in _VALID_FREQUENCIES:
+            return jsonify({"error": f"frequency must be one of {_VALID_FREQUENCIES}"}), 400
+        trigger.frequency = body["frequency"]
+    if "day_of_week" in body:
+        day_of_week = body["day_of_week"]
+        if day_of_week is not None:
+            try:
+                day_of_week = int(day_of_week)
+            except (TypeError, ValueError):
+                return jsonify({"error": "day_of_week must be an integer 0-6"}), 400
+            if not (0 <= day_of_week <= 6):
+                return jsonify({"error": "day_of_week must be 0-6"}), 400
+        trigger.day_of_week = day_of_week
+    if "hour_utc" in body:
+        try:
+            hour_utc = int(body["hour_utc"])
+        except (TypeError, ValueError):
+            return jsonify({"error": "hour_utc must be an integer 0-23"}), 400
+        if not (0 <= hour_utc <= 23):
+            return jsonify({"error": "hour_utc must be 0-23"}), 400
+        trigger.hour_utc = hour_utc
+    if "enabled" in body:
+        trigger.enabled = bool(body["enabled"])
+
+    if trigger.frequency == "weekly" and trigger.day_of_week is None:
+        return jsonify({"error": "day_of_week is required for weekly triggers"}), 400
+
+    # Recompute next_run_at from now whenever the schedule itself changed —
+    # cheap and always correct, vs. trying to detect exactly which fields
+    # would invalidate the old value.
+    trigger.next_run_at = _compute_next_run(trigger.frequency, trigger.day_of_week, trigger.hour_utc)
+    db.session.commit()
+    return jsonify(trigger.to_dict())
+
+
+@bp.route("/triggers/<trigger_id>", methods=["DELETE"])
+def delete_room_trigger(trigger_id):
+    from app.models.trigger import ScheduledTrigger
+    trigger = ScheduledTrigger.query.get(trigger_id)
+    if not trigger:
+        return jsonify({"error": "Trigger not found"}), 404
+    db.session.delete(trigger)
     db.session.commit()
     return "", 204

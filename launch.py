@@ -77,6 +77,8 @@ def run_flask():
     # Register on-shutdown backup + periodic scheduled backups
     from app.services.backup import register_shutdown_backup, start_periodic_backups
     from app.services.retention import start_retention_service, stop_retention_service
+    from app.services.dream import start_dream_service, stop_dream_service
+    from app.services.triggers import start_trigger_service, stop_trigger_service
     from app.services.db_crypto import set_db_path, enforce_file_permissions
     from config import Config
 
@@ -87,6 +89,17 @@ def run_flask():
     # Start data retention service
     atexit.register(stop_retention_service)
     start_retention_service(interval_hours=6.0)
+
+    # Dream (lessons-learned extraction) — off by default (agents.dream_enabled
+    # setting), started unconditionally like the other periodic services but a
+    # no-op every tick until the user opts in via Settings.
+    atexit.register(stop_dream_service)
+    start_dream_service(interval_hours=2.0)
+
+    # Scheduled room triggers — always on (unlike Dream, an empty trigger
+    # list is inherently a no-op, no separate enable flag needed).
+    atexit.register(stop_trigger_service)
+    start_trigger_service(interval_minutes=15)
 
     register_shutdown_backup()
     start_periodic_backups(interval_minutes=30)
@@ -125,7 +138,7 @@ def _seed_builtin_tools(app):
             input_schema=json.dumps({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Directory path to list"},
+                    "path": {"type": "string", "description": "Absolute path to list — must be under one of the authorized directories listed in your system prompt"},
                 },
                 "required": ["path"],
             }),
@@ -200,6 +213,86 @@ def _seed_builtin_tools(app):
             }),
         ),
         dict(
+            name="create_github_issue",
+            tier=1,
+            description="Create an issue in a GitHub repository via a configured github connector",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "GitHub connector name as configured in Settings"},
+                    "owner": {"type": "string", "description": "Repository owner (user or organization)"},
+                    "repo": {"type": "string", "description": "Repository name"},
+                    "title": {"type": "string", "description": "Issue title"},
+                    "body": {"type": "string", "description": "Issue body (optional)"},
+                },
+                "required": ["connector", "owner", "repo", "title"],
+            }),
+        ),
+        dict(
+            name="create_google_task",
+            tier=1,
+            description="Create a task in Google Tasks via a configured google connector",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Google connector name as configured in Settings"},
+                    "title": {"type": "string", "description": "Task title"},
+                    "notes": {"type": "string", "description": "Task notes/description (optional)"},
+                    "due": {"type": "string", "description": "Due date as RFC 3339 timestamp, e.g. 2026-08-01T00:00:00.000Z (optional)"},
+                },
+                "required": ["connector", "title"],
+            }),
+        ),
+        dict(
+            name="post_teams_message",
+            tier=2,
+            description="Post a message to a Microsoft Teams channel via a configured microsoft_graph connector. "
+                        "Tier 2 — same class of effect as send_email (visible to other people, leaves the "
+                        "machine in the user's name), refused during unattended autonomous goal pursuit.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Microsoft Graph connector name as configured in Settings"},
+                    "team_id": {"type": "string", "description": "Microsoft Teams team ID"},
+                    "channel_id": {"type": "string", "description": "Teams channel ID within the team"},
+                    "message": {"type": "string", "description": "Message text to post"},
+                },
+                "required": ["connector", "team_id", "channel_id", "message"],
+            }),
+        ),
+        dict(
+            name="create_planner_task",
+            tier=1,
+            description="Create a task in Microsoft Planner via a configured microsoft_graph connector",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Microsoft Graph connector name as configured in Settings"},
+                    "plan_id": {"type": "string", "description": "Planner plan ID"},
+                    "title": {"type": "string", "description": "Task title"},
+                    "bucket_id": {"type": "string", "description": "Planner bucket ID (optional)"},
+                    "due_date_time": {"type": "string", "description": "Due date as RFC 3339 timestamp, e.g. 2026-08-01T00:00:00.000Z (optional)"},
+                },
+                "required": ["connector", "plan_id", "title"],
+            }),
+        ),
+        dict(
+            name="create_salesforce_record",
+            tier=2,
+            description="Create a record (Lead, Case, Account, etc.) via a configured salesforce connector. "
+                        "Tier 2 — a new record is visible org-wide by default, refused during unattended "
+                        "autonomous goal pursuit.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Salesforce connector name as configured in Settings"},
+                    "sobject_type": {"type": "string", "description": "Salesforce object API name, e.g. 'Lead', 'Case', 'Account'"},
+                    "fields": {"type": "object", "description": "Field name -> value pairs for the new record"},
+                },
+                "required": ["connector", "sobject_type", "fields"],
+            }),
+        ),
+        dict(
             name="run_sql_query",
             tier=1,
             description="Run a read-only SELECT query via a configured SQL connector",
@@ -223,6 +316,22 @@ def _seed_builtin_tools(app):
                     "count": {"type": "integer", "description": "Maximum number of emails to return (default 20)"},
                 },
                 "required": [],
+            }),
+        ),
+        dict(
+            name="send_email",
+            tier=2,
+            description="Send an email via Outlook (Windows only). Tier 2 — refused during "
+                        "unattended autonomous goal pursuit, allowed in attended chat.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "to": {"type": "string", "description": "Recipient email address(es), semicolon-separated for multiple"},
+                    "subject": {"type": "string", "description": "Email subject"},
+                    "body": {"type": "string", "description": "Email body text"},
+                    "cc": {"type": "string", "description": "CC address(es), optional"},
+                },
+                "required": ["to", "subject", "body"],
             }),
         ),
         dict(
@@ -321,7 +430,7 @@ def _seed_builtin_tools(app):
             input_schema=json.dumps({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Directory path to create"},
+                    "path": {"type": "string", "description": "Absolute path to create — must be under one of the authorized directories listed in your system prompt"},
                 },
                 "required": ["path"],
             }),
@@ -357,10 +466,19 @@ def _seed_builtin_tools(app):
         existing = MCPTool.query.filter_by(name=tool_def["name"]).first()
         if not existing:
             db.session.add(MCPTool(source="builtin", **tool_def))
-        elif not existing.input_schema or existing.input_schema in ("{}", ""):
+            continue
+        if not existing.input_schema or existing.input_schema in ("{}", ""):
             # Patch tools created by the old schema-less seeder
             existing.input_schema = tool_def["input_schema"]
             existing.description = tool_def["description"]
+        if existing.source == "builtin" and existing.tier != tool_def["tier"]:
+            # Tier is code-defined for builtin tools — there's no route to
+            # customize it per-install, so an existing row must keep
+            # tracking the current code's tier, not freeze at whatever it
+            # was when the row was first created. Without this, correcting
+            # a builtin tool's tier (e.g. Tier 1 -> 2) never actually takes
+            # effect on any DB that already seeded the row.
+            existing.tier = tool_def["tier"]
     db.session.commit()
 
 

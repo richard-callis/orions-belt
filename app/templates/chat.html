@@ -111,6 +111,14 @@
       <!-- Goal panel -->
       <div id="room-goal-panel" class="hidden flex-shrink-0 px-4 py-2.5 border-b border-border-subtle bg-bg-sidebar"></div>
 
+      <!-- Scheduled triggers -->
+      <div class="flex-shrink-0 px-4 py-1.5 border-b border-border-subtle bg-bg-sidebar flex items-center gap-2">
+        <i data-lucide="clock" class="w-3 h-3 text-text-muted flex-shrink-0"></i>
+        <div id="room-triggers-summary" class="text-xs text-text-muted flex-1 min-w-0"></div>
+        <button onclick="showAddTriggerForm()" class="text-[11px] text-accent hover:underline flex-shrink-0">+ Trigger</button>
+      </div>
+      <div id="room-triggers-panel" class="hidden flex-shrink-0 px-4 py-2.5 border-b border-border-subtle bg-bg-sidebar"></div>
+
       <!-- Messages -->
       <div class="flex-1 relative min-h-0">
         <div id="room-empty-state"
@@ -441,6 +449,7 @@ async function switchToRoom(roomId) {
   renderRoomHeader(room);
   renderRoomMessages(room.messages || []);
   loadRoomGoal(roomId);
+  loadRoomTriggers(roomId);
 
   const msgs = room.messages || [];
   lastMsgTime = msgs.length ? msgs[msgs.length - 1].created_at : null;
@@ -606,6 +615,112 @@ window.showSetGoalForm = showSetGoalForm;
 window.submitRoomGoal = submitRoomGoal;
 window.cancelRoomGoal = cancelRoomGoal;
 
+// ── Scheduled triggers ───────────────────────────────────────────────────────
+
+const _DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+async function loadRoomTriggers(roomId) {
+  try {
+    const triggers = await fetch(`/api/chat-rooms/${roomId}/triggers`).then(r => r.json());
+    const summary = document.getElementById('room-triggers-summary');
+    const enabledCount = (triggers || []).filter(t => t.enabled).length;
+    summary.textContent = enabledCount
+      ? `${enabledCount} scheduled trigger${enabledCount === 1 ? '' : 's'}`
+      : 'No scheduled triggers';
+    renderRoomTriggersList(roomId, triggers || []);
+  } catch (e) { console.error('Failed to load triggers:', e); }
+}
+
+function renderRoomTriggersList(roomId, triggers) {
+  const panel = document.getElementById('room-triggers-panel');
+  if (!triggers.length) { panel.classList.add('hidden'); panel.innerHTML = ''; return; }
+  panel.classList.remove('hidden');
+  panel.innerHTML = triggers.map(t => {
+    const when = t.frequency === 'weekly'
+      ? `${_DAY_NAMES[t.day_of_week ?? 0]} ${String(t.hour_utc).padStart(2, '0')}:00 UTC weekly`
+      : `${String(t.hour_utc).padStart(2, '0')}:00 UTC daily`;
+    return `
+      <div class="flex items-center gap-2 px-2.5 py-1.5 rounded bg-bg-raised text-xs mb-1.5">
+        <div class="flex-1 min-w-0">
+          <div class="text-text-primary truncate">${escHtml(t.prompt_text)}</div>
+          <div class="text-[10px] text-text-muted">${when}${t.enabled ? '' : ' · disabled'}</div>
+        </div>
+        <button onclick="toggleRoomTrigger('${t.id}', ${!t.enabled}, '${roomId}')" class="text-text-muted hover:text-accent flex-shrink-0">${t.enabled ? 'Pause' : 'Resume'}</button>
+        <button onclick="deleteRoomTrigger('${t.id}', '${roomId}')" class="text-status-error hover:underline flex-shrink-0">Delete</button>
+      </div>`;
+  }).join('');
+}
+
+function showAddTriggerForm() {
+  if (!currentRoom) return;
+  const panel = document.getElementById('room-triggers-panel');
+  panel.classList.remove('hidden');
+  panel.innerHTML = `
+    <div class="space-y-2">
+      <input id="trigger-prompt-input" type="text" placeholder="What should the agents do? (e.g. write this week's status report)"
+             class="w-full px-2.5 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent" />
+      <div class="flex items-center gap-2">
+        <select id="trigger-frequency-input" onchange="document.getElementById('trigger-day-input').classList.toggle('hidden', this.value !== 'weekly')"
+                class="px-2 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary">
+          <option value="daily">Daily</option>
+          <option value="weekly">Weekly</option>
+        </select>
+        <select id="trigger-day-input" class="hidden px-2 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary">
+          ${_DAY_NAMES.map((d, i) => `<option value="${i}">${d}</option>`).join('')}
+        </select>
+        <select id="trigger-hour-input" class="px-2 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary">
+          ${Array.from({length: 24}, (_, h) => `<option value="${h}" ${h === 9 ? 'selected' : ''}>${String(h).padStart(2, '0')}:00 UTC</option>`).join('')}
+        </select>
+      </div>
+      <div class="flex items-center gap-2">
+        <button onclick="submitRoomTrigger('${currentRoom.id}')" class="px-3 py-1.5 rounded text-xs bg-accent/15 text-accent hover:bg-accent/30 transition-colors">Add trigger</button>
+        <button onclick="loadRoomTriggers('${currentRoom.id}')" class="px-3 py-1.5 rounded text-xs text-text-muted hover:text-text-primary transition-colors">Cancel</button>
+      </div>
+    </div>`;
+  document.getElementById('trigger-prompt-input').focus();
+}
+
+async function submitRoomTrigger(roomId) {
+  const promptText = document.getElementById('trigger-prompt-input').value.trim();
+  if (!promptText) return;
+  const frequency = document.getElementById('trigger-frequency-input').value;
+  const dayOfWeek = document.getElementById('trigger-day-input').value;
+  const hourUtc = document.getElementById('trigger-hour-input').value;
+  try {
+    await fetch(`/api/chat-rooms/${roomId}/triggers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt_text: promptText, frequency, hour_utc: parseInt(hourUtc, 10),
+        day_of_week: frequency === 'weekly' ? parseInt(dayOfWeek, 10) : undefined,
+      }),
+    });
+  } catch (e) { console.error('Failed to create trigger:', e); }
+  loadRoomTriggers(roomId);
+}
+
+async function toggleRoomTrigger(triggerId, enabled, roomId) {
+  try {
+    await fetch(`/api/chat-rooms/triggers/${triggerId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    });
+  } catch (e) { console.error('Failed to update trigger:', e); }
+  loadRoomTriggers(roomId);
+}
+
+async function deleteRoomTrigger(triggerId, roomId) {
+  try {
+    await fetch(`/api/chat-rooms/triggers/${triggerId}`, { method: 'DELETE' });
+  } catch (e) { console.error('Failed to delete trigger:', e); }
+  loadRoomTriggers(roomId);
+}
+window.showAddTriggerForm = showAddTriggerForm;
+window.submitRoomTrigger = submitRoomTrigger;
+window.toggleRoomTrigger = toggleRoomTrigger;
+window.deleteRoomTrigger = deleteRoomTrigger;
+
 function renderRoomHeader(room) {
   const meta = ROOM_COLORS[room.room_type] || ROOM_COLORS.general;
   document.getElementById('room-name').textContent = room.name;
@@ -674,6 +789,39 @@ function appendRoomMessage(msg, scroll = true) {
         <span class="text-[10px] text-text-muted px-1">${timeAgo(msg.created_at)}</span>
       </div>`;
     renderMarkdownInto(div.querySelector('.md-body'), msg.content);
+
+  } else if (msg.sender_type === 'tool') {
+    // Tool call card — shows what an agent actually did, regardless of
+    // whether its final reply text mentions it. A failed/refused call is
+    // visually distinct (red/amber), not just buried in a log file.
+    let data;
+    try { data = JSON.parse(msg.content); } catch (e) { data = {}; }
+    const badge = data.refused
+      ? { text: 'Refused', cls: 'border-status-error/40 text-status-error' }
+      : data.error
+      ? { text: 'Error', cls: 'border-status-error/40 text-status-error' }
+      : { text: `Tier ${data.tier ?? 0}`, cls: `tier-${data.tier ?? 0}` };
+    const boxCls = (data.refused || data.error)
+      ? 'border-status-error/30 bg-status-error/5'
+      : 'border-status-info/30 bg-status-info/5';
+    const headerCls = (data.refused || data.error)
+      ? 'border-status-error/20 bg-status-error/10'
+      : 'border-status-info/20 bg-status-info/10';
+    const iconCls = (data.refused || data.error) ? 'text-status-error' : 'text-status-info';
+    div.className = 'flex justify-start w-full';
+    div.innerHTML = `
+      <div class="max-w-[85%] w-full flex flex-col gap-1 min-w-0">
+        <span class="text-[10px] text-text-muted px-1">${escHtml(msg.agent_name || 'Agent')} used a tool</span>
+        <div class="w-full rounded-lg border ${boxCls} text-xs overflow-hidden">
+          <div class="flex items-center gap-2 px-3 py-1.5 border-b ${headerCls}">
+            <i data-lucide="terminal" class="w-3 h-3 ${iconCls}"></i>
+            <span class="font-mono ${iconCls}">${escHtml(data.tool || 'tool')}</span>
+            <span class="ml-auto px-1.5 py-0.5 rounded text-[10px] border ${badge.cls}">${badge.text}</span>
+          </div>
+          <div class="px-3 py-2 font-mono text-text-secondary break-all">${escHtml(data.args || '{}')}</div>
+          <div class="px-3 py-2 border-t ${headerCls} font-mono text-text-muted whitespace-pre-wrap max-h-48 overflow-y-auto">${escHtml((data.result || '').slice(0, 2000))}</div>
+        </div>
+      </div>`;
   }
 
   container.appendChild(div);

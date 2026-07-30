@@ -18,7 +18,7 @@ def create_app(config_object="config.Config"):
     with app.app_context():
         from app.models import (  # noqa: F401
             chat, work, agent, knowledge, connector, mcp_tool, memory, logs, pii, settings, nova,
-            chat_room, chat_room_goal
+            chat_room, chat_room_goal, dream, trigger
         )
 
     # Register blueprints
@@ -37,6 +37,8 @@ def create_app(config_object="config.Config"):
     from app.routes.system import bp as system_bp
     from app.routes.knowledge import bp as knowledge_bp
     from app.routes.pii import bp as pii_bp
+    from app.routes.usage import bp as usage_bp
+    from app.routes.dream import bp as dream_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(chat_bp)
@@ -53,6 +55,8 @@ def create_app(config_object="config.Config"):
     app.register_blueprint(system_bp)
     app.register_blueprint(knowledge_bp)
     app.register_blueprint(pii_bp)
+    app.register_blueprint(usage_bp)
+    app.register_blueprint(dream_bp)
 
     # ── Plugin system — load extensions at startup ─────────────────────────────
     try:
