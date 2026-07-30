@@ -92,6 +92,45 @@ class TestUnknownToolNameRefused:
                     db.session.delete(agent2)
                 db.session.commit()
 
+    def test_repeated_hallucinated_call_trips_loop_detection_not_iteration_exhaustion(self, app, monkeypatch):
+        """If a model keeps emitting the same unknown tool name, it must
+        trip loop detection (and stop) once it repeats past the threshold —
+        not get individually refused as "not available" on every single one
+        of max_tool_iters iterations before finally running out on its own.
+        Loop detection is checked before the unknown-name refusal for
+        exactly this reason."""
+        import app.services.llm as llm_mod
+
+        def fake_retry(*a, **k):
+            return "trying again", [{"id": "1", "name": "not_a_real_tool", "args": {"x": 1}}], 1
+
+        called = {"n": 0}
+        def spy_run_tool(self, *a, **k):
+            called["n"] += 1
+            return "should never run"
+
+        monkeypatch.setattr(llm_mod, "build_tool_definitions", lambda tools: [])
+        monkeypatch.setattr(llm_mod, "retry_with_recovery", fake_retry)
+        monkeypatch.setattr(AgentRuntime, "run_tool", spy_run_tool)
+        with app.app_context():
+            agent = _real_agent(id="ra-unknown2")
+            db.session.add(agent)
+            db.session.commit()
+            try:
+                rt = AgentRuntime(agent, provider={"base_url": "x", "api_key": "y", "model": "m"})
+                tool_log = []
+                rt.chat_reply([{"role": "system", "content": "hi"}], max_tool_iters=10, tool_log=tool_log)
+                assert called["n"] == 0
+                assert len(tool_log) < 10   # stopped well before exhausting max_tool_iters
+                assert "loop" in tool_log[-1]["result"].lower()
+            finally:
+                from app.models.agent import TokenUsage
+                TokenUsage.query.filter_by(agent_id="ra-unknown2").delete()
+                agent2 = db.session.get(type(agent), "ra-unknown2")
+                if agent2:
+                    db.session.delete(agent2)
+                db.session.commit()
+
 
 class TestAuthorizedDirsBlock:
     def test_empty_when_agent_has_no_file_tools(self, app):

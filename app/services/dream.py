@@ -73,11 +73,14 @@ def _strip_markers(text: str) -> str:
     # A single left-to-right .replace() pass can leave a *new* marker
     # instance behind when removing one occurrence joins two fragments back
     # into the literal marker text (e.g. "...Memory Con" + "text ---" ->
-    # "...Memory Context ---"). Loop to a fixed point so no marker substring
-    # survives, however it was assembled.
-    for marker in _MEMORY_MARKERS:
-        while marker in text:
-            text = text.replace(marker, "")
+    # "...Memory Context ---"). Looping per-marker isn't enough either —
+    # clearing marker B can just as easily reconstruct marker A after A's
+    # own pass already finished. Loop over the whole text, across both
+    # markers, until neither is present anywhere at all.
+    while _contains_marker(text):
+        for marker in _MEMORY_MARKERS:
+            while marker in text:
+                text = text.replace(marker, "")
     return text
 
 
@@ -129,10 +132,17 @@ def _build_corpus() -> tuple[str, str | None]:
             query = query.filter(ChatRoomMessage.created_at > since)
         except ValueError:
             pass
-    rows = query.order_by(ChatRoomMessage.created_at.desc()).limit(_MAX_CORPUS_MESSAGES).all()
+    # Oldest-first, not newest-first: when the backlog since the watermark
+    # exceeds _MAX_CORPUS_MESSAGES, taking the newest 200 would silently
+    # drop everything older than that window from ever being extracted —
+    # the watermark would then advance past those dropped rows too (to the
+    # last one actually included, itself newer than all of them), and the
+    # next tick's query only looks *after* the watermark, so they can never
+    # be revisited. Oldest-first means a big backlog is worked through a
+    # window at a time, in order, with nothing skipped.
+    rows = query.order_by(ChatRoomMessage.created_at.asc()).limit(_MAX_CORPUS_MESSAGES).all()
     if not rows:
         return "", None
-    rows.reverse()  # chronological order for the prompt
 
     # Nonce-delimited so the corpus can't be confused with the instructions
     # around it — mirrors the same "don't let untrusted text look like

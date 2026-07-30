@@ -23,6 +23,20 @@ class TestStripMarkers:
     def test_leaves_normal_text_unchanged(self):
         assert dream_mod._strip_markers("just a normal lesson") == "just a normal lesson"
 
+    def test_survives_cross_marker_reconstruction_attempt(self):
+        # Clearing marker B can reconstruct marker A the same way a naive
+        # single pass on one marker can reconstruct itself (see the test
+        # above) — a per-marker-only fixed point stops as soon as A's own
+        # while-loop is done and never revisits it after B's pass runs.
+        m1 = dream_mod._MEMORY_MARKERS[0]  # "--- Relevant Context from Memory ---"
+        m2 = dream_mod._MEMORY_MARKERS[1]  # "--- End of Memory Context ---"
+        k = len(m1) // 2
+        text = m1[:k] + m2 + m1[k:]
+        assert m1[:k] + m1[k:] == m1  # sanity: removing m2 alone reconstructs m1 whole
+        stripped = dream_mod._strip_markers(text)
+        assert m1 not in stripped
+        assert m2 not in stripped
+
     def test_survives_nested_reconstruction_attempt(self):
         # A naive single .replace() pass removes the embedded marker and, in
         # doing so, joins the surrounding fragments back into a fresh
@@ -185,6 +199,39 @@ class TestBuildCorpus:
                 newest = ChatRoomMessage.query.get(f"{rid}-{n - 1}")
                 if included_indices[-1] != n - 1:
                     assert latest != newest.created_at.isoformat()
+            finally:
+                self._cleanup(rid)
+
+    def test_row_cap_takes_the_oldest_backlog_first_not_the_newest(self, app):
+        """The same permanent-skip failure as the char-budget case, but from
+        the _MAX_CORPUS_MESSAGES row cap: with more than 200 messages
+        pending since the watermark, taking the NEWEST 200 (as a
+        desc-order-then-reverse query does) would drop everything older
+        than that window from ever being extracted, since the watermark
+        only advances forward and the next tick's query only looks *after*
+        it. Taking the OLDEST 200 instead means a large backlog is worked
+        through in order, one window at a time, with nothing skipped."""
+        with app.app_context():
+            rid = "r-corpus-rowcap"
+            room = ChatRoom(id=rid, name=rid)
+            db.session.add(room)
+            n = dream_mod._MAX_CORPUS_MESSAGES + 50
+            for i in range(n):
+                db.session.add(ChatRoomMessage(
+                    id=f"{rid}-{i}", room_id=rid, sender_type="human", content=f"MSG-{i:03d}",
+                ))
+            db.session.commit()
+            try:
+                corpus, latest = dream_mod._build_corpus()
+                included_indices = [i for i in range(n) if f"MSG-{i:03d}" in corpus]
+                assert included_indices == list(range(dream_mod._MAX_CORPUS_MESSAGES)), (
+                    "expected exactly the oldest _MAX_CORPUS_MESSAGES messages, in order"
+                )
+
+                oldest_excluded = ChatRoomMessage.query.get(f"{rid}-{dream_mod._MAX_CORPUS_MESSAGES}")
+                # The next tick must still be able to see the messages this
+                # one couldn't fit — i.e. the watermark must land BEFORE them.
+                assert latest < oldest_excluded.created_at.isoformat()
             finally:
                 self._cleanup(rid)
 

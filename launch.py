@@ -466,10 +466,19 @@ def _seed_builtin_tools(app):
         existing = MCPTool.query.filter_by(name=tool_def["name"]).first()
         if not existing:
             db.session.add(MCPTool(source="builtin", **tool_def))
-        elif not existing.input_schema or existing.input_schema in ("{}", ""):
+            continue
+        if not existing.input_schema or existing.input_schema in ("{}", ""):
             # Patch tools created by the old schema-less seeder
             existing.input_schema = tool_def["input_schema"]
             existing.description = tool_def["description"]
+        if existing.source == "builtin" and existing.tier != tool_def["tier"]:
+            # Tier is code-defined for builtin tools — there's no route to
+            # customize it per-install, so an existing row must keep
+            # tracking the current code's tier, not freeze at whatever it
+            # was when the row was first created. Without this, correcting
+            # a builtin tool's tier (e.g. Tier 1 -> 2) never actually takes
+            # effect on any DB that already seeded the row.
+            existing.tier = tool_def["tier"]
     db.session.commit()
 
 

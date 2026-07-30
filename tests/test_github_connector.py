@@ -42,6 +42,15 @@ class TestIsSafePathSegment:
         assert mcp_tools._is_safe_path_segment("My_Custom__c") is True
         assert mcp_tools._is_safe_path_segment("19:abc123@thread.tacv2") is True
 
+    def test_rejects_url_structural_characters(self):
+        # A value like "acme?x=" would still truncate the interpolated URL
+        # at the query-string boundary and redirect the credentialed request
+        # to a different path on the same trusted host — the '/'/'..' block
+        # alone doesn't stop that.
+        assert mcp_tools._is_safe_path_segment("acme?x=y") is False
+        assert mcp_tools._is_safe_path_segment("acme#frag") is False
+        assert mcp_tools._is_safe_path_segment("acme%2F..%2Fsecret") is False
+
 
 class TestGithubConnectorType:
     def test_create_connector_accepts_github_type(self, app, client):

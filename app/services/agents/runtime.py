@@ -174,7 +174,18 @@ class AgentRuntime:
 
                     sig = _compute_checkpoint_hash(name, args)
                     call_counts[sig] = call_counts.get(sig, 0) + 1
-                    if name not in tier_map:
+                    # Loop detection is checked FIRST, ahead of the
+                    # unknown-name refusal below — a model repeating the same
+                    # hallucinated name must still trip and stop, rather than
+                    # getting individually refused on every one of
+                    # max_tool_iters iterations before finally running out.
+                    if call_counts[sig] > _MAX_REPEATED_TOOL_CALLS:
+                        result = (f"[Refused] '{name}' called with the same arguments "
+                                  f"{_MAX_REPEATED_TOOL_CALLS}+ times in a row — stopping to "
+                                  "avoid a loop. Try a different approach.")
+                        looping = True
+                        tier = tier_map.get(name, 0)
+                    elif name not in tier_map:
                         # A model can emit a tool name it was never given a
                         # schema for (hallucinated, or named by something else
                         # in context) — defaulting an unknown name to tier 0
@@ -183,12 +194,6 @@ class AgentRuntime:
                         # is the source of truth for what it may use at all.
                         result = f"[Refused] '{name}' is not available to this agent."
                         tier = 0
-                    elif call_counts[sig] > _MAX_REPEATED_TOOL_CALLS:
-                        result = (f"[Refused] '{name}' called with the same arguments "
-                                  f"{_MAX_REPEATED_TOOL_CALLS}+ times in a row — stopping to "
-                                  "avoid a loop. Try a different approach.")
-                        looping = True
-                        tier = tier_map[name]
                     else:
                         tier = tier_map[name]
                         result = self.run_tool(

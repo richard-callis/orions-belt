@@ -911,13 +911,18 @@ def _is_safe_path_segment(value: str) -> bool:
     real provider ids are not simple alnum/dash tokens (a Microsoft Graph
     Teams channel id looks like "19:abc123@thread.tacv2"), so an allowlist
     would reject genuine values. What every real id has in common is that it
-    never needs a path separator or a ".." segment, so that's what's blocked.
+    never needs a path separator, a ".." segment, or a URL-structural
+    character (query string, fragment, percent-encoding) — none of those
+    blocked characters appear in a genuine id from any provider this app
+    talks to, so refusing them can't reject a real value.
     """
     if not value or "\x00" in value:
         return False
     if "/" in value or "\\" in value:
         return False
     if ".." in value:
+        return False
+    if any(c in value for c in "?#%"):
         return False
     return not any(c.isspace() for c in value)
 
@@ -1096,7 +1101,7 @@ async def _handle_create_github_issue(tool_name: str, args: dict) -> str:
     if not title:
         return "Error: title is required"
     if not _is_safe_path_segment(owner) or not _is_safe_path_segment(repo):
-        return "Error: owner and repo must not contain '/', '\\', whitespace, or '..'"
+        return "Error: owner and repo must not contain '/', '\\', whitespace, '..', '?', '#', or '%'"
 
     connector = _get_connector(connector_name)
     if not connector:
@@ -1229,7 +1234,7 @@ async def _handle_post_teams_message(tool_name: str, args: dict) -> str:
     if not message:
         return "Error: message is required"
     if not _is_safe_path_segment(team_id) or not _is_safe_path_segment(channel_id):
-        return "Error: team_id and channel_id must not contain '/', '\\', whitespace, or '..'"
+        return "Error: team_id and channel_id must not contain '/', '\\', whitespace, '..', '?', '#', or '%'"
 
     access_token, err = _get_graph_connector_and_token(connector_name)
     if err:
@@ -1306,7 +1311,7 @@ async def _handle_create_salesforce_record(tool_name: str, args: dict) -> str:
     if not isinstance(fields, dict) or not fields:
         return "Error: fields is required and must be a non-empty object of field name -> value"
     if not _is_safe_path_segment(sobject_type):
-        return "Error: sobject_type must not contain '/', '\\', whitespace, or '..'"
+        return "Error: sobject_type must not contain '/', '\\', whitespace, '..', '?', '#', or '%'"
 
     conn = Connector.query.filter_by(name=connector_name, enabled=True).first()
     if not conn:

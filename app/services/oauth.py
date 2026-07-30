@@ -92,6 +92,16 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
     """Handles exactly one GET /callback, then the server that owns this
     handler is shut down by the caller."""
 
+    # BaseServer.timeout (set on the server, per accept-loop iteration in
+    # _run_loopback_listener) only bounds how long handle_request() waits
+    # for a NEW connection — once one is accepted, StreamRequestHandler
+    # applies THIS timeout to the connection's socket ops. Without it, a
+    # client that opens the port and never sends a request line (or sends it
+    # arbitrarily slowly) blocks handle_request() indefinitely, past both the
+    # overall flow deadline and the flow-cleanup retention window, since
+    # neither is ever re-checked until handle_request() returns.
+    timeout = 10
+
     def do_GET(self):  # noqa: N802 - required name by BaseHTTPRequestHandler
         parsed = urlparse(self.path)
         if parsed.path != "/callback":

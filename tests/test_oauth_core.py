@@ -539,6 +539,73 @@ class TestLoopbackListenerRealSocket:
             with oauth_mod._flows_lock:
                 oauth_mod._flows.pop(flow_id, None)
 
+    def test_callback_handler_has_a_bounded_socket_timeout(self):
+        # A behavioral test alone can't distinguish "the fix is in source"
+        # from "this test's own monkeypatch happens to set one" — _CallbackHandler
+        # inherits BaseRequestHandler.timeout = None either way, so
+        # monkeypatch.setattr succeeds (and masks a missing fix) regardless.
+        # Pin the actual configured default directly.
+        assert oauth_mod._CallbackHandler.timeout is not None
+        assert oauth_mod._CallbackHandler.timeout <= 30
+
+    def test_connected_but_silent_client_does_not_hang_the_listener(self, app, monkeypatch):
+        # server.timeout only bounds the wait for a NEW connection to arrive
+        # — once accepted, a client that opens the socket and never sends a
+        # request line would otherwise block handle_request() forever
+        # (StreamRequestHandler has no per-connection read timeout by
+        # default), starving both the overall flow deadline and the
+        # eventual /callback from ever being processed. Shrink the handler's
+        # timeout so this test doesn't have to wait out the real default.
+        monkeypatch.setattr(oauth_mod._CallbackHandler, "timeout", 0.3)
+        with app.app_context():
+            c = Connector(id="oauth-loop5", name="oauth-loop5", connector_type="google")
+            c.set_auth({"client_id": "cid", "client_secret": "secret"})
+            db.session.add(c)
+            db.session.commit()
+
+        monkeypatch.setattr(oauth_mod, "exchange_code_for_tokens",
+                            lambda *a, **k: {"access_token": "a", "refresh_token": "b", "expires_in": 3600})
+        monkeypatch.setattr(oauth_mod.webbrowser, "open", lambda url: None)
+
+        try:
+            with app.app_context():
+                result = oauth_mod.start_oauth_flow(
+                    "oauth-loop5", "https://provider.example/authorize", "https://provider.example/token",
+                    "cid", "secret", "some.scope",
+                )
+            flow_id = result["flow_id"]
+            with oauth_mod._flows_lock:
+                flow = oauth_mod._flows[flow_id]
+            port = flow["port"]
+            state = flow["state"]
+
+            # Connect and send nothing — never even a request line.
+            silent = socket.create_connection(("127.0.0.1", port), timeout=2)
+            try:
+                time.sleep(1)  # well past the shrunk 0.3s handler timeout
+                # The listener must have moved on and still be waiting for
+                # the real callback, not stuck inside the silent connection.
+                assert oauth_mod.get_oauth_flow_status(flow_id)["status"] == "waiting"
+            finally:
+                silent.close()
+
+            urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/callback?code=test-code&state={state}", timeout=2)
+
+            deadline = time.time() + 5
+            status = oauth_mod.get_oauth_flow_status(flow_id)
+            while status["status"] not in ("connected", "error") and time.time() < deadline:
+                time.sleep(0.05)
+                status = oauth_mod.get_oauth_flow_status(flow_id)
+
+            assert status["status"] == "connected", status
+        finally:
+            with app.app_context():
+                Connector.query.filter_by(id="oauth-loop5").delete()
+                db.session.commit()
+            with oauth_mod._flows_lock:
+                oauth_mod._flows.pop(flow_id, None)
+
 
 class TestScheduleFlowCleanup:
     def test_flow_removed_after_delay(self):
