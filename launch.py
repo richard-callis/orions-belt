@@ -78,6 +78,7 @@ def run_flask():
     from app.services.backup import register_shutdown_backup, start_periodic_backups
     from app.services.retention import start_retention_service, stop_retention_service
     from app.services.dream import start_dream_service, stop_dream_service
+    from app.services.triggers import start_trigger_service, stop_trigger_service
     from app.services.db_crypto import set_db_path, enforce_file_permissions
     from config import Config
 
@@ -94,6 +95,11 @@ def run_flask():
     # no-op every tick until the user opts in via Settings.
     atexit.register(stop_dream_service)
     start_dream_service(interval_hours=2.0)
+
+    # Scheduled room triggers — always on (unlike Dream, an empty trigger
+    # list is inherently a no-op, no separate enable flag needed).
+    atexit.register(stop_trigger_service)
+    start_trigger_service(interval_minutes=15)
 
     register_shutdown_backup()
     start_periodic_backups(interval_minutes=30)
