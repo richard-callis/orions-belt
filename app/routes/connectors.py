@@ -35,8 +35,8 @@ def create_connector():
 
     if not name:
         return jsonify({"error": "name is required"}), 400
-    if connector_type not in ("rest_api", "sql_server", "outlook", "azure_devops"):
-        return jsonify({"error": "connector_type must be rest_api, sql_server, outlook, or azure_devops"}), 400
+    if connector_type not in ("rest_api", "sql_server", "outlook", "azure_devops", "github"):
+        return jsonify({"error": "connector_type must be rest_api, sql_server, outlook, azure_devops, or github"}), 400
     if Connector.query.filter_by(name=name).first():
         return jsonify({"error": f"Connector '{name}' already exists"}), 409
 
@@ -143,6 +143,8 @@ def test_connector(connector_id):
             return _test_outlook(c)
         elif c.connector_type == "azure_devops":
             return _test_azure_devops(c)
+        elif c.connector_type == "github":
+            return _test_github(c)
         else:
             return jsonify({"ok": False, "message": f"Unknown type: {c.connector_type}"}), 400
     except Exception as e:
@@ -230,6 +232,31 @@ def _test_azure_devops(c: Connector):
             resp = client.get(url, headers=headers)
         if resp.status_code == 401:
             return jsonify({"ok": False, "message": "Auth failed (401) — check the personal access token"})
+        return jsonify({"ok": resp.status_code < 500, "message": f"HTTP {resp.status_code}"})
+    except httpx.ConnectError as e:
+        return jsonify({"ok": False, "message": f"Connection refused: {e}"})
+    except httpx.TimeoutException:
+        return jsonify({"ok": False, "message": "Connection timed out (10s)"})
+
+
+def _test_github(c: Connector):
+    from app.services.connector_auth import build_auth_headers
+
+    auth = c.get_auth()
+    if not auth.get("pat"):
+        return jsonify({"ok": False, "message": "No personal access token configured"}), 200
+
+    import httpx
+    headers = build_auth_headers("bearer", {"token": auth["pat"]})
+    headers["Accept"] = "application/vnd.github+json"
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get("https://api.github.com/user", headers=headers)
+        if resp.status_code == 401:
+            return jsonify({"ok": False, "message": "Auth failed (401) — check the personal access token"})
+        if resp.status_code == 200:
+            login = resp.json().get("login", "?")
+            return jsonify({"ok": True, "message": f"Authenticated as {login}"})
         return jsonify({"ok": resp.status_code < 500, "message": f"HTTP {resp.status_code}"})
     except httpx.ConnectError as e:
         return jsonify({"ok": False, "message": f"Connection refused: {e}"})

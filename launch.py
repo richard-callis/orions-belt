@@ -200,6 +200,22 @@ def _seed_builtin_tools(app):
             }),
         ),
         dict(
+            name="create_github_issue",
+            tier=1,
+            description="Create an issue in a GitHub repository via a configured github connector",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "GitHub connector name as configured in Settings"},
+                    "owner": {"type": "string", "description": "Repository owner (user or organization)"},
+                    "repo": {"type": "string", "description": "Repository name"},
+                    "title": {"type": "string", "description": "Issue title"},
+                    "body": {"type": "string", "description": "Issue body (optional)"},
+                },
+                "required": ["connector", "owner", "repo", "title"],
+            }),
+        ),
+        dict(
             name="run_sql_query",
             tier=1,
             description="Run a read-only SELECT query via a configured SQL connector",

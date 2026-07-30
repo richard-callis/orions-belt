@@ -248,6 +248,7 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         "create_excel": _handle_create_excel,
         "create_pdf": _handle_create_pdf,
         "create_ado_workitem": _handle_create_ado_workitem,
+        "create_github_issue": _handle_create_github_issue,
         # Tier 2: modify operations
         "modify_file": _handle_modify_file,
         "create_directory": _handle_create_directory,
@@ -1047,6 +1048,57 @@ async def _handle_create_ado_workitem(tool_name: str, args: dict) -> str:
         return f"Error: ADO returned HTTP {resp.status_code}\n{resp.text[:1000]}"
     except Exception as e:
         return f"Error creating ADO work item: {e}"
+
+
+async def _handle_create_github_issue(tool_name: str, args: dict) -> str:
+    """Create an issue in a GitHub repository via a configured github connector."""
+    connector_name = args.get("connector", "")
+    owner = (args.get("owner") or "").strip()
+    repo = (args.get("repo") or "").strip()
+    title = (args.get("title") or "").strip()
+    body = args.get("body") or ""
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not owner:
+        return "Error: owner is required"
+    if not repo:
+        return "Error: repo is required"
+    if not title:
+        return "Error: title is required"
+
+    connector = _get_connector(connector_name)
+    if not connector:
+        return f"Error: connector '{connector_name}' not found"
+    if connector["type"] != "github":
+        return f"Error: connector '{connector_name}' is not a github connector"
+
+    pat = (connector.get("auth") or {}).get("pat")
+    if not pat:
+        return f"Error: connector '{connector_name}' has no personal access token configured"
+
+    from app.services.connector_auth import build_auth_headers
+
+    url = f"https://api.github.com/repos/{owner}/{repo}/issues"
+    headers = build_auth_headers("bearer", {"token": pat})
+    headers["Accept"] = "application/vnd.github+json"
+
+    payload = {"title": title}
+    if body:
+        payload["body"] = body
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code == 201:
+            data = resp.json()
+            number = data.get("number")
+            html_url = data.get("html_url", "")
+            return f"Created issue #{number} in {owner}/{repo}: {title}\n{html_url}"
+        return f"Error: GitHub returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error creating GitHub issue: {e}"
 
 
 async def _handle_search_emails(tool_name: str, args: dict) -> str:

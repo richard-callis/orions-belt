@@ -31,6 +31,7 @@
         ('mail', 'Outlook', 'Windows COM automation — read emails, search calendar, access contacts. Read-only.'),
         ('database', 'SQL Server', 'pyodbc connection — run SELECT queries, inspect schema, export results.'),
         ('kanban-square', 'Azure DevOps', 'Personal access token auth — create backlog work items (User Story/Bug/Task).'),
+        ('github', 'GitHub', 'Personal access token auth — create issues in a repository.'),
       ] %}
       {% for icon, title, desc in types %}
       <div class="rounded-lg border border-border-subtle bg-bg-card p-3.5">
@@ -68,6 +69,7 @@
           <option value="outlook">Outlook</option>
           <option value="sql_server">SQL Server</option>
           <option value="azure_devops">Azure DevOps</option>
+          <option value="github">GitHub</option>
         </select>
       </div>
 
@@ -98,8 +100,8 @@
 
 {% block scripts %}
 <script>
-  const TYPE_ICONS = { rest_api: 'plug', sql_server: 'database', outlook: 'mail', azure_devops: 'kanban-square' };
-  const TYPE_LABELS = { rest_api: 'REST API', sql_server: 'SQL Server', outlook: 'Outlook', azure_devops: 'Azure DevOps' };
+  const TYPE_ICONS = { rest_api: 'plug', sql_server: 'database', outlook: 'mail', azure_devops: 'kanban-square', github: 'github' };
+  const TYPE_LABELS = { rest_api: 'REST API', sql_server: 'SQL Server', outlook: 'Outlook', azure_devops: 'Azure DevOps', github: 'GitHub' };
 
   // ── Field templates ──────────────────────────────────────────────────────────
 
@@ -207,6 +209,19 @@
       </div>`;
   }
 
+  function githubFields(cfg, auth) {
+    cfg = cfg || {}; auth = auth || {};
+    const cls = 'w-full px-2.5 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent';
+    return `
+      <div class="space-y-3">
+        <div>
+          <label class="text-xs text-text-muted block mb-1.5">Personal Access Token</label>
+          <input type="password" id="auth-pat" placeholder="your PAT (leave blank to keep existing when editing)" class="${cls}" />
+          <p class="text-[10px] text-text-muted mt-1">Needs "repo" scope (or "Issues: Read and write" for a fine-grained token). Created in GitHub &rarr; Settings &rarr; Developer settings &rarr; Personal access tokens.</p>
+        </div>
+      </div>`;
+  }
+
   function updateConnectorFields(cfg, auth) {
     const type = document.getElementById('connector-type').value;
     const container = document.getElementById('connector-type-fields');
@@ -214,6 +229,7 @@
     else if (type === 'sql_server') container.innerHTML = sqlServerFields(cfg, auth);
     else if (type === 'outlook') container.innerHTML = outlookFields();
     else if (type === 'azure_devops') container.innerHTML = adoFields(cfg, auth);
+    else if (type === 'github') container.innerHTML = githubFields(cfg, auth);
     else container.innerHTML = '';
     lucide.createIcons();
     if (type === 'rest_api') updateAuthFields();
@@ -240,6 +256,9 @@
       if (authType === 'sql') auth = { username: document.getElementById('auth-username')?.value || '', password: document.getElementById('auth-password')?.value || '' };
     } else if (type === 'azure_devops') {
       config = { org_url: (document.getElementById('cfg-org_url')?.value || '').replace(/\/$/, '') };
+      const pat = document.getElementById('auth-pat')?.value || '';
+      if (pat) auth = { pat };
+    } else if (type === 'github') {
       const pat = document.getElementById('auth-pat')?.value || '';
       if (pat) auth = { pat };
     }
