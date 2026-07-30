@@ -23,32 +23,21 @@
     <!-- populated by loadLlmProviders() -->
   </div>
 </div>
+<!-- Hidden select kept as internal state for loadLlmProviders()/selectProvider() -->
+<select id="llm-provider-select" class="hidden"></select>
 
-<button onclick="newSession()"
+<button onclick="openCreateRoomModal()"
         class="flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium bg-accent/15 text-accent hover:bg-accent/30 transition-colors">
   <i data-lucide="plus" class="w-3 h-3"></i>
-  New
+  New Room
 </button>
 {% endblock %}
 
 {% block content %}
 <div class="flex h-full">
 
-  <!-- ── Sidebar: Chats + Chat Rooms ──────────────────────── -->
+  <!-- ── Sidebar: Chat Rooms ──────────────────────────────── -->
   <aside class="hidden lg:flex flex-col w-60 border-r border-border-subtle bg-bg-sidebar flex-shrink-0">
-
-    <!-- Chats section -->
-    <div class="px-3 py-2.5 border-b border-border-subtle flex items-center justify-between flex-shrink-0">
-      <span class="text-xs font-semibold text-text-muted uppercase tracking-wider">Chats</span>
-      <button onclick="loadSessions()" title="Refresh" class="text-text-muted hover:text-accent">
-        <i data-lucide="refresh-cw" class="w-3 h-3"></i>
-      </button>
-    </div>
-    <div class="overflow-y-auto py-1 flex-shrink-0 border-b border-border-subtle" style="max-height:45%" id="session-list">
-      <div class="mx-1 my-0.5 px-3 py-2.5 rounded-lg transition-colors group">
-        <div class="text-sm text-text-muted">No sessions yet</div>
-      </div>
-    </div>
 
     <!-- Chat Rooms section -->
     <div class="px-3 py-2.5 border-b border-border-subtle flex items-center justify-between flex-shrink-0">
@@ -63,139 +52,30 @@
 
   </aside>
 
-  <!-- ── Main area (chat or room) ─────────────────────────── -->
+  <!-- ── Main area ─────────────────────────────────────────── -->
   <div class="flex flex-col flex-1 min-w-0">
 
-    <!-- Chat mode -->
-    <div id="chat-mode" class="flex flex-col flex-1 min-w-0">
-
-    <!-- Session header bar -->
-    <div class="flex items-center justify-between px-4 py-2.5 border-b border-border-subtle bg-bg-sidebar flex-shrink-0">
-      <!-- Hidden element kept for JS compat (session name stored here, not shown) -->
-      <span class="sr-only" id="session-name">New conversation</span>
-
-      <div class="flex items-center gap-2">
-        <div class="hidden sm:flex items-center gap-2">
-          <div class="text-[10px] font-mono text-text-muted">
-            <span id="tokens-used">0</span> tokens
-          </div>
-        </div>
-
-        <button onclick="compactContext()"
-                title="Compact context"
-                class="hidden flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-medium border border-border-subtle text-text-muted hover:text-accent hover:border-accent/40 transition-colors">
-          <i data-lucide="minimize-2" class="w-3 h-3"></i>
-          Compact
-        </button>
-
-        <!-- Hidden select kept for getActiveProviderConfig() compatibility -->
-        <select id="llm-provider-select" class="hidden"></select>
-
-        <select id="context-strategy"
-                class="px-2 py-1 text-xs rounded border border-border-visible bg-bg-raised text-text-muted focus:outline-none focus:border-accent">
-          <option value="full">Full context</option>
-          <option value="sliding" selected>Sliding window</option>
-          <option value="summarize">Auto-summarize</option>
-        </select>
+    <!-- No room selected -->
+    <div id="no-room-state" class="flex flex-col flex-1 min-w-0 items-center justify-center text-center px-4">
+      <div class="flex items-center gap-[4px] mb-4 opacity-30">
+        <span class="w-3 h-3 rounded-full bg-accent"></span>
+        <span class="w-3 h-3 rounded-full bg-accent"></span>
+        <span class="w-3 h-3 rounded-full bg-accent"></span>
       </div>
-    </div>
-
-    <!-- PII guard warning banner — shown when guard models are not loaded -->
-    <div id="pii-warning-banner" class="hidden items-center justify-between gap-3 px-4 py-2 border-b border-status-warning/40 bg-status-warning/10 flex-shrink-0">
-      <div class="flex items-center gap-2 min-w-0">
-        <i data-lucide="shield-alert" class="w-4 h-4 text-status-warning flex-shrink-0"></i>
-        <span class="text-sm text-status-warning" id="pii-warning-text">
-          PII guard is not active — be cautious about sensitive data you share with the LLM.
-        </span>
-      </div>
-      <button onclick="document.getElementById('pii-warning-banner').classList.add('hidden')"
-              class="flex-shrink-0 text-status-warning/60 hover:text-status-warning transition-colors" title="Dismiss">
-        <i data-lucide="x" class="w-4 h-4"></i>
+      <p class="text-text-muted text-sm mb-3">Select a chat room, or create a new one</p>
+      <button onclick="openCreateRoomModal()"
+              class="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-accent/15 text-accent hover:bg-accent/30 transition-colors">
+        <i data-lucide="plus" class="w-3 h-3"></i>
+        New Room
       </button>
     </div>
-
-    <!-- Plan mode banner — shown when session is linked to an epic/feature/task -->
-    <div id="plan-banner" class="hidden items-center justify-between px-4 py-2 border-b border-accent/30 bg-accent/5 flex-shrink-0">
-      <div class="flex items-center gap-2">
-        <i data-lucide="message-square" class="w-4 h-4 text-accent flex-shrink-0"></i>
-        <span class="text-sm font-medium text-accent" id="plan-banner-title">Planning…</span>
-      </div>
-      <div class="flex items-center gap-2">
-        <a href="/work"
-           class="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs text-text-muted hover:text-text-primary border border-border-subtle hover:border-border-visible transition-colors">
-          <i data-lucide="arrow-left" class="w-3 h-3"></i>
-          Back to Projects
-        </a>
-        <button onclick="savePlan()" id="save-plan-btn"
-                class="flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium bg-accent text-white hover:bg-accent/80 transition-colors">
-          <i data-lucide="save" class="w-3 h-3"></i>
-          Save Plan
-        </button>
-      </div>
-    </div>
-
-    <!-- Messages wrapper: relative container so both children can use absolute inset-0 -->
-    <div class="flex-1 relative min-h-0">
-      <!-- Empty state overlay — absolute so innerHTML='' on #messages can never remove it -->
-      <div id="empty-state" class="absolute inset-0 flex flex-col items-center justify-center text-center pointer-events-none z-0">
-        <div class="flex items-center gap-[4px] mb-4 opacity-30">
-          <span class="w-3 h-3 rounded-full bg-accent"></span>
-          <span class="w-3 h-3 rounded-full bg-accent"></span>
-          <span class="w-3 h-3 rounded-full bg-accent"></span>
-        </div>
-        <p class="text-text-muted text-sm mb-1">Start a conversation</p>
-        <p class="text-text-muted text-xs opacity-60">PII guard active — your data never leaves this machine unencrypted</p>
-      </div>
-
-      <!-- Messages — absolute inset-0 guarantees it fills the flex-1 parent
-           regardless of whether the browser resolves h-full from a flex-computed height -->
-      <div class="absolute inset-0 overflow-y-auto px-4 py-4 space-y-3 z-10" id="messages"></div>
-    </div>
-
-    <!-- Input area -->
-    <div class="flex-shrink-0 px-4 py-3 border-t border-border-subtle bg-bg-sidebar">
-      <div id="context-chip" class="hidden mb-2">
-        <span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] border border-accent/30 bg-accent/5 text-accent">
-          <i data-lucide="link" class="w-2.5 h-2.5"></i>
-          <span id="context-chip-label">Task: Build login page</span>
-          <button class="hover:text-white transition-colors" onclick="unlinkContext()">
-            <i data-lucide="x" class="w-2.5 h-2.5"></i>
-          </button>
-        </span>
-      </div>
-
-      <div class="flex items-end gap-2">
-        <textarea id="chat-input"
-                  placeholder="Ask anything... (Shift+Enter for new line)"
-                  rows="1"
-                  class="flex-1 resize-none rounded-lg border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted text-sm px-3 py-2.5 focus:outline-none focus:border-accent transition-colors min-h-[40px] max-h-48 overflow-y-auto"></textarea>
-
-        <button id="stop-btn"
-                class="hidden p-2.5 rounded-lg bg-status-error/15 text-status-error hover:bg-status-error/30 transition-colors flex-shrink-0"
-                onclick="stopGeneration()"
-                title="Stop generation">
-          <i data-lucide="square" class="w-[18px] h-[18px]"></i>
-        </button>
-
-        <button id="send-btn"
-                onclick="sendMessage()"
-                class="p-2.5 rounded-lg bg-accent text-white hover:bg-accent/80 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0">
-          <i data-lucide="send" class="w-[18px] h-[18px]"></i>
-        </button>
-      </div>
-      <div class="flex items-center justify-between mt-1.5 px-0.5">
-        <span class="text-[10px] text-text-muted font-mono" id="char-count">0 chars</span>
-        <span class="text-[10px] text-text-muted" id="stream-status"></span>
-      </div>
-    </div>
-    </div><!-- /chat-mode -->
 
     <!-- Room mode ─────────────────────────────────────────── -->
     <div id="room-mode" class="hidden flex-col flex-1 min-w-0">
 
       <!-- Room header -->
       <div class="flex items-center gap-3 px-4 py-2.5 border-b border-border-subtle bg-bg-sidebar flex-shrink-0">
-        <button onclick="switchToChat()" class="text-text-muted hover:text-text-primary transition-colors">
+        <button onclick="closeRoom()" title="Back to room list" class="text-text-muted hover:text-text-primary transition-colors">
           <i data-lucide="arrow-left" class="w-4 h-4"></i>
         </button>
         <div class="flex items-center gap-2 flex-1 min-w-0">
@@ -341,17 +221,13 @@
 {% block scripts %}
 <script>
 // ── State ─────────────────────────────────────────────────────────────────────
-let currentSessionId = null;
-let abortController = null;
-let isStreaming = false;
 let llmProviders = [];
-let activeAssistantDiv = null;   // the in-progress bubble; cleared on stop/done
-let allSessions = [];            // cached session list with linked fields
 let pendingPlanContext = null;   // initialContext to auto-send from sessionStorage
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
   loadLlmProviders();
+  loadRooms();
 
   // Consume any plan context left by work.html planWithAI()
   const planCtxStr = sessionStorage.getItem('planContext');
@@ -360,348 +236,30 @@ document.addEventListener('DOMContentLoaded', async () => {
     sessionStorage.removeItem('planContext');
   }
 
-  // Check URL for a specific session or room to open
+  // Deep-link straight into a room if one was specified (e.g. from
+  // work.html's "Plan with AI"); otherwise resume the most recently active
+  // room, or show the no-room-selected state if there are none yet.
   const urlParams = new URLSearchParams(window.location.search);
-  const targetSessionId = urlParams.get('session');
   const targetRoomId = urlParams.get('room');
 
   if (targetRoomId) {
-    // Deep-link straight into a room (e.g. from work.html's "Plan with AI").
     await switchToRoom(targetRoomId);
   } else {
-    // Resume a session; prefer the one specified in ?session=
     try {
-      allSessions = await cachedFetch('/chat/api/sessions');
-      if (targetSessionId) {
-        await switchSession(targetSessionId);
-      } else if (allSessions.length > 0) {
-        await switchSession(allSessions[0].id);   // sorted by updated_at desc
-      } else {
-        await createNewSession();
-      }
+      const rooms = await fetch('/api/chat-rooms').then(r => r.json());
+      if (rooms.length > 0) await switchToRoom(rooms[0].id);   // sorted by updated_at desc
     } catch (e) {
-      console.error('Failed to load sessions on init:', e);
-      await createNewSession();
+      console.error('Failed to load rooms on init:', e);
     }
   }
-
-  const input = document.getElementById('chat-input');
-  let _inputRaf = null;
-  input.addEventListener('input', () => {
-    cancelAnimationFrame(_inputRaf);
-    _inputRaf = requestAnimationFrame(() => {
-      input.style.height = 'auto';
-      input.style.height = Math.min(input.scrollHeight, 192) + 'px';
-    });
-    document.getElementById('char-count').textContent = input.value.length + ' chars';
-  });
-
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
-  });
 });
-
-// ── Session management ────────────────────────────────────────────────────────
-
-async function loadSessions() {
-  try {
-    const res = await fetch('/chat/api/sessions');
-    allSessions = await res.json();
-    const sessions = allSessions;
-    const list = document.getElementById('session-list');
-    list.innerHTML = '';
-    if (sessions.length === 0) {
-      list.innerHTML = '<div class="mx-1 my-0.5 px-3 py-2.5 rounded-lg text-xs text-text-muted">No sessions yet</div>';
-      return;
-    }
-    sessions.forEach(s => {
-      const div = document.createElement('div');
-      div.className = 'mx-1 my-0.5 px-3 py-2.5 rounded-lg cursor-pointer transition-colors group relative ' +
-        (s.id === currentSessionId ? 'bg-accent/10 border border-accent/20 text-accent' : 'hover:bg-bg-raised');
-      div.onclick = () => switchSession(s.id);
-      div.innerHTML = `
-        <div class="text-sm font-medium truncate pr-12">${escHtml(s.name)}</div>
-        <div class="text-[10px] text-text-muted mt-0.5 font-mono">${s.message_count || 0} msgs · ${timeAgo(s.updated_at)}</div>
-        <div class="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-          <button
-            class="p-1 rounded hover:bg-bg-raised text-text-muted hover:text-text-secondary transition-colors"
-            title="Rename"
-            onclick="event.stopPropagation(); renameSession('${escHtml(s.id)}', this)">
-            <i data-lucide="pencil" class="w-3 h-3"></i>
-          </button>
-          <button
-            class="p-1 rounded hover:bg-status-error/20 hover:text-status-error text-text-muted transition-colors"
-            title="Archive chat"
-            onclick="event.stopPropagation(); deleteSession('${escHtml(s.id)}')">
-            <i data-lucide="trash-2" class="w-3 h-3"></i>
-          </button>
-        </div>`;
-      list.appendChild(div);
-    });
-    lucide.createIcons({ nodes: list.children });
-  } catch (e) {
-    console.error('Failed to load sessions:', e);
-  }
-}
-
-async function switchSession(id) {
-  if (isStreaming) stopGeneration();
-  currentSessionId = id;
-  document.getElementById('empty-state').style.display = 'none';
-  document.getElementById('messages').innerHTML = '';
-  await loadMessages(id);
-  await loadSessions();
-
-  // Check if this session is a planning session
-  const sessionData = allSessions.find(s => s.id === id);
-  checkPlanMode(sessionData);
-
-  // Auto-send initialContext if this is the linked session and has no messages
-  if (pendingPlanContext && pendingPlanContext.sessionId === id) {
-    const ctx = pendingPlanContext;
-    pendingPlanContext = null;
-    const msgs = document.getElementById('messages');
-    const msgCount = msgs.querySelectorAll('.flex.fade-in').length;
-    if (msgCount === 0) {
-      setTimeout(() => autoSendPlanContext(ctx.initialContext), 200);
-    }
-  }
-}
-
-async function loadMessages(sessionId) {
-  try {
-    const res = await fetch(`/chat/api/sessions/${sessionId}/messages`);
-    const data = await res.json();
-
-    // If the user switched sessions while this was loading, don't paint the
-    // wrong history into the now-current session.
-    if (sessionId !== currentSessionId) return;
-
-    // Handle both old format (array) and new format (object with messages + compactions)
-    let messages, compactions = [];
-    if (Array.isArray(data)) {
-      messages = data;
-    } else {
-      messages = data.messages || [];
-      compactions = data.compactions || [];
-    }
-
-    const msgs = document.getElementById('messages');
-    msgs.innerHTML = '';
-
-    if (messages.length === 0 && compactions.length === 0) {
-      document.getElementById('empty-state').style.display = '';
-      return;
-    }
-    document.getElementById('empty-state').style.display = 'none';
-
-    messages.forEach(m => appendMessage(m.role, m.content, m.tool_name, m.tool_call_id));
-
-    // Render compaction cards
-    compactions.forEach(c => {
-      const compDiv = createCompactionCard(c);
-      msgs.appendChild(compDiv);
-      lucide.createIcons({ nodes: [compDiv] });
-    });
-
-    // Restore token count
-    const totalTokens = messages.reduce((sum, m) => sum + (m.token_count || 0), 0);
-    document.getElementById('tokens-used').textContent = totalTokens;
-  } catch (e) {
-    console.error('Failed to load messages:', e);
-  }
-}
-
-async function createNewSession(name) {
-  try {
-    const body = { name: name || 'New conversation' };
-    const res = await fetch('/chat/api/sessions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const session = await res.json();
-    currentSessionId = session.id;
-    document.getElementById('session-name').textContent = session.name;
-    document.getElementById('empty-state').style.display = '';
-    document.getElementById('messages').innerHTML = '';
-    await loadSessions();
-    return session.id;
-  } catch (e) {
-    console.error('Failed to create session:', e);
-    return null;
-  }
-}
-
-async function newSession() {
-  if (isStreaming) stopGeneration();
-  await createNewSession();
-}
-
-function renameSession(id, triggerEl) {
-  const row = triggerEl.closest('.mx-1');
-  const nameEl = row ? row.querySelector('.text-sm.font-medium') : null;
-  if (!nameEl) return;
-
-  const current = nameEl.textContent.trim();
-
-  // Swap the name span for an input, right there in the row
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.value = current;
-  input.className = 'w-full bg-bg-raised border border-accent/50 rounded px-1.5 py-0.5 text-sm text-text-primary focus:outline-none focus:border-accent';
-
-  nameEl.replaceWith(input);
-  input.focus();
-  input.select();
-
-  // Prevent row click (switchSession) while editing
-  row._savedOnclick = row.onclick;
-  row.onclick = null;
-
-  async function commit() {
-    const newName = input.value.trim();
-    // Restore row click handler regardless of outcome
-    row.onclick = row._savedOnclick;
-
-    if (!newName || newName === current) {
-      // Revert without saving
-      input.replaceWith(nameEl);
-      return;
-    }
-    try {
-      await fetch(`/chat/api/sessions/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newName }),
-      });
-      if (id === currentSessionId) {
-        document.getElementById('session-name').textContent = newName;
-      }
-    } catch (e) {
-      console.error('Failed to rename:', e);
-    }
-    await loadSessions();
-  }
-
-  input.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); commit(); }
-    if (e.key === 'Escape') { row.onclick = row._savedOnclick; input.replaceWith(nameEl); }
-  });
-  input.addEventListener('blur', commit);
-}
-
-async function deleteSession(id) {
-  try {
-    await fetch(`/chat/api/sessions/${id}`, { method: 'DELETE' });
-    if (id === currentSessionId) {
-      // Switch to next available session, or start fresh
-      const res = await fetch('/chat/api/sessions');
-      const sessions = await res.json();
-      const remaining = sessions.filter(s => s.id !== id);
-      if (remaining.length > 0) {
-        await switchSession(remaining[0].id);
-      } else {
-        currentSessionId = null;
-        document.getElementById('messages').innerHTML = '';
-        document.getElementById('session-name').textContent = 'New conversation';
-        document.getElementById('empty-state').style.display = '';
-        document.getElementById('tokens-used').textContent = '0';
-        await loadSessions();
-      }
-    } else {
-      await loadSessions();
-    }
-  } catch (e) {
-    console.error('Failed to delete session:', e);
-  }
-}
-
-async function compactContext() {
-  if (!currentSessionId) return;
-  const msgs = document.getElementById('messages');
-  const placeholder = document.createElement('div');
-  placeholder.className = 'flex justify-center py-3';
-  placeholder.innerHTML = '<span class="text-xs text-text-muted animate-pulse">Compacting context…</span>';
-  msgs.appendChild(placeholder);
-  msgs.scrollTop = msgs.scrollHeight;
-
-  try {
-    // Fetch current messages and trigger compaction
-    const data = await cachedFetch(`/chat/api/sessions/${currentSessionId}/messages`);
-    const messages = data.messages || [];
-    const compactions = data.compactions || [];
-
-    // Build a compaction card from the last recorded compaction (if any),
-    // or create one from the current message list head.
-    let compactionData;
-    if (compactions.length > 0) {
-      compactionData = compactions[compactions.length - 1];
-    } else {
-      // Manual compact: summarize the oldest half of messages
-      const half = Math.floor(messages.length / 2);
-      const oldMsgs = messages.slice(0, half);
-      compactionData = {
-        id: 'manual_' + Date.now(),
-        messages_compacted: oldMsgs.length,
-        summary: `[Manually compacted ${oldMsgs.length} older messages — context window freed]`,
-        archived_messages: oldMsgs,
-        timestamp: new Date().toISOString(),
-      };
-    }
-
-    placeholder.remove();
-
-    const card = createCompactionCard(compactionData);
-    msgs.appendChild(card);
-    msgs.scrollTop = msgs.scrollHeight;
-    lucide.createIcons({ nodes: [card] });
-  } catch (e) {
-    placeholder.innerHTML = `<span class="text-xs text-status-error">Compaction failed: ${e.message}</span>`;
-  }
-}
-
-// ── Sending messages ──────────────────────────────────────────────────────────
-
-async function sendMessage() {
-  const input = document.getElementById('chat-input');
-  const text = input.value.trim();
-  if (!text || isStreaming) return;
-
-  // Ensure we have a session
-  if (!currentSessionId) {
-    currentSessionId = await createNewSession();
-    if (!currentSessionId) return;
-  }
-
-  // Show empty state gone
-  document.getElementById('empty-state').style.display = 'none';
-
-  // Show user bubble immediately
-  appendMessage('user', text);
-  input.value = '';
-  input.style.height = 'auto';
-  document.getElementById('char-count').textContent = '0 chars';
-
-  // Update session name if it's still "New conversation"
-  const sessionNameEl = document.getElementById('session-name');
-  if (sessionNameEl.textContent === 'New conversation') {
-    sessionNameEl.textContent = text.substring(0, 50) + (text.length > 50 ? '...' : '');
-  }
-
-  // Start streaming
-  await streamResponse(text);
-}
 
 async function loadLlmProviders() {
   try {
     const data = await cachedFetch('/api/llm/providers');
     llmProviders = data.providers || [];
 
-    // Keep hidden select in sync for getActiveProviderConfig()
+    // Keep hidden select in sync — tracks the active provider id for selectProvider()
     const select = document.getElementById('llm-provider-select');
     select.innerHTML = '';
     llmProviders.forEach(p => {
@@ -801,521 +359,12 @@ document.addEventListener('click', e => {
   }
 });
 
-async function getActiveProviderConfig() {
-  const select = document.getElementById('llm-provider-select');
-  const providerId = select.value;
-  const provider = llmProviders.find(p => p.id === providerId);
-  if (provider) {
-    return {
-      base_url: provider.base_url,
-      api_key: provider.api_key || '',
-      model: provider.model,
-      type: provider.type || 'genai',
-      ollama: false,
-    };
-  }
-  // Fallback to first provider
-  if (llmProviders.length > 0) {
-    const p = llmProviders[0];
-    return { base_url: p.base_url, api_key: p.api_key || '', model: p.model, type: p.type || 'genai', ollama: false };
-  }
-  return { base_url: '', api_key: '', model: '', type: 'genai', ollama: false };
-}
-
-async function streamResponse(userPrompt) {
-  isStreaming = true;
-  abortController = new AbortController();
-  // Bind this stream to the session it started in, so buffered SSE events that
-  // drain after a session switch don't write into a different session.
-  const streamSessionId = currentSessionId;
-
-  // UI state
-  document.getElementById('send-btn').classList.add('hidden');
-  document.getElementById('stop-btn').classList.remove('hidden');
-  document.getElementById('stream-status').textContent = 'Thinking...';
-  document.getElementById('stream-status').className = 'text-[10px] text-accent';
-
-  // Create assistant message container for streaming text
-  const msgs = document.getElementById('messages');
-  const assistantDiv = document.createElement('div');
-  assistantDiv.className = 'flex justify-start fade-in';
-  assistantDiv.innerHTML = `
-    <div class="max-w-[85%] space-y-2 items-start flex flex-col min-w-0">
-      <details class="js-assistant-reasoning hidden w-full text-xs rounded-lg border border-border-subtle bg-bg-raised/40">
-        <summary class="cursor-pointer px-3 py-1.5 text-text-muted select-none flex items-center gap-1.5 hover:text-text-secondary">
-          <i data-lucide="brain" class="w-3 h-3"></i> Reasoning
-        </summary>
-        <div class="js-assistant-reasoning-body px-3 py-2 text-text-muted whitespace-pre-wrap max-h-64 overflow-y-auto font-mono text-[11px] border-t border-border-subtle"></div>
-      </details>
-      <div class="md-body rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-bg-card border border-border-subtle text-text-primary min-h-[1.5em] js-assistant-text"></div>
-      <div class="js-assistant-tool-calls"></div>
-      <div class="flex items-center gap-2 text-[10px] text-text-muted px-1">
-        <span class="font-mono">Assistant</span>
-        <span>·</span>
-        <span>just now</span>
-        <span>·</span>
-        <span class="js-assistant-tokens">0 tokens</span>
-      </div>
-    </div>`;
-  msgs.appendChild(assistantDiv);
-  activeAssistantDiv = assistantDiv;   // track so stopGeneration() can clean it up
-  msgs.scrollTop = msgs.scrollHeight;
-
-  // Use class-based selectors on the specific div, not document.getElementById,
-  // so multiple messages don't clobber each other's IDs.
-  const assistantText = assistantDiv.querySelector('.js-assistant-text');
-  const toolCallsContainer = assistantDiv.querySelector('.js-assistant-tool-calls');
-  let toolCallCount = 0;
-  let totalText = '';
-  let lastToolCallDiv = null;
-
-  try {
-    const strategy = document.getElementById('context-strategy').value;
-    const cfg = await getActiveProviderConfig();
-
-    const streamBody = {
-      prompt: userPrompt,
-      context_strategy: strategy,
-    };
-    if (cfg.base_url) streamBody.base_url = cfg.base_url;
-    if (cfg.model) streamBody.model = cfg.model;
-    if (cfg.type === 'ollama') streamBody.ollama_model = cfg.model;
-    else if (cfg.ollama) streamBody.ollama_model = cfg.model;
-
-    const res = await fetch(`/chat/api/sessions/${currentSessionId}/stream`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(streamBody),
-      signal: abortController.signal,
-    });
-
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || `HTTP ${res.status}`);
-    }
-
-    // SSE reader
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      // Session switched while streaming — stop draining into the wrong session.
-      if (streamSessionId !== currentSessionId) {
-        try { await reader.cancel(); } catch {}
-        break;
-      }
-
-      buffer += decoder.decode(value, { stream: true });
-
-      // Process complete SSE events
-      const parts = buffer.split('\n\n');
-      buffer = parts.pop() || '';
-
-      for (const part of parts) {
-        if (!part.trim()) continue;
-
-        // Parse event and data
-        let eventType = '';
-        let dataStr = '';
-        const lines = part.split('\n');
-        for (const line of lines) {
-          if (line.startsWith('event: ')) eventType = line.slice(7).trim();
-          if (line.startsWith('data: ')) dataStr = line.slice(6);
-        }
-
-            let data = {};
-        try {
-          data = dataStr ? JSON.parse(dataStr) : {};
-        } catch {}
-
-        console.log('[SSE]', eventType, dataStr.slice(0, 120));
-        switch (eventType) {
-          case 'compaction':
-            toolCallCount++;
-            const compDiv = createCompactionCard(data);
-            msgs.appendChild(compDiv);
-            msgs.scrollTop = msgs.scrollHeight;
-            lucide.createIcons({ nodes: [compDiv] });
-            break;
-
-          case 'reasoning':
-            if (data.content) {
-              const rEl = assistantDiv.querySelector('.js-assistant-reasoning');
-              const rBody = assistantDiv.querySelector('.js-assistant-reasoning-body');
-              if (rEl && rBody) {
-                if (rEl.classList.contains('hidden')) {
-                  rEl.classList.remove('hidden');
-                  lucide.createIcons({ nodes: [rEl] });
-                }
-                rBody.textContent += data.content;
-                maybeScroll(msgs);
-              }
-            }
-            break;
-
-          case 'text':
-            if (data.content) {
-              totalText += data.content;
-              // Skip mermaid during token-by-token streaming (heavy full-diagram
-              // parse/layout on every chunk); the 'done' handler below does one
-              // final render with mermaid enabled against the complete text.
-              renderMarkdownInto(assistantText, totalText, { skipMermaid: true });
-              maybeScroll(msgs);
-            }
-            break;
-
-          case 'tool_call':
-            toolCallCount++;
-            const tcDiv = document.createElement('div');
-            tcDiv.className = 'w-full rounded-lg border border-status-info/30 bg-status-info/5 text-xs overflow-hidden';
-            tcDiv.id = `tool-call-${toolCallCount}`;
-            tcDiv.innerHTML = `
-              <div class="flex items-center gap-2 px-3 py-1.5 border-b border-status-info/20 bg-status-info/10">
-                <i data-lucide="terminal" class="w-3 h-3 text-status-info"></i>
-                <span class="font-mono text-status-info">${escHtml(data.tool || 'tool')}</span>
-                <span class="ml-auto px-1.5 py-0.5 rounded text-[10px] border tier-1">Tier 1</span>
-              </div>
-              <div class="px-3 py-2 font-mono text-text-secondary break-all">${escHtml(data.input || '{}')}</div>`;
-            toolCallsContainer.appendChild(tcDiv);
-            lastToolCallDiv = tcDiv;
-            msgs.scrollTop = msgs.scrollHeight;
-            lucide.createIcons({ nodes: [tcDiv] });
-            break;
-
-          case 'tool_result':
-            if (lastToolCallDiv) {
-              const body = lastToolCallDiv.querySelector('.px-3.py-2.font-mono.text-text-secondary');
-              const outputEl = document.createElement('div');
-              outputEl.className = 'px-3 py-2 border-t border-status-info/20 font-mono text-text-muted whitespace-pre-wrap max-h-48 overflow-y-auto';
-              const output = data.output || '(no output)';
-              outputEl.textContent = output.length > 2000 ? output.slice(0, 2000) + '\n[…truncated]' : output;
-              lastToolCallDiv.appendChild(outputEl);
-
-              // Add error indicator
-              if (data.error) {
-                outputEl.classList.remove('text-text-muted');
-                outputEl.classList.add('text-status-error');
-              }
-            }
-            msgs.scrollTop = msgs.scrollHeight;
-            lastToolCallDiv = null;
-            break;
-
-          case 'pii_warning': {
-            const banner = document.getElementById('pii-warning-banner');
-            const txt = document.getElementById('pii-warning-text');
-            if (data.message) txt.textContent = data.message;
-            banner.classList.remove('hidden');
-            banner.classList.add('flex');
-            lucide.createIcons({ nodes: [banner] });
-            break;
-          }
-
-          case 'approval_required': {
-            const apDiv = document.createElement('div');
-            apDiv.className = 'w-full rounded-lg border border-status-warning/40 bg-status-warning/10 text-xs overflow-hidden';
-            apDiv.innerHTML = `
-              <div class="flex items-center gap-2 px-3 py-1.5 border-b border-status-warning/20">
-                <i data-lucide="shield-alert" class="w-3 h-3 text-status-warning"></i>
-                <span class="font-semibold text-status-warning">Approval required</span>
-                <span class="ml-auto px-1.5 py-0.5 rounded text-[10px] border tier-3">Tier ${data.tier ?? 3}</span>
-              </div>
-              <div class="px-3 py-2">
-                <p class="text-text-secondary mb-1">The assistant wants to run <span class="font-mono text-text-primary">${escHtml(data.tool || 'tool')}</span>:</p>
-                <div class="font-mono text-text-muted break-all mb-2">${escHtml(data.input || '{}')}</div>
-                <div class="flex gap-2" data-approval="${escHtml(data.approval_id || '')}">
-                  <button class="px-3 py-1.5 rounded bg-status-healthy/15 text-status-healthy hover:bg-status-healthy/30" onclick="resolveApproval('${escHtml(data.approval_id || '')}', true, this)">Approve &amp; run</button>
-                  <button class="px-3 py-1.5 rounded bg-status-error/15 text-status-error hover:bg-status-error/30" onclick="resolveApproval('${escHtml(data.approval_id || '')}', false, this)">Reject</button>
-                </div>
-              </div>`;
-            toolCallsContainer.appendChild(apDiv);
-            msgs.scrollTop = msgs.scrollHeight;
-            lucide.createIcons({ nodes: [apDiv] });
-            break;
-          }
-
-          case 'done':
-            // Stream complete — backend already persists the assistant message.
-            // Final render WITH mermaid enabled, now that the text is complete.
-            if (totalText) renderMarkdownInto(assistantText, totalText);
-            break;
-
-          case 'error':
-            const errorEl = document.createElement('div');
-            errorEl.className = 'w-full rounded-lg border border-status-error/30 bg-status-error/5 text-xs px-3 py-2 text-status-error';
-            errorEl.textContent = `Error: ${data.error || 'Unknown error'}`;
-            toolCallsContainer.appendChild(errorEl);
-            break;
-        }
-      }
-    }
-  } catch (e) {
-    if (e.name === 'AbortError') {
-      // User pressed Stop — remove the bubble entirely if no text arrived yet,
-      // otherwise keep the partial text and mark it as interrupted.
-      if (assistantDiv.isConnected) {
-        if (totalText.trim()) {
-          const textEl = assistantDiv.querySelector('.js-assistant-text');
-          if (textEl) {
-            const note = document.createElement('span');
-            note.className = 'ml-2 text-[10px] text-text-muted italic';
-            note.textContent = '(interrupted)';
-            textEl.appendChild(note);
-          }
-        } else {
-          assistantDiv.remove();
-        }
-      }
-      document.getElementById('stream-status').textContent = 'Stopped';
-      document.getElementById('stream-status').className = 'text-[10px] text-text-muted';
-    } else {
-      // Real error — replace the empty bubble with an error message
-      if (assistantDiv.isConnected && !totalText.trim()) {
-        assistantDiv.remove();
-      }
-      const errorEl = document.createElement('div');
-      errorEl.className = 'mx-auto w-full rounded-lg border border-status-error/30 bg-status-error/5 text-xs px-3 py-2 text-status-error';
-      errorEl.textContent = `Error: ${e.message}`;
-      msgs.appendChild(errorEl);
-      msgs.scrollTop = msgs.scrollHeight;
-    }
-  } finally {
-    isStreaming = false;
-    abortController = null;
-    activeAssistantDiv = null;
-    document.getElementById('send-btn').classList.remove('hidden');
-    document.getElementById('stop-btn').classList.add('hidden');
-    document.getElementById('stream-status').textContent = '';
-
-    // Update token count only if the bubble is still present AND we're still on
-    // the session this stream belongs to.
-    if (assistantDiv.isConnected && streamSessionId === currentSessionId) {
-      const tokenEst = Math.ceil(totalText.length / 4);
-      const tokenEl = assistantDiv.querySelector('.js-assistant-tokens');
-      if (tokenEl) tokenEl.textContent = `${tokenEst} tokens`;
-      document.getElementById('tokens-used').textContent = tokenEst;
-    }
-  }
-}
-
-async function stopGeneration() {
-  if (abortController) {
-    abortController.abort();
-    // Bubble cleanup is handled in streamResponse's catch (AbortError) block
-  }
-}
-
-// ── Message rendering ─────────────────────────────────────────────────────────
-
-function appendMessage(role, content, toolName, toolCallId) {
-  const msgs = document.getElementById('messages');
-  const div = document.createElement('div');
-  div.className = 'flex ' + (role === 'user' ? 'justify-end' : 'justify-start') + ' fade-in';
-
-  if (role === 'user') {
-    div.innerHTML = `
-      <div class="max-w-[85%] space-y-2 items-end flex flex-col">
-        <div class="rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-accent text-white">${escHtml(content)}</div>
-        <div class="flex items-center gap-2 text-[10px] text-text-muted px-1">
-          <span>${timeAgo(new Date().toISOString())}</span>
-        </div>
-      </div>`;
-
-  } else if (role === 'assistant') {
-    // Assistant messages render markdown (mirrors ORION web).
-    div.innerHTML = `
-      <div class="max-w-[85%] space-y-2 items-start flex flex-col min-w-0">
-        <div class="md-body rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-bg-card border border-border-subtle text-text-primary"></div>
-        <div class="flex items-center gap-2 text-[10px] text-text-muted px-1">
-          <span class="font-mono">Assistant</span>
-          <span>·</span>
-          <span>${timeAgo(new Date().toISOString())}</span>
-        </div>
-      </div>`;
-    renderMarkdownInto(div.querySelector('.md-body'), content);
-
-  } else if (role === 'tool_call') {
-    // LLM tool invocation — shows the call header + args body
-    // Store tool_call_id on the card so the matching 'tool' result can append to it
-    div.className = 'flex justify-start fade-in w-full';
-    div.innerHTML = `
-      <div class="max-w-[85%] w-full space-y-2 items-start flex flex-col">
-        <div class="w-full rounded-lg border border-status-info/30 bg-status-info/5 text-xs overflow-hidden js-tool-card"
-             data-tool-call-id="${escHtml(toolCallId || '')}">
-          <div class="flex items-center gap-2 px-3 py-1.5 border-b border-status-info/20 bg-status-info/10">
-            <i data-lucide="terminal" class="w-3 h-3 text-status-info"></i>
-            <span class="font-mono text-status-info">${escHtml(toolName || 'tool')}</span>
-            <span class="ml-auto px-1.5 py-0.5 rounded text-[10px] border tier-1">Calling…</span>
-          </div>
-          <div class="px-3 py-2 font-mono text-text-secondary break-all">${escHtml(content)}</div>
-        </div>
-      </div>`;
-
-  } else if (role === 'tool') {
-    // Tool result — try to merge into the matching tool_call card
-    const existingCard = toolCallId
-      ? [...msgs.querySelectorAll('.js-tool-card')].find(el => el.dataset.toolCallId === toolCallId)
-      : null;
-
-    if (existingCard) {
-      // Append result to the existing call card
-      const badge = existingCard.querySelector('.ml-auto');
-      if (badge) badge.textContent = 'Result';
-      const outputEl = document.createElement('div');
-      outputEl.className = 'px-3 py-2 border-t border-status-info/20 font-mono text-text-muted whitespace-pre-wrap max-h-48 overflow-y-auto';
-      const out = content || '(no output)';
-      outputEl.textContent = out.length > 2000 ? out.slice(0, 2000) + '\n[…truncated]' : out;
-      existingCard.appendChild(outputEl);
-      msgs.scrollTop = msgs.scrollHeight;
-      return; // skip appending a new div
-    }
-
-    // No matching call card — standalone result
-    div.className = 'flex justify-start fade-in w-full';
-    div.innerHTML = `
-      <div class="max-w-[85%] w-full space-y-2 items-start flex flex-col">
-        <div class="w-full rounded-lg border border-status-info/30 bg-status-info/5 text-xs overflow-hidden">
-          <div class="flex items-center gap-2 px-3 py-1.5 border-b border-status-info/20 bg-status-info/10">
-            <i data-lucide="terminal" class="w-3 h-3 text-status-info"></i>
-            <span class="font-mono text-status-info">${escHtml(toolName || 'tool')}</span>
-            <span class="ml-auto px-1.5 py-0.5 rounded text-[10px] border tier-1">Result</span>
-          </div>
-          <div class="px-3 py-2 font-mono text-text-muted whitespace-pre-wrap max-h-48 overflow-y-auto">${escHtml(content)}</div>
-        </div>
-      </div>`;
-  }
-
-  msgs.appendChild(div);
-  msgs.scrollTop = msgs.scrollHeight;
-  lucide.createIcons({ nodes: [div] });
-}
-
-// ── Planning mode ─────────────────────────────────────────────────────────────
-
-function checkPlanMode(session) {
-  const banner = document.getElementById('plan-banner');
-  if (!session) { banner.classList.add('hidden'); return; }
-
-  const { linked_epic_id, linked_feature_id, linked_task_id } = session;
-  if (!linked_epic_id && !linked_feature_id && !linked_task_id) {
-    banner.classList.add('hidden');
-    return;
-  }
-
-  // Determine item type label from session name prefix or linked fields
-  let typeLabel = 'Work Item';
-  if (linked_task_id)    typeLabel = 'Task';
-  else if (linked_feature_id) typeLabel = 'Feature';
-  else if (linked_epic_id)    typeLabel = 'Epic';
-
-  // Strip the prefix from the session name for display (e.g. "◆ EPIC · My Epic" → "My Epic")
-  let displayName = session.name || typeLabel;
-  displayName = displayName.replace(/^[◆▸●]\s*(?:EPIC|FEAT|TASK)\s*·\s*/u, '').trim();
-
-  document.getElementById('plan-banner-title').textContent = `Planning ${typeLabel}: ${displayName}`;
-  banner.classList.remove('hidden');
-  lucide.createIcons({ nodes: [banner] });
-}
-
-async function autoSendPlanContext(initialContext) {
-  const input = document.getElementById('chat-input');
-  input.value = initialContext;
-  input.dispatchEvent(new Event('input'));
-  await sendMessage();
-}
-
-async function savePlan() {
-  if (!currentSessionId) return;
-  const btn = document.getElementById('save-plan-btn');
-  btn.disabled = true;
-  btn.textContent = 'Saving…';
-
-  try {
-    const res = await fetch(`/chat/api/sessions/${currentSessionId}/save-plan`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-
-    btn.textContent = 'Saved!';
-    btn.classList.remove('bg-accent', 'hover:bg-accent/80');
-    btn.classList.add('bg-status-success', 'hover:bg-status-success/80');
-
-    // Navigate back to projects after a short delay
-    setTimeout(() => { window.location.href = '/work'; }, 1200);
-  } catch (e) {
-    console.error('Failed to save plan:', e);
-    btn.disabled = false;
-    btn.innerHTML = '<i data-lucide="save" class="w-3 h-3"></i> Save Plan';
-    lucide.createIcons({ nodes: [btn] });
-
-    const errorEl = document.createElement('div');
-    errorEl.className = 'mx-auto w-full rounded-lg border border-status-error/30 bg-status-error/5 text-xs px-3 py-2 text-status-error mt-2';
-    errorEl.textContent = `Failed to save plan: ${e.message}`;
-    document.getElementById('messages').appendChild(errorEl);
-  }
-}
-
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
 function escHtml(s) {
   if (typeof s !== 'string') return String(s);
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
-
-function formatText(text) {
-  // Simple formatting: convert newlines to <br>, wrap URLs in links
-  if (!text) return '';
-  let escaped = escHtml(text);
-  // Convert newlines to <br>
-  escaped = escaped.replace(/\n/g, '<br>');
-  // Wrap URLs
-  escaped = escaped.replace(
-    /(https?:\/\/[^\s<]+)/g,
-    '<a href="$1" target="_blank" class="text-accent hover:underline">$1</a>'
-  );
-  return escaped;
-}
-
-// Auto-scroll the transcript only when the user is already near the bottom, so
-// scrolling up to read during generation isn't fought by the stream.
-function maybeScroll(el) {
-  if (!el) return;
-  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
-  if (nearBottom) el.scrollTop = el.scrollHeight;
-}
-window.maybeScroll = maybeScroll;
-
-async function resolveApproval(id, approved, btn) {
-  const wrap = btn.closest('[data-approval]');
-  if (wrap) wrap.innerHTML = `<span class="text-text-muted">${approved ? 'Running…' : 'Rejecting…'}</span>`;
-  try {
-    const r = await fetch(`/chat/api/approvals/${id}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ approved }),
-    });
-    const data = await r.json();
-    if (!wrap) return;
-    if (data.status === 'executed') {
-      wrap.innerHTML = `<div class="text-status-healthy mb-1">✓ Executed</div><pre class="whitespace-pre-wrap font-mono text-text-muted max-h-48 overflow-y-auto">${escHtml((data.result || '').slice(0, 2000))}</pre>`;
-    } else if (data.status === 'rejected') {
-      wrap.innerHTML = `<div class="text-status-error">✗ Rejected — not executed</div>`;
-    } else if (data.status === 'failed') {
-      wrap.innerHTML = `<div class="text-status-error">✗ Failed: ${escHtml(data.result || '')}</div>`;
-    } else {
-      wrap.innerHTML = `<div class="text-text-muted">${escHtml(data.error || data.status || 'done')}</div>`;
-    }
-  } catch (e) {
-    if (wrap) wrap.innerHTML = `<div class="text-status-error">Error: ${escHtml(String(e))}</div>`;
-  }
-}
-window.resolveApproval = resolveApproval;
 
 function timeAgo(dateStr) {
   if (!dateStr) return 'now';
@@ -1331,14 +380,9 @@ function timeAgo(dateStr) {
   return days + 'd ago';
 }
 
-function unlinkContext() {
-  document.getElementById('context-chip').classList.add('hidden');
-}
-
 // ── Chat Rooms ────────────────────────────────────────────────────────────────
 
 let currentRoom   = null;
-let viewMode      = 'chat';
 let roomPollTimer = null;
 let lastMsgTime   = null;
 let roomSwitchToken = 0;   // guards against out-of-order room switches
@@ -1380,7 +424,6 @@ async function loadRooms() {
 
 async function switchToRoom(roomId) {
   stopRoomPoll();
-  if (isStreaming) stopGeneration();
 
   // Guard against out-of-order resolution: if a newer switch starts while this
   // fetch is in flight, abandon this one so we don't land on the wrong room.
@@ -1389,10 +432,9 @@ async function switchToRoom(roomId) {
   if (myToken !== roomSwitchToken) return;
 
   currentRoom = room;
-  viewMode = 'room';
 
-  document.getElementById('chat-mode').classList.add('hidden');
-  document.getElementById('chat-mode').classList.remove('flex');
+  document.getElementById('no-room-state').classList.add('hidden');
+  document.getElementById('no-room-state').classList.remove('flex');
   document.getElementById('room-mode').classList.remove('hidden');
   document.getElementById('room-mode').classList.add('flex');
 
@@ -1406,9 +448,9 @@ async function switchToRoom(roomId) {
   roomPollTimer = setInterval(pollRoomMessages, 3000);
   loadRooms(); // refresh sidebar highlight
 
-  // Auto-send the initial planning brief left by work.html's planWithAI(),
-  // same pattern as the 1:1 session path — only if this is the linked room
-  // and it has no messages yet (beyond the "Room created" system message).
+  // Auto-send the initial planning brief left by work.html's planWithAI() —
+  // only if this is the linked room and it has no messages yet (beyond the
+  // "Room created" system message).
   if (pendingPlanContext && pendingPlanContext.roomId === roomId) {
     const ctx = pendingPlanContext;
     pendingPlanContext = null;
@@ -1432,15 +474,14 @@ async function switchToRoom(roomId) {
   };
 }
 
-function switchToChat() {
+function closeRoom() {
   stopRoomPoll();
   roomSwitchToken++;   // supersede any in-flight room switch
   currentRoom = null;
-  viewMode = 'chat';
   document.getElementById('room-mode').classList.add('hidden');
   document.getElementById('room-mode').classList.remove('flex');
-  document.getElementById('chat-mode').classList.remove('hidden');
-  document.getElementById('chat-mode').classList.add('flex');
+  document.getElementById('no-room-state').classList.remove('hidden');
+  document.getElementById('no-room-state').classList.add('flex');
   loadRooms();
 }
 
@@ -1663,7 +704,7 @@ async function sendRoomMessage() {
 async function deleteCurrentRoom() {
   if (!currentRoom || !confirm(`Delete "${currentRoom.name}"? This cannot be undone.`)) return;
   await fetch(`/api/chat-rooms/${currentRoom.id}`, { method: 'DELETE' });
-  switchToChat();
+  closeRoom();
   loadRooms();
 }
 
@@ -1756,7 +797,5 @@ async function submitAddMember() {
   renderRoomHeader(room);
 }
 
-// Load rooms on page load alongside sessions
-document.addEventListener('DOMContentLoaded', () => { loadRooms(); });
 </script>
 {% endblock %}
