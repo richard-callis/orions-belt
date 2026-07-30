@@ -110,7 +110,7 @@ class TestAuthorizedDirsBlock:
 
         captured = {}
 
-        def fake_retry(base_url, api_key, model, convo, tool_defs, max_retries=2):
+        def fake_retry(base_url, api_key, model, convo, tool_defs, max_retries=2, session_id=None, run_id=None):
             captured["system_content"] = convo[0]["content"]
             return "ok", [], 0
 

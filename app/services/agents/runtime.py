@@ -129,7 +129,8 @@ class AgentRuntime:
         final_text = ""
         for _ in range(max_tool_iters):
             text, tool_calls, _tok = retry_with_recovery(
-                self.base_url, self.api_key, self.model, convo, tool_defs, max_retries=2
+                self.base_url, self.api_key, self.model, convo, tool_defs, max_retries=2,
+                session_id=session_id, run_id=run_id,
             )
             final_text = (text or "").strip()
             if not tool_calls:

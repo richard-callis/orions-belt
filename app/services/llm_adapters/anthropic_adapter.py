@@ -95,6 +95,8 @@ def _to_anthropic_tools(tool_defs: list[dict]) -> list[dict]:
 
 
 class AnthropicAdapter(LLMAdapter):
+    last_usage: dict | None = None
+
     def __init__(self, base_url: str, api_key: str, model: str):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -159,5 +161,7 @@ class AnthropicAdapter(LLMAdapter):
                 })
 
         response_text = "".join(text_parts)
-        tokens = (resp.usage.input_tokens or 0) + (resp.usage.output_tokens or 0)
-        return response_text, tool_calls, tokens
+        input_tokens = resp.usage.input_tokens or 0
+        output_tokens = resp.usage.output_tokens or 0
+        self.last_usage = {"input": input_tokens, "output": output_tokens, "model": self.model}
+        return response_text, tool_calls, input_tokens + output_tokens

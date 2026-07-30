@@ -8,7 +8,15 @@ class LLMAdapter(ABC):
 
     complete() must return (response_text, tool_calls, tokens) — identical
     signature to the old _call_llm_sync so retry_with_recovery needs no changes.
+
+    Implementations must also set `self.last_usage = {"input": int, "output":
+    int, "model": str}` before returning from complete() — the input/output
+    split that `tokens` (their sum) doesn't carry. `_call_llm_sync` reads this
+    after the call to log per-call usage/cost without changing complete()'s
+    return signature.
     """
+
+    last_usage: dict | None = None
 
     @abstractmethod
     def complete(

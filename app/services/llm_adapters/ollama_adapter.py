@@ -27,6 +27,8 @@ class OllamaAdapter(LLMAdapter):
         self.host = re.sub(r"/v1/?$", "", base_url.rstrip("/"))
         self.model = model
 
+    last_usage: dict | None = None
+
     def complete(
         self,
         messages: list[dict],
@@ -73,6 +75,11 @@ class OllamaAdapter(LLMAdapter):
                 "args": fn.arguments or {},
             })
 
-        # Ollama doesn't return token counts in all versions
-        tokens = getattr(resp, "eval_count", 0) or 0
-        return response_text, tool_calls, tokens
+        # Ollama doesn't return token counts in all versions. prompt_eval_count
+        # is the input/prompt tokens, eval_count is the output/completion
+        # tokens — using eval_count alone (as this did previously) silently
+        # dropped the entire prompt side of every count.
+        input_tokens = getattr(resp, "prompt_eval_count", 0) or 0
+        output_tokens = getattr(resp, "eval_count", 0) or 0
+        self.last_usage = {"input": input_tokens, "output": output_tokens, "model": self.model}
+        return response_text, tool_calls, input_tokens + output_tokens
