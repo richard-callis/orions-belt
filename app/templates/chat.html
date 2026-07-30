@@ -461,6 +461,10 @@ async function loadMessages(sessionId) {
     const res = await fetch(`/chat/api/sessions/${sessionId}/messages`);
     const data = await res.json();
 
+    // If the user switched sessions while this was loading, don't paint the
+    // wrong history into the now-current session.
+    if (sessionId !== currentSessionId) return;
+
     // Handle both old format (array) and new format (object with messages + compactions)
     let messages, compactions = [];
     if (Array.isArray(data)) {
@@ -806,6 +810,9 @@ async function getActiveProviderConfig() {
 async function streamResponse(userPrompt) {
   isStreaming = true;
   abortController = new AbortController();
+  // Bind this stream to the session it started in, so buffered SSE events that
+  // drain after a session switch don't write into a different session.
+  const streamSessionId = currentSessionId;
 
   // UI state
   document.getElementById('send-btn').classList.add('hidden');
@@ -874,6 +881,12 @@ async function streamResponse(userPrompt) {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+
+      // Session switched while streaming — stop draining into the wrong session.
+      if (streamSessionId !== currentSessionId) {
+        try { await reader.cancel(); } catch {}
+        break;
+      }
 
       buffer += decoder.decode(value, { stream: true });
 
@@ -1037,8 +1050,9 @@ async function streamResponse(userPrompt) {
     document.getElementById('stop-btn').classList.add('hidden');
     document.getElementById('stream-status').textContent = '';
 
-    // Update token count if bubble is still present
-    if (assistantDiv.isConnected) {
+    // Update token count only if the bubble is still present AND we're still on
+    // the session this stream belongs to.
+    if (assistantDiv.isConnected && streamSessionId === currentSessionId) {
       const tokenEst = Math.ceil(totalText.length / 4);
       const tokenEl = assistantDiv.querySelector('.js-assistant-tokens');
       if (tokenEl) tokenEl.textContent = `${tokenEst} tokens`;
@@ -1286,6 +1300,7 @@ let currentRoom   = null;
 let viewMode      = 'chat';
 let roomPollTimer = null;
 let lastMsgTime   = null;
+let roomSwitchToken = 0;   // guards against out-of-order room switches
 
 const ROOM_COLORS = {
   general:  { bg: 'bg-text-muted/10',  text: 'text-text-muted',  label: 'General'  },
@@ -1326,7 +1341,12 @@ async function switchToRoom(roomId) {
   stopRoomPoll();
   if (isStreaming) stopGeneration();
 
+  // Guard against out-of-order resolution: if a newer switch starts while this
+  // fetch is in flight, abandon this one so we don't land on the wrong room.
+  const myToken = ++roomSwitchToken;
   const room = await fetch(`/api/chat-rooms/${roomId}`).then(r => r.json());
+  if (myToken !== roomSwitchToken) return;
+
   currentRoom = room;
   viewMode = 'room';
 
@@ -1341,7 +1361,7 @@ async function switchToRoom(roomId) {
   const msgs = room.messages || [];
   lastMsgTime = msgs.length ? msgs[msgs.length - 1].created_at : null;
 
-  roomPollTimer = setInterval(pollRoomMessages, 10000);
+  roomPollTimer = setInterval(pollRoomMessages, 3000);
   loadRooms(); // refresh sidebar highlight
 
   // Wire room input keyboard shortcut
@@ -1357,6 +1377,7 @@ async function switchToRoom(roomId) {
 
 function switchToChat() {
   stopRoomPoll();
+  roomSwitchToken++;   // supersede any in-flight room switch
   currentRoom = null;
   viewMode = 'chat';
   document.getElementById('room-mode').classList.add('hidden');
@@ -1374,11 +1395,17 @@ async function pollRoomMessages() {
   if (!currentRoom) return;
   // Only poll when the tab is visible (saves bandwidth when backgrounded)
   if (document.hidden) return;
+  // Capture the room id + cursor: currentRoom can change during the await, and
+  // a stale response must NOT append into (or corrupt the cursor of) the room
+  // the user has since switched to.
+  const roomId = currentRoom.id;
+  const cursor = lastMsgTime;
   try {
-    const url = lastMsgTime
-      ? `/api/chat-rooms/${currentRoom.id}/messages?after=${encodeURIComponent(lastMsgTime)}`
-      : `/api/chat-rooms/${currentRoom.id}/messages?limit=5`;
+    const url = cursor
+      ? `/api/chat-rooms/${roomId}/messages?after=${encodeURIComponent(cursor)}`
+      : `/api/chat-rooms/${roomId}/messages?limit=5`;
     const newMsgs = await fetch(url).then(r => r.json());
+    if (!currentRoom || currentRoom.id !== roomId) return;  // switched away — drop
     if (newMsgs.length) {
       newMsgs.forEach(m => appendRoomMessage(m));
       lastMsgTime = newMsgs[newMsgs.length - 1].created_at;

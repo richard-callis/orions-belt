@@ -1,15 +1,24 @@
 """
 Chat Rooms API — group chat spaces for agents and the user.
 """
+import json
+import logging
+import re
+import threading
 import uuid
 from datetime import datetime, timezone
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 
 from app import db
 from app.models.chat_room import ChatRoom, ChatRoomMember, ChatRoomMessage
 
+log = logging.getLogger("orions-belt.rooms")
+
 bp = Blueprint("chat_rooms", __name__, url_prefix="/api/chat-rooms")
+
+# How many prior room messages to feed an agent as conversational context.
+_ROOM_HISTORY_LIMIT = 40
 
 
 def _now():
@@ -18,6 +27,176 @@ def _now():
 
 def _uuid():
     return str(uuid.uuid4())
+
+
+# ── Agent replies in rooms ────────────────────────────────────────────────────
+#
+# A human message starts a bounded "burst" of agent activity. Agents reply, and
+# an agent can pull another agent in by @mentioning it — but the whole burst is
+# capped so agents can't run away talking to each other. Only human messages
+# start a burst; agent messages never trigger a new one on their own.
+
+_MAX_AGENT_TURNS_DEFAULT = 6   # default cap; overridable via admin setting
+_MAX_AGENT_TURNS_CEILING = 30  # hard upper bound for the admin setting
+
+
+def _max_agent_turns() -> int:
+    """The admin-configurable cap on agent messages per human message.
+
+    Read from the `agents.max_agent_turns` setting so an administrator can tune
+    how much agents talk to each other, clamped to a sane range.
+    """
+    from app.models.settings import Setting
+    try:
+        raw = Setting.get("agents.max_agent_turns")
+        n = int(raw) if raw not in (None, "") else _MAX_AGENT_TURNS_DEFAULT
+    except (ValueError, TypeError):
+        n = _MAX_AGENT_TURNS_DEFAULT
+    return max(1, min(n, _MAX_AGENT_TURNS_CEILING))
+
+
+def _normalize_handle(name: str) -> str:
+    """A comparable @handle for an agent name: lowercased, spaces→hyphens."""
+    return re.sub(r"[^a-z0-9-]", "", (name or "").lower().replace(" ", "-"))
+
+
+def _mentioned_agents(content: str, agents: list) -> list:
+    """Agents explicitly @mentioned in the message (by full handle or first name)."""
+    tokens = {t.lower() for t in re.findall(r"@([\w-]+)", content or "")}
+    if not tokens:
+        return []
+    hits = []
+    for a in agents:
+        handle = _normalize_handle(a.name)
+        first = (a.name or "").lower().split(" ")[0] if a.name else ""
+        if handle in tokens or (first and first in tokens):
+            hits.append(a)
+    return hits
+
+
+def _build_room_history(room_id: str, agent, roster: dict) -> list:
+    """Build an OpenAI-style message list for an agent replying in a room.
+
+    The agent's own past messages map to `assistant`; humans map to `user`;
+    OTHER agents' messages are user turns prefixed with their name so a
+    multi-agent room stays coherent. `roster` maps agent_id → name.
+    """
+    history = (
+        ChatRoomMessage.query.filter_by(room_id=room_id)
+        .order_by(ChatRoomMessage.created_at.desc())
+        .limit(_ROOM_HISTORY_LIMIT)
+        .all()
+    )
+    history.reverse()
+
+    others = [n for aid, n in roster.items() if aid != agent.id]
+    sys = agent.system_prompt or f"You are {agent.name}, a helpful AI assistant."
+    sys += (
+        f"\n\nYou are '{agent.name}', a participant in a group chat with the user"
+        + (f" and other agents: {', '.join(others)}." if others else ".")
+        + " Reply conversationally as yourself, in the first person; do not role-play "
+        "other participants or prefix your reply with your own name. Keep replies focused. "
+    )
+    if others:
+        sys += (
+            "To bring another agent into the discussion, @mention them by name "
+            "(e.g. @" + _normalize_handle(others[0]) + "). Only do so when their input is "
+            "genuinely needed. If you have nothing to add, reply briefly and stop. "
+        )
+    sys += "Use the available tools when they help answer or complete the request."
+
+    msgs = [{"role": "system", "content": sys}]
+    for m in history:
+        if m.sender_type == "system":
+            continue
+        if m.sender_type == "agent" and m.agent_id == agent.id:
+            msgs.append({"role": "assistant", "content": m.content})
+        elif m.sender_type == "agent":
+            label = roster.get(m.agent_id, "Another agent")
+            msgs.append({"role": "user", "content": f"[{label}]: {m.content}"})
+        else:  # human
+            msgs.append({"role": "user", "content": m.content})
+    return msgs
+
+
+def _generate_agent_reply(agent, provider, room_id, roster) -> str:
+    """Produce one agent reply via the shared AgentRuntime (tools + tier gating).
+
+    Tools are the AGENT's (its allowed_tools). Tier 0-2 auto-run; Tier 3
+    (destructive) are refused in chat and must go through a Task.
+    """
+    from app.services.agents.runtime import AgentRuntime
+    convo = _build_room_history(room_id, agent, roster)
+    return AgentRuntime(agent, provider).chat_reply(convo)
+
+
+def _run_room_conversation(app, room_id: str, human_content: str):
+    """Run one bounded burst of agent activity in response to a human message.
+
+    Runs in a background thread (independent of whatever the user is viewing, so
+    the conversation continues even after they switch away). Round 1: the
+    @mentioned agents reply, or all agents if none were mentioned. After that,
+    agents an earlier reply @mentions are pulled in — capped at _MAX_AGENT_TURNS
+    total so agents can't loop forever.
+    """
+    with app.app_context():
+        try:
+            from app.models.agent import Agent
+            from app.services.agents.runtime import resolve_active_provider
+
+            members = (
+                ChatRoomMember.query.filter_by(room_id=room_id)
+                .filter(ChatRoomMember.agent_id.isnot(None))
+                .all()
+            )
+            agents = [a for a in (Agent.query.get(m.agent_id) for m in members) if a]
+            if not agents:
+                return
+            roster = {a.id: a.name for a in agents}
+
+            prov = resolve_active_provider()
+            cap = _max_agent_turns()   # admin-configurable
+
+            queue = list(_mentioned_agents(human_content, agents) or agents)
+            queued_ids = {a.id for a in queue}
+            turns = 0
+            last_id = None
+
+            while queue and turns < cap:
+                agent = queue.pop(0)
+                queued_ids.discard(agent.id)
+                if agent.id == last_id:
+                    continue  # no immediate self-reply
+                try:
+                    reply = _generate_agent_reply(agent, prov, room_id, roster)
+                except Exception as e:
+                    db.session.rollback()
+                    log.warning("room reply failed agent=%s room=%s: %s", agent.id, room_id, e)
+                    continue
+
+                reply = (reply or "").strip()
+                if not reply:
+                    continue
+
+                db.session.add(ChatRoomMessage(
+                    id=_uuid(), room_id=room_id, agent_id=agent.id,
+                    sender_type="agent", content=reply,
+                ))
+                room = ChatRoom.query.get(room_id)
+                if room:
+                    room.updated_at = _now()
+                db.session.commit()
+
+                turns += 1
+                last_id = agent.id
+
+                # Cascade: agents THIS reply @mentions (not itself) join the queue.
+                for m in _mentioned_agents(reply, agents):
+                    if m.id != agent.id and m.id not in queued_ids:
+                        queue.append(m)
+                        queued_ids.add(m.id)
+        except Exception as e:
+            log.warning("room conversation failed room=%s: %s", room_id, e)
 
 
 # ── Rooms CRUD ────────────────────────────────────────────────────────────────
@@ -137,7 +316,27 @@ def post_message(room_id):
     db.session.add(msg)
     room.updated_at = _now()
     db.session.commit()
-    return jsonify(msg.to_dict()), 201
+    result = msg.to_dict()
+
+    # A human message triggers the room's agent members to reply (in a
+    # background thread so this request returns immediately; the client poll
+    # delivers the replies). Agent-authored messages never trigger, so agents
+    # can't loop replying to each other.
+    if sender_type == "human":
+        has_agents = (
+            ChatRoomMember.query.filter_by(room_id=room_id)
+            .filter(ChatRoomMember.agent_id.isnot(None))
+            .first()
+        )
+        if has_agents:
+            app = current_app._get_current_object()
+            threading.Thread(
+                target=_run_room_conversation,
+                args=(app, room_id, content),
+                daemon=True,
+            ).start()
+
+    return jsonify(result), 201
 
 
 @bp.route("/<room_id>/messages", methods=["GET"])
