@@ -54,7 +54,8 @@ class TestBuildRoomHistory:
             ])
             db.session.commit()
             try:
-                msgs = _build_room_history("r1", a1, Agent)
+                roster = {"a1": "Nova", "a2": "Atlas"}
+                msgs = _build_room_history("r1", a1, roster)
                 assert msgs[0]["role"] == "system"
                 assert "Nova" in msgs[0]["content"]
                 # human → user
@@ -70,6 +71,76 @@ class TestBuildRoomHistory:
                 ChatRoom.query.filter_by(id="r1").delete()
                 Agent.query.filter(Agent.id.in_(["a1", "a2"])).delete(synchronize_session=False)
                 db.session.commit()
+
+
+class TestConversationOrchestration:
+    """The bounded agent-to-agent burst: cascade via @mention, capped total."""
+
+    def _make_room(self, rid, agent_specs):
+        room = ChatRoom(id=rid, name=rid)
+        db.session.add(room)
+        for aid, name in agent_specs:
+            db.session.add(Agent(id=aid, name=name, status="idle"))
+            db.session.add(ChatRoomMember(id=f"{rid}-{aid}", room_id=rid, agent_id=aid))
+        db.session.commit()
+
+    def _cleanup(self, rid, agent_ids):
+        ChatRoomMessage.query.filter_by(room_id=rid).delete()
+        ChatRoomMember.query.filter_by(room_id=rid).delete()
+        ChatRoom.query.filter_by(id=rid).delete()
+        Agent.query.filter(Agent.id.in_(agent_ids)).delete(synchronize_session=False)
+        db.session.commit()
+
+    def test_cap_prevents_runaway(self, app, monkeypatch):
+        import app.routes.chat_rooms as cr
+        monkeypatch.setattr("app.routes.settings._get_active_provider",
+                            lambda: {"base_url": "x", "api_key": "y", "model": "m"})
+        # Each agent always @mentions the other → infinite cascade without the cap.
+        def fake_reply(agent, *a, **k):
+            other = "atlas" if agent.name.lower() == "nova" else "nova"
+            return f"passing to @{other}"
+        monkeypatch.setattr(cr, "_generate_agent_reply", fake_reply)
+        with app.app_context():
+            self._make_room("r-cap", [("nova", "Nova"), ("atlas", "Atlas")])
+            try:
+                cr._run_room_conversation(app, "r-cap", "everyone talk")
+                count = ChatRoomMessage.query.filter_by(
+                    room_id="r-cap", sender_type="agent").count()
+                assert count == cr._MAX_AGENT_TURNS   # capped, not infinite
+            finally:
+                self._cleanup("r-cap", ["nova", "atlas"])
+
+    def test_no_cascade_when_no_mentions(self, app, monkeypatch):
+        import app.routes.chat_rooms as cr
+        monkeypatch.setattr("app.routes.settings._get_active_provider",
+                            lambda: {"base_url": "x", "api_key": "y", "model": "m"})
+        monkeypatch.setattr(cr, "_generate_agent_reply", lambda agent, *a, **k: "just a reply")
+        with app.app_context():
+            self._make_room("r-nc", [("nova", "Nova"), ("atlas", "Atlas")])
+            try:
+                cr._run_room_conversation(app, "r-nc", "hi everyone")
+                # Each of the 2 agents replies once; no one is pulled back in.
+                count = ChatRoomMessage.query.filter_by(
+                    room_id="r-nc", sender_type="agent").count()
+                assert count == 2
+            finally:
+                self._cleanup("r-nc", ["nova", "atlas"])
+
+    def test_targeted_mention_only_that_agent(self, app, monkeypatch):
+        import app.routes.chat_rooms as cr
+        monkeypatch.setattr("app.routes.settings._get_active_provider",
+                            lambda: {"base_url": "x", "api_key": "y", "model": "m"})
+        monkeypatch.setattr(cr, "_generate_agent_reply", lambda agent, *a, **k: "on it")
+        with app.app_context():
+            self._make_room("r-tm", [("nova", "Nova"), ("atlas", "Atlas")])
+            try:
+                cr._run_room_conversation(app, "r-tm", "hey @nova can you look")
+                replies = ChatRoomMessage.query.filter_by(
+                    room_id="r-tm", sender_type="agent").all()
+                assert len(replies) == 1
+                assert replies[0].agent_id == "nova"
+            finally:
+                self._cleanup("r-tm", ["nova", "atlas"])
 
 
 class TestPostMessageTrigger:
