@@ -49,6 +49,50 @@ class TestAgentRuntimeTools:
                 db.session.commit()
 
 
+class TestUnknownToolNameRefused:
+    def test_hallucinated_tool_name_is_refused_not_defaulted_to_tier_0(self, app, monkeypatch):
+        """A model can emit a tool_call for a name it was never given a schema
+        for. tier_map.get(name, 0) used to default that to tier 0 — bypassing
+        both the agent's allowlist and the tier ceiling entirely (e.g. a
+        Tier-3 delete_file call under an unknown name would sail straight
+        through). It must be refused outright instead."""
+        import app.services.llm as llm_mod
+
+        def fake_retry(*a, **k):
+            return "done", [{"id": "1", "name": "delete_file", "args": {"path": "/x"}}], 1
+
+        called = {"n": 0}
+        def spy_run_tool(self, *a, **k):
+            called["n"] += 1
+            return "should never run"
+
+        monkeypatch.setattr(llm_mod, "build_tool_definitions", lambda tools: [])
+        monkeypatch.setattr(llm_mod, "retry_with_recovery", fake_retry)
+        monkeypatch.setattr(AgentRuntime, "run_tool", spy_run_tool)
+        with app.app_context():
+            # Only read_file is registered/allowed — delete_file is not in
+            # tier_map at all, simulating a hallucinated/disallowed tool name.
+            db.session.add(MCPTool(id="t-unknown1", name="read_file", tier=0, enabled=True, source="builtin"))
+            agent = _real_agent(id="ra-unknown1", allowed_tools='["read_file"]')
+            db.session.add(agent)
+            db.session.commit()
+            try:
+                rt = AgentRuntime(agent, provider={"base_url": "x", "api_key": "y", "model": "m"})
+                tool_log = []
+                rt.chat_reply([{"role": "system", "content": "hi"}], max_tool_iters=2, tool_log=tool_log)
+                assert called["n"] == 0   # run_tool (and thus the real executor) never invoked
+                assert tool_log[0]["refused"] is True
+                assert "not available" in tool_log[0]["result"]
+            finally:
+                from app.models.agent import TokenUsage
+                TokenUsage.query.filter_by(agent_id="ra-unknown1").delete()
+                MCPTool.query.filter_by(id="t-unknown1").delete()
+                agent2 = db.session.get(type(agent), "ra-unknown1")
+                if agent2:
+                    db.session.delete(agent2)
+                db.session.commit()
+
+
 class TestAuthorizedDirsBlock:
     def test_empty_when_agent_has_no_file_tools(self, app):
         with app.app_context():
@@ -215,6 +259,7 @@ class TestChatReplyLoopDetection:
         with app.app_context():
             agent = _real_agent(id="ra-loop1")
             db.session.add(agent)
+            db.session.add(MCPTool(id="t-loop1", name="read_file", tier=0, enabled=True, source="builtin"))
             db.session.commit()
             try:
                 rt = AgentRuntime(agent, provider={"base_url": "x", "api_key": "y", "model": "m"})
@@ -227,6 +272,7 @@ class TestChatReplyLoopDetection:
             finally:
                 from app.models.agent import TokenUsage
                 TokenUsage.query.filter_by(agent_id="ra-loop1").delete()
+                MCPTool.query.filter_by(id="t-loop1").delete()
                 agent2 = db.session.get(type(agent), "ra-loop1")
                 if agent2:
                     db.session.delete(agent2)
@@ -249,6 +295,7 @@ class TestChatReplyLoopDetection:
         with app.app_context():
             agent = _real_agent(id="ra-loop2")
             db.session.add(agent)
+            db.session.add(MCPTool(id="t-loop2", name="read_file", tier=0, enabled=True, source="builtin"))
             db.session.commit()
             try:
                 rt = AgentRuntime(agent, provider={"base_url": "x", "api_key": "y", "model": "m"})
@@ -261,6 +308,7 @@ class TestChatReplyLoopDetection:
             finally:
                 from app.models.agent import TokenUsage
                 TokenUsage.query.filter_by(agent_id="ra-loop2").delete()
+                MCPTool.query.filter_by(id="t-loop2").delete()
                 agent2 = db.session.get(type(agent), "ra-loop2")
                 if agent2:
                     db.session.delete(agent2)

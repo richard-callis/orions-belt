@@ -70,8 +70,14 @@ _EXTRACTION_PROMPT = (
 
 
 def _strip_markers(text: str) -> str:
+    # A single left-to-right .replace() pass can leave a *new* marker
+    # instance behind when removing one occurrence joins two fragments back
+    # into the literal marker text (e.g. "...Memory Con" + "text ---" ->
+    # "...Memory Context ---"). Loop to a fixed point so no marker substring
+    # survives, however it was assembled.
     for marker in _MEMORY_MARKERS:
-        text = text.replace(marker, "")
+        while marker in text:
+            text = text.replace(marker, "")
     return text
 
 
@@ -79,10 +85,20 @@ def _is_suspicious(text: str) -> bool:
     return any(p.search(text) for p in _SUSPICIOUS_PATTERNS)
 
 
+def _contains_marker(text: str) -> bool:
+    return any(marker in text for marker in _MEMORY_MARKERS)
+
+
 def _sanitize_lesson(title, content) -> tuple[str, str] | None:
     """Apply output constraints; return (title, content) or None if rejected."""
-    title = _strip_markers(str(title or "")).strip()[:_MAX_TITLE_LEN]
-    content = _strip_markers(str(content or "")).strip()[:_MAX_CONTENT_LEN]
+    raw_title, raw_content = str(title or ""), str(content or "")
+    # Reject outright rather than silently repair — a lesson whose raw output
+    # contains a memory-context delimiter at all is treated as an attempted
+    # (or accidental) forgery, not a text-cleanup problem.
+    if _contains_marker(raw_title) or _contains_marker(raw_content):
+        return None
+    title = _strip_markers(raw_title).strip()[:_MAX_TITLE_LEN]
+    content = _strip_markers(raw_content).strip()[:_MAX_CONTENT_LEN]
     if not title or not content:
         return None
     if _is_suspicious(title) or _is_suspicious(content):

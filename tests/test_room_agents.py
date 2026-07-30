@@ -72,6 +72,32 @@ class TestBuildRoomHistory:
                 Agent.query.filter(Agent.id.in_(["a1", "a2"])).delete(synchronize_session=False)
                 db.session.commit()
 
+    def test_tool_activity_messages_excluded_from_llm_history(self, app):
+        """sender_type="tool" rows (posted by _post_tool_activity) must never
+        be replayed into the LLM as a user turn — the else-branch in
+        _build_room_history used to catch anything that wasn't "system" or
+        "agent" and label it as human, which would hand raw/untrusted tool
+        output to the model as if the user had said it."""
+        with app.app_context():
+            a1 = Agent(id="a1", name="Nova", system_prompt="You are Nova.", status="idle")
+            room = ChatRoom(id="r-tool-hist", name="room")
+            db.session.add_all([a1, room])
+            db.session.commit()
+            db.session.add(ChatRoomMessage(
+                id="m-tool1", room_id="r-tool-hist", sender_type="tool", agent_id="a1",
+                content='{"tool": "read_file", "args": "{}", "result": "SECRET FILE CONTENTS", "error": false, "refused": false}',
+            ))
+            db.session.commit()
+            try:
+                msgs = _build_room_history("r-tool-hist", a1, {"a1": "Nova"})
+                assert all("SECRET FILE CONTENTS" not in (m.get("content") or "") for m in msgs)
+                assert len(msgs) == 1  # only the system prompt — no turn was synthesized for it
+            finally:
+                ChatRoomMessage.query.filter_by(room_id="r-tool-hist").delete()
+                ChatRoom.query.filter_by(id="r-tool-hist").delete()
+                Agent.query.filter_by(id="a1").delete()
+                db.session.commit()
+
     def test_memory_context_prepended_to_system_prompt(self, app):
         with app.app_context():
             a1 = Agent(id="a1", name="Nova", system_prompt="You are Nova.", status="idle")
@@ -381,6 +407,26 @@ class TestToolActivityVisibility:
                 assert count == 0
             finally:
                 self._cleanup("r-tool2", "a-tool2")
+
+    def test_post_tool_activity_truncates_large_results(self, app):
+        """A tool like read_file can return up to 64KB; the room message is
+        display-only (the UI itself only shows the first 2000 chars), so the
+        persisted/PII-scanned result must be capped rather than stored in
+        full on every tool call."""
+        import app.routes.chat_rooms as cr
+        with app.app_context():
+            self._make_room_and_agent("r-tool4", "a-tool4")
+            try:
+                huge = "x" * 100_000
+                tool_log = [{"name": "read_file", "args": {"path": "/x"}, "tier": 0,
+                            "result": huge, "error": False, "refused": False}]
+                cr._post_tool_activity("r-tool4", "a-tool4", tool_log)
+                msg = ChatRoomMessage.query.filter_by(room_id="r-tool4", sender_type="tool").first()
+                import json
+                data = json.loads(msg.content)
+                assert len(data["result"]) <= 4096
+            finally:
+                self._cleanup("r-tool4", "a-tool4")
 
     def test_generate_agent_reply_surfaces_tool_calls_from_chat_reply(self, app, monkeypatch):
         import app.routes.chat_rooms as cr

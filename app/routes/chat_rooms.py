@@ -137,7 +137,12 @@ def _post_tool_activity(room_id: str, agent_id: str, tool_log: list):
         return
     for t in tool_log:
         args_str = json.dumps(t.get("args") or {})
-        result_str = _sanitize_for_room(t.get("result", ""), room_id)
+        # Cap before persisting/scanning — a tool like read_file can return
+        # up to 64KB, and this row is display-only (the UI itself only shows
+        # the first 2000 chars), so there's no reason to store or PII-scan
+        # the full blob. Matches AgentStep.tool_output's existing 4096 cap.
+        raw_result = str(t.get("result", ""))[:4096]
+        result_str = _sanitize_for_room(raw_result, room_id)
         content = json.dumps({
             "tool": t.get("name", ""),
             "args": _sanitize_for_room(args_str, room_id),
@@ -227,15 +232,18 @@ def _build_room_history(room_id: str, agent, roster: dict, memory_context: str =
 
     msgs = [{"role": "system", "content": sys}]
     for m in history:
-        if m.sender_type == "system":
-            continue
         if m.sender_type == "agent" and m.agent_id == agent.id:
             msgs.append({"role": "assistant", "content": m.content})
         elif m.sender_type == "agent":
             label = roster.get(m.agent_id, "Another agent")
             msgs.append({"role": "user", "content": f"[{label}]: {m.content}"})
-        else:  # human
+        elif m.sender_type == "human":
             msgs.append({"role": "user", "content": m.content})
+        # else ("system", "tool"): not conversational — never replayed into
+        # an LLM turn. "tool" messages in particular carry raw, untrusted
+        # tool output (file contents, API responses); relabeling that as
+        # something the human said would both blow up context with large
+        # results and hand a prompt-injection vector straight to the model.
     return msgs
 
 
