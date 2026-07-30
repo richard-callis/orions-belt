@@ -230,6 +230,55 @@ def _seed_builtin_tools(app):
             }),
         ),
         dict(
+            name="create_github_pr",
+            tier=1,
+            description="Create a pull request in a GitHub repository via a configured github connector",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "GitHub connector name as configured in Settings"},
+                    "owner": {"type": "string", "description": "Repository owner (user or organization)"},
+                    "repo": {"type": "string", "description": "Repository name"},
+                    "title": {"type": "string", "description": "Pull request title"},
+                    "head": {"type": "string", "description": "The branch containing your changes"},
+                    "base": {"type": "string", "description": "The branch you want to merge into"},
+                    "body": {"type": "string", "description": "Pull request description (optional)"},
+                },
+                "required": ["connector", "owner", "repo", "title", "head", "base"],
+            }),
+        ),
+        dict(
+            name="comment_on_github_pr",
+            tier=1,
+            description="Post a comment on a GitHub pull request via a configured github connector",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "GitHub connector name as configured in Settings"},
+                    "owner": {"type": "string", "description": "Repository owner (user or organization)"},
+                    "repo": {"type": "string", "description": "Repository name"},
+                    "pr_number": {"type": "integer", "description": "Pull request number"},
+                    "body": {"type": "string", "description": "Comment text"},
+                },
+                "required": ["connector", "owner", "repo", "pr_number", "body"],
+            }),
+        ),
+        dict(
+            name="get_github_pr_status",
+            tier=0,
+            description="Read a GitHub pull request's state, mergeable status, and review status via a configured github connector",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "GitHub connector name as configured in Settings"},
+                    "owner": {"type": "string", "description": "Repository owner (user or organization)"},
+                    "repo": {"type": "string", "description": "Repository name"},
+                    "pr_number": {"type": "integer", "description": "Pull request number"},
+                },
+                "required": ["connector", "owner", "repo", "pr_number"],
+            }),
+        ),
+        dict(
             name="create_google_task",
             tier=1,
             description="Create a task in Google Tasks via a configured google connector",

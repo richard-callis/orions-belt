@@ -244,6 +244,7 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         "search_emails": _handle_search_emails,
         "call_connector": _handle_call_connector,
         "fetch_url": _handle_fetch_url,
+        "get_github_pr_status": _handle_get_github_pr_status,
         # Tier 1: create operations
         "create_file": _handle_create_file,
         "append_to_file": _handle_append_to_file,
@@ -253,6 +254,8 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         "create_pdf": _handle_create_pdf,
         "create_ado_workitem": _handle_create_ado_workitem,
         "create_github_issue": _handle_create_github_issue,
+        "create_github_pr": _handle_create_github_pr,
+        "comment_on_github_pr": _handle_comment_on_github_pr,
         "create_google_task": _handle_create_google_task,
         "post_teams_message": _handle_post_teams_message,
         "create_planner_task": _handle_create_planner_task,
@@ -1319,6 +1322,171 @@ async def _handle_create_github_issue(tool_name: str, args: dict) -> str:
         return f"Error: GitHub returned HTTP {resp.status_code}\n{resp.text[:1000]}"
     except Exception as e:
         return f"Error creating GitHub issue: {e}"
+
+
+def _get_github_connector_and_pat(connector_name: str):
+    """Look up a github connector and return (pat, None) or (None, error_message) —
+    shared by the PR workflow tools since all three act on the same connector."""
+    connector = _get_connector(connector_name)
+    if not connector:
+        return None, f"Error: connector '{connector_name}' not found"
+    if connector["type"] != "github":
+        return None, f"Error: connector '{connector_name}' is not a github connector"
+    pat = (connector.get("auth") or {}).get("pat")
+    if not pat:
+        return None, f"Error: connector '{connector_name}' has no personal access token configured"
+    return pat, None
+
+
+async def _handle_create_github_pr(tool_name: str, args: dict) -> str:
+    """Create a pull request in a GitHub repository via a configured github connector."""
+    connector_name = args.get("connector", "")
+    owner = (args.get("owner") or "").strip()
+    repo = (args.get("repo") or "").strip()
+    title = (args.get("title") or "").strip()
+    head = (args.get("head") or "").strip()
+    base = (args.get("base") or "").strip()
+    body = args.get("body") or ""
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not owner:
+        return "Error: owner is required"
+    if not repo:
+        return "Error: repo is required"
+    if not title:
+        return "Error: title is required"
+    if not head:
+        return "Error: head is required (the branch containing your changes)"
+    if not base:
+        return "Error: base is required (the branch you want to merge into)"
+    if not _is_safe_path_segment(owner) or not _is_safe_path_segment(repo):
+        return "Error: owner and repo must not contain '/', '\\', whitespace, '..', '?', '#', or '%'"
+
+    pat, err = _get_github_connector_and_pat(connector_name)
+    if err:
+        return err
+
+    from app.services.connector_auth import build_auth_headers
+    url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
+    headers = build_auth_headers("bearer", {"token": pat})
+    headers["Accept"] = "application/vnd.github+json"
+    payload = {"title": title, "head": head, "base": base}
+    if body:
+        payload["body"] = body
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code == 201:
+            data = resp.json()
+            number = data.get("number")
+            html_url = data.get("html_url", "")
+            return f"Created PR #{number} in {owner}/{repo}: {title}\n{html_url}"
+        return f"Error: GitHub returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error creating GitHub PR: {e}"
+
+
+async def _handle_comment_on_github_pr(tool_name: str, args: dict) -> str:
+    """Comment on a pull request via a configured github connector.
+
+    Uses the issues/comments endpoint — GitHub's API treats every PR as an
+    issue for comment purposes, there is no separate "PR comment" endpoint
+    for a plain top-level comment (as opposed to a line-level review comment).
+    """
+    connector_name = args.get("connector", "")
+    owner = (args.get("owner") or "").strip()
+    repo = (args.get("repo") or "").strip()
+    pr_number = args.get("pr_number")
+    body = (args.get("body") or "").strip()
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not owner:
+        return "Error: owner is required"
+    if not repo:
+        return "Error: repo is required"
+    if not pr_number:
+        return "Error: pr_number is required"
+    if not body:
+        return "Error: body is required"
+    if not _is_safe_path_segment(owner) or not _is_safe_path_segment(repo):
+        return "Error: owner and repo must not contain '/', '\\', whitespace, '..', '?', '#', or '%'"
+    try:
+        pr_number = int(pr_number)
+    except (TypeError, ValueError):
+        return "Error: pr_number must be an integer"
+
+    pat, err = _get_github_connector_and_pat(connector_name)
+    if err:
+        return err
+
+    from app.services.connector_auth import build_auth_headers
+    url = f"https://api.github.com/repos/{owner}/{repo}/issues/{pr_number}/comments"
+    headers = build_auth_headers("bearer", {"token": pat})
+    headers["Accept"] = "application/vnd.github+json"
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, headers=headers, json={"body": body})
+        if resp.status_code == 201:
+            data = resp.json()
+            html_url = data.get("html_url", "")
+            return f"Commented on PR #{pr_number} in {owner}/{repo}\n{html_url}"
+        return f"Error: GitHub returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error commenting on GitHub PR: {e}"
+
+
+async def _handle_get_github_pr_status(tool_name: str, args: dict) -> str:
+    """Read a pull request's state/mergeable/review status via a configured github connector."""
+    connector_name = args.get("connector", "")
+    owner = (args.get("owner") or "").strip()
+    repo = (args.get("repo") or "").strip()
+    pr_number = args.get("pr_number")
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not owner:
+        return "Error: owner is required"
+    if not repo:
+        return "Error: repo is required"
+    if not pr_number:
+        return "Error: pr_number is required"
+    if not _is_safe_path_segment(owner) or not _is_safe_path_segment(repo):
+        return "Error: owner and repo must not contain '/', '\\', whitespace, '..', '?', '#', or '%'"
+    try:
+        pr_number = int(pr_number)
+    except (TypeError, ValueError):
+        return "Error: pr_number must be an integer"
+
+    pat, err = _get_github_connector_and_pat(connector_name)
+    if err:
+        return err
+
+    from app.services.connector_auth import build_auth_headers
+    url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}"
+    headers = build_auth_headers("bearer", {"token": pat})
+    headers["Accept"] = "application/vnd.github+json"
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url, headers=headers)
+        if resp.status_code == 200:
+            data = resp.json()
+            state = data.get("state", "unknown")
+            merged = data.get("merged", False)
+            mergeable = data.get("mergeable")
+            mergeable_state = data.get("mergeable_state", "unknown")
+            return (f"PR #{pr_number} in {owner}/{repo}: state={state} merged={merged} "
+                    f"mergeable={mergeable} mergeable_state={mergeable_state}")
+        return f"Error: GitHub returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error fetching GitHub PR status: {e}"
 
 
 async def _handle_create_google_task(tool_name: str, args: dict) -> str:
