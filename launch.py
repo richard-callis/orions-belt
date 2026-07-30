@@ -440,6 +440,41 @@ def _seed_builtin_tools(app):
             }),
         ),
         dict(
+            name="create_calendar_event",
+            tier=2,
+            description="Create a calendar event via a configured microsoft_graph connector (requires the 'calendar' "
+                        "scope to be granted). Tier 2 — sends a real invite to real people, refused during "
+                        "unattended autonomous goal pursuit.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Microsoft Graph connector name as configured in Settings"},
+                    "subject": {"type": "string", "description": "Event subject/title"},
+                    "start": {"type": "string", "description": "Start time, ISO 8601 (e.g. 2026-08-01T14:00:00), UTC"},
+                    "end": {"type": "string", "description": "End time, ISO 8601, UTC"},
+                    "attendees": {"type": "array", "items": {"type": "string"}, "description": "Attendee email addresses"},
+                    "body": {"type": "string", "description": "Event body/description (optional)"},
+                },
+                "required": ["connector", "subject", "start", "end"],
+            }),
+        ),
+        dict(
+            name="check_calendar_availability",
+            tier=0,
+            description="Check free/busy availability for a set of attendees via a configured microsoft_graph "
+                        "connector (requires the 'calendar' scope to be granted)",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Microsoft Graph connector name as configured in Settings"},
+                    "attendees": {"type": "array", "items": {"type": "string"}, "description": "Email addresses to check"},
+                    "start": {"type": "string", "description": "Start time, ISO 8601, UTC"},
+                    "end": {"type": "string", "description": "End time, ISO 8601, UTC"},
+                },
+                "required": ["connector", "attendees", "start", "end"],
+            }),
+        ),
+        dict(
             name="create_salesforce_record",
             tier=2,
             description="Create a record (Lead, Case, Account, etc.) via a configured salesforce connector. "

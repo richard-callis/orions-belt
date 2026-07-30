@@ -199,3 +199,136 @@ class TestCreatePlannerTask:
                 "connector": "test-graph", "plan_id": "p", "title": "t",
             }))
         assert "HTTP 403" in result
+
+
+class TestGraphScopeString:
+    def test_defaults_to_teams_and_planner_when_no_scopes_configured(self):
+        from app.services.oauth_providers import get_provider_config
+        cfg = get_provider_config("microsoft_graph", {})
+        assert "ChannelMessage.Send" in cfg["scope"]
+        assert "Tasks.ReadWrite" in cfg["scope"]
+        assert "Calendars.ReadWrite" not in cfg["scope"]
+        assert "Files.ReadWrite" not in cfg["scope"]
+        assert "offline_access" in cfg["scope"]
+
+    def test_composes_from_explicit_scopes(self):
+        from app.services.oauth_providers import get_provider_config
+        cfg = get_provider_config("microsoft_graph", {"scopes": ["calendar", "files"]})
+        assert "Calendars.ReadWrite" in cfg["scope"]
+        assert "Files.ReadWrite" in cfg["scope"]
+        assert "ChannelMessage.Send" not in cfg["scope"]
+        assert "Tasks.ReadWrite" not in cfg["scope"]
+
+    def test_ignores_unknown_scope_keys(self):
+        from app.services.oauth_providers import get_provider_config
+        cfg = get_provider_config("microsoft_graph", {"scopes": ["calendar", "not-a-real-feature"]})
+        assert "Calendars.ReadWrite" in cfg["scope"]
+
+
+class TestGraphRequiredFeatureCheck:
+    def test_blocks_call_when_granted_scope_lacks_the_feature(self, app, graph_connector):
+        with app.app_context():
+            c = Connector.query.filter_by(name="test-graph").first()
+            auth = c.get_auth()
+            auth["granted_scope"] = "offline_access ChannelMessage.Send Tasks.ReadWrite"
+            c.set_auth(auth)
+            db.session.commit()
+
+            token, err = mcp_tools._get_graph_connector_and_token("test-graph", required_feature="calendar")
+        assert token is None
+        assert "was not granted calendar access" in err
+        assert "reconnect" in err.lower()
+
+    def test_allows_call_when_granted_scope_includes_the_feature(self, app, graph_connector):
+        with app.app_context():
+            c = Connector.query.filter_by(name="test-graph").first()
+            auth = c.get_auth()
+            auth["granted_scope"] = "offline_access ChannelMessage.Send Calendars.ReadWrite"
+            c.set_auth(auth)
+            db.session.commit()
+
+            token, err = mcp_tools._get_graph_connector_and_token("test-graph", required_feature="calendar")
+        assert err is None
+        assert token == "tok"
+
+    def test_skips_check_when_no_granted_scope_on_file_yet(self, app, graph_connector):
+        # A connector that authenticated before granted_scope started being
+        # persisted has none on file — the check must not retroactively
+        # block it.
+        with app.app_context():
+            token, err = mcp_tools._get_graph_connector_and_token("test-graph", required_feature="calendar")
+        assert err is None
+        assert token == "tok"
+
+
+class TestCreateCalendarEvent:
+    def test_creates_event_with_correct_request_shape(self, app, graph_connector, monkeypatch):
+        captured = {}
+
+        class FakeResponse:
+            status_code = 201
+            def json(self):
+                return {"webLink": "https://outlook.office.com/calendar/event/abc"}
+            text = ""
+
+        import httpx
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient(captured, FakeResponse()))
+
+        with app.app_context():
+            result = _run(mcp_tools._handle_create_calendar_event("create_calendar_event", {
+                "connector": "test-graph", "subject": "Planning sync",
+                "start": "2026-08-01T14:00:00", "end": "2026-08-01T14:30:00",
+                "attendees": ["a@example.com", "b@example.com"],
+            }))
+
+        assert "Created calendar event: Planning sync" in result
+        assert captured["url"] == "https://graph.microsoft.com/v1.0/me/events"
+        assert captured["json"]["subject"] == "Planning sync"
+        assert len(captured["json"]["attendees"]) == 2
+
+    def test_requires_subject_start_and_end(self, app, graph_connector):
+        with app.app_context():
+            r1 = _run(mcp_tools._handle_create_calendar_event("create_calendar_event", {
+                "connector": "test-graph", "start": "x", "end": "y",
+            }))
+            assert "subject is required" in r1
+
+            r2 = _run(mcp_tools._handle_create_calendar_event("create_calendar_event", {
+                "connector": "test-graph", "subject": "s", "end": "y",
+            }))
+            assert "start is required" in r2
+
+            r3 = _run(mcp_tools._handle_create_calendar_event("create_calendar_event", {
+                "connector": "test-graph", "subject": "s", "start": "x",
+            }))
+            assert "end is required" in r3
+
+
+class TestCheckCalendarAvailability:
+    def test_reports_availability(self, app, graph_connector, monkeypatch):
+        captured = {}
+
+        class FakeResponse:
+            status_code = 200
+            def json(self):
+                return {"value": [{"scheduleId": "a@example.com", "availabilityView": "000222"}]}
+            text = ""
+
+        import httpx
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient(captured, FakeResponse()))
+
+        with app.app_context():
+            result = _run(mcp_tools._handle_check_calendar_availability("check_calendar_availability", {
+                "connector": "test-graph", "attendees": ["a@example.com"],
+                "start": "2026-08-01T09:00:00", "end": "2026-08-01T17:00:00",
+            }))
+
+        assert "a@example.com: 000222" in result
+        assert captured["url"] == "https://graph.microsoft.com/v1.0/me/calendar/getSchedule"
+
+    def test_requires_nonempty_attendees(self, app, graph_connector):
+        with app.app_context():
+            result = _run(mcp_tools._handle_check_calendar_availability("check_calendar_availability", {
+                "connector": "test-graph", "attendees": [], "start": "x", "end": "y",
+            }))
+        assert "attendees is required" in result

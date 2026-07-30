@@ -211,6 +211,28 @@ class TestGetValidAccessToken:
                 Connector.query.filter_by(id="oauth-c2b").delete()
                 db.session.commit()
 
+    def test_refresh_persists_granted_scope_when_provider_returns_one(self, app, monkeypatch):
+        from datetime import datetime, timedelta, timezone
+        monkeypatch.setattr(oauth_mod, "refresh_access_token", lambda *a, **k: {
+            "access_token": "refreshed", "refresh_token": "r2", "expires_in": 3600,
+            "scope": "offline_access Calendars.ReadWrite",
+        })
+        with app.app_context():
+            soon = (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()
+            c = self._make_connector("oauth-c2c", {
+                "access_token": "stale", "refresh_token": "r", "expires_at": soon,
+                "client_id": "cid", "client_secret": "secret",
+            })
+            db.session.add(c)
+            db.session.commit()
+            try:
+                oauth_mod.get_valid_access_token(c, "https://x/token")
+                reloaded = Connector.query.get("oauth-c2c")
+                assert reloaded.get_auth()["granted_scope"] == "offline_access Calendars.ReadWrite"
+            finally:
+                Connector.query.filter_by(id="oauth-c2c").delete()
+                db.session.commit()
+
     def test_refreshes_when_no_expires_at_recorded(self, app, monkeypatch):
         monkeypatch.setattr(oauth_mod, "refresh_access_token",
                             lambda *a, **k: {"access_token": "refreshed", "refresh_token": "r2", "expires_in": 3600})
@@ -335,6 +357,39 @@ class TestStoreTokens:
                 assert "instance_url" not in reloaded.get_auth()
             finally:
                 Connector.query.filter_by(id="oauth-store2").delete()
+                db.session.commit()
+
+    def test_persists_granted_scope_when_present(self, app):
+        with app.app_context():
+            c = Connector(id="oauth-store3", name="oauth-store3", connector_type="microsoft_graph")
+            c.set_auth({"client_id": "cid", "client_secret": "secret"})
+            db.session.add(c)
+            db.session.commit()
+            try:
+                oauth_mod._store_tokens("oauth-store3", {
+                    "access_token": "a", "refresh_token": "b", "expires_in": 3600,
+                    "scope": "offline_access ChannelMessage.Send Calendars.ReadWrite",
+                })
+                reloaded = Connector.query.get("oauth-store3")
+                assert reloaded.get_auth()["granted_scope"] == "offline_access ChannelMessage.Send Calendars.ReadWrite"
+            finally:
+                Connector.query.filter_by(id="oauth-store3").delete()
+                db.session.commit()
+
+    def test_no_granted_scope_key_added_when_provider_omits_it(self, app):
+        with app.app_context():
+            c = Connector(id="oauth-store4", name="oauth-store4", connector_type="google")
+            c.set_auth({"client_id": "cid", "client_secret": "secret"})
+            db.session.add(c)
+            db.session.commit()
+            try:
+                oauth_mod._store_tokens("oauth-store4", {
+                    "access_token": "a", "refresh_token": "b", "expires_in": 3600,
+                })
+                reloaded = Connector.query.get("oauth-store4")
+                assert "granted_scope" not in reloaded.get_auth()
+            finally:
+                Connector.query.filter_by(id="oauth-store4").delete()
                 db.session.commit()
 
 

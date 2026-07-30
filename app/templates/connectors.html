@@ -313,14 +313,38 @@
       </div>`;
   }
 
+  const GRAPH_SCOPE_LABELS = {
+    teams: { label: 'Teams', desc: 'Post channel messages (ChannelMessage.Send)' },
+    planner: { label: 'Planner', desc: 'Create tasks (Tasks.ReadWrite)' },
+    calendar: { label: 'Calendar', desc: 'Create events, check availability (Calendars.ReadWrite)' },
+    files: { label: 'OneDrive Files', desc: 'Read/create files (Files.ReadWrite)' },
+  };
+
   function microsoftGraphFields(cfg, auth) {
     cfg = cfg || {}; auth = auth || {};
     const cls = 'w-full px-2.5 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent';
+    // Default to Teams+Planner for a brand-new connector, matching this
+    // connector type's original fixed scope before per-feature selection
+    // existed — an existing connector's own saved config always wins.
+    const selected = new Set(cfg.scopes || ['teams', 'planner']);
+    const checkboxes = Object.entries(GRAPH_SCOPE_LABELS).map(([key, meta]) => `
+      <label class="flex items-start gap-2 py-1 cursor-pointer">
+        <input type="checkbox" class="graph-scope-checkbox mt-0.5" value="${key}" ${selected.has(key) ? 'checked' : ''} />
+        <span>
+          <span class="text-xs text-text-primary">${meta.label}</span>
+          <span class="block text-[10px] text-text-muted">${meta.desc}</span>
+        </span>
+      </label>`).join('');
     return `
       <div class="space-y-3">
         <div>
           <label class="text-xs text-text-muted block mb-1.5">Tenant ID</label>
           <input type="text" id="cfg-tenant_id" value="${esc(cfg.tenant_id||'')}" placeholder="common (or your tenant GUID)" class="${cls}" />
+        </div>
+        <div>
+          <label class="text-xs text-text-muted block mb-1.5">Permissions to request</label>
+          <div class="rounded border border-border-visible bg-bg-raised p-2.5">${checkboxes}</div>
+          <p class="text-[10px] text-text-muted mt-1">Only the permissions checked here are requested when connecting — keeps the OAuth grant narrow. Changing this after connecting requires reconnecting to take effect.</p>
         </div>
         <div>
           <label class="text-xs text-text-muted block mb-1.5">OAuth Client ID (Application ID)</label>
@@ -329,7 +353,7 @@
         <div>
           <label class="text-xs text-text-muted block mb-1.5">OAuth Client Secret</label>
           <input type="password" id="auth-client_secret" placeholder="leave blank to keep existing when editing" class="${cls}" />
-          <p class="text-[10px] text-text-muted mt-1">Register an app in Azure AD &rarr; App registrations, add a "Mobile and desktop applications" redirect platform with a http://127.0.0.1 redirect URI, and grant ChannelMessage.Send + Tasks.ReadWrite delegated permissions.</p>
+          <p class="text-[10px] text-text-muted mt-1">Register an app in Azure AD &rarr; App registrations, add a "Mobile and desktop applications" redirect platform with a http://127.0.0.1 redirect URI, and grant the delegated permissions matching what's checked above.</p>
         </div>
         ${oauthConnectSection()}
       </div>`;
@@ -451,7 +475,8 @@
       if (clientId) auth.client_id = clientId;
       if (clientSecret) auth.client_secret = clientSecret;
     } else if (type === 'microsoft_graph') {
-      config = { tenant_id: document.getElementById('cfg-tenant_id')?.value || '' };
+      const scopes = Array.from(document.querySelectorAll('.graph-scope-checkbox:checked')).map(el => el.value);
+      config = { tenant_id: document.getElementById('cfg-tenant_id')?.value || '', scopes };
       const clientId = document.getElementById('auth-client_id')?.value || '';
       const clientSecret = document.getElementById('auth-client_secret')?.value || '';
       if (clientId) auth.client_id = clientId;

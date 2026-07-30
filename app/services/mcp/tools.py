@@ -250,6 +250,7 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         "git_log": _handle_git_log,
         "search_jira_issues": _handle_search_jira_issues,
         "search_linear_issues": _handle_search_linear_issues,
+        "check_calendar_availability": _handle_check_calendar_availability,
         # Tier 1: create operations
         "create_file": _handle_create_file,
         "append_to_file": _handle_append_to_file,
@@ -273,6 +274,7 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         "send_email": _handle_send_email,
         "http_request": _handle_http_request,
         "git_commit": _handle_git_commit,
+        "create_calendar_event": _handle_create_calendar_event,
         # Tier 3: destructive operations
         "delete_file": _handle_delete_file,
         "move_file": _handle_move_file,
@@ -1981,19 +1983,37 @@ async def _handle_create_google_task(tool_name: str, args: dict) -> str:
         return f"Error creating Google Task: {e}"
 
 
-def _get_graph_connector_and_token(connector_name: str):
-    """Look up a microsoft_graph connector and return (connector, access_token)
-    or (None, error_message) — shared by post_teams_message/create_planner_task
-    since both act on the same Graph OAuth identity."""
+def _get_graph_connector_and_token(connector_name: str, required_feature: str | None = None):
+    """Look up a microsoft_graph connector and return (access_token, None) or
+    (None, error_message) — shared by every Graph tool since they all act on
+    the same OAuth identity.
+
+    If `required_feature` is given (one of oauth_providers.GRAPH_SCOPE_FEATURES,
+    e.g. "calendar"/"files"), checks the connector's last-known granted scope
+    actually includes it before making the call — a connector that
+    authenticated before a feature's scope existed, or was connected without
+    that feature selected, gets a clear "reconnect to grant X access" message
+    instead of an opaque Graph API error after the fact. Best-effort: a
+    connector with no granted_scope on file yet (never refreshed since that
+    started being persisted) skips the check rather than blocking everyone
+    retroactively.
+    """
     from app.models.connector import Connector
     from app.services import oauth
-    from app.services.oauth_providers import get_provider_config
+    from app.services.oauth_providers import GRAPH_SCOPE_FEATURES, get_provider_config
 
     conn = Connector.query.filter_by(name=connector_name, enabled=True).first()
     if not conn:
         return None, f"Error: connector '{connector_name}' not found"
     if conn.connector_type != "microsoft_graph":
         return None, f"Error: connector '{connector_name}' is not a microsoft_graph connector"
+
+    if required_feature:
+        granted = (conn.get_auth() or {}).get("granted_scope")
+        needed_perm = GRAPH_SCOPE_FEATURES.get(required_feature)
+        if granted and needed_perm and needed_perm not in granted:
+            return None, (f"Error: connector '{connector_name}' was not granted {required_feature} access. "
+                          f"Reconnect this connector in Settings with '{required_feature}' selected.")
 
     cfg = json.loads(conn.config or "{}")
     provider_cfg = get_provider_config("microsoft_graph", cfg)
@@ -2082,6 +2102,106 @@ async def _handle_create_planner_task(tool_name: str, args: dict) -> str:
         return f"Error: Microsoft Graph returned HTTP {resp.status_code}\n{resp.text[:1000]}"
     except Exception as e:
         return f"Error creating Planner task: {e}"
+
+
+async def _handle_create_calendar_event(tool_name: str, args: dict) -> str:
+    """Create a calendar event (send a meeting invite) via a configured
+    microsoft_graph connector.
+
+    Tier 2 — sends a real invite to real people, the same class of effect
+    as send_email/post_teams_message, refused during unattended autonomous
+    goal pursuit.
+    """
+    connector_name = args.get("connector", "")
+    subject = (args.get("subject") or "").strip()
+    start = (args.get("start") or "").strip()
+    end = (args.get("end") or "").strip()
+    attendees = args.get("attendees") or []
+    body = args.get("body") or ""
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not subject:
+        return "Error: subject is required"
+    if not start:
+        return "Error: start is required (ISO 8601 datetime, e.g. 2026-08-01T14:00:00)"
+    if not end:
+        return "Error: end is required (ISO 8601 datetime)"
+    if not isinstance(attendees, list):
+        return "Error: attendees must be a list of email addresses"
+
+    access_token, err = _get_graph_connector_and_token(connector_name, required_feature="calendar")
+    if err:
+        return err
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    payload = {
+        "subject": subject,
+        "start": {"dateTime": start, "timeZone": "UTC"},
+        "end": {"dateTime": end, "timeZone": "UTC"},
+        "attendees": [{"emailAddress": {"address": a}, "type": "required"} for a in attendees],
+    }
+    if body:
+        payload["body"] = {"contentType": "text", "content": body}
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post("https://graph.microsoft.com/v1.0/me/events", headers=headers, json=payload)
+        if resp.status_code in (200, 201):
+            data = resp.json()
+            web_link = data.get("webLink", "")
+            return f"Created calendar event: {subject}\n{web_link}"
+        return f"Error: Microsoft Graph returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error creating calendar event: {e}"
+
+
+async def _handle_check_calendar_availability(tool_name: str, args: dict) -> str:
+    """Check free/busy availability for a set of attendees via a configured
+    microsoft_graph connector. Read-only — Tier 0."""
+    connector_name = args.get("connector", "")
+    attendees = args.get("attendees") or []
+    start = (args.get("start") or "").strip()
+    end = (args.get("end") or "").strip()
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not isinstance(attendees, list) or not attendees:
+        return "Error: attendees is required and must be a non-empty list of email addresses"
+    if not start:
+        return "Error: start is required (ISO 8601 datetime)"
+    if not end:
+        return "Error: end is required (ISO 8601 datetime)"
+
+    access_token, err = _get_graph_connector_and_token(connector_name, required_feature="calendar")
+    if err:
+        return err
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    payload = {
+        "schedules": attendees,
+        "startTime": {"dateTime": start, "timeZone": "UTC"},
+        "endTime": {"dateTime": end, "timeZone": "UTC"},
+        "availabilityViewInterval": 30,
+    }
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post("https://graph.microsoft.com/v1.0/me/calendar/getSchedule",
+                                     headers=headers, json=payload)
+        if resp.status_code == 200:
+            data = resp.json()
+            lines = []
+            for entry in data.get("value", []):
+                email = entry.get("scheduleId", "?")
+                view = entry.get("availabilityView", "")
+                lines.append(f"{email}: {view or '(no data)'}")
+            return "\n".join(lines) if lines else "No availability data returned"
+        return f"Error: Microsoft Graph returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error checking calendar availability: {e}"
 
 
 async def _handle_create_salesforce_record(tool_name: str, args: dict) -> str:
