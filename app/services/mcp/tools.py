@@ -62,7 +62,8 @@ CACHEABLE_TOOLS = {"read_file", "list_directory", "search_files"}
 # Tools that mutate the filesystem — after one succeeds, the read caches above
 # are stale and must be invalidated so a follow-up read sees fresh content.
 WRITE_TOOLS = {"create_file", "append_to_file", "modify_file", "create_directory",
-               "delete_file", "move_file"}
+               "delete_file", "move_file", "create_word_document", "create_powerpoint",
+               "create_excel", "create_pdf"}
 
 
 # ── Tier system ───────────────────────────────────────────────────────────────
@@ -212,6 +213,10 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         # Tier 1: create operations
         "create_file": _handle_create_file,
         "append_to_file": _handle_append_to_file,
+        "create_word_document": _handle_create_word_document,
+        "create_powerpoint": _handle_create_powerpoint,
+        "create_excel": _handle_create_excel,
+        "create_pdf": _handle_create_pdf,
         # Tier 2: modify operations
         "modify_file": _handle_modify_file,
         "create_directory": _handle_create_directory,
@@ -519,6 +524,244 @@ async def _handle_append_to_file(tool_name: str, args: dict) -> str:
         return f"Error: file not found: {path}"
     except Exception as e:
         return f"Error appending: {e}"
+
+
+# ── Tier 1: Office Document Generation ───────────────────────────────────────
+# Agent-authored deliverables: Word/PowerPoint/Excel/PDF. Same tier and path
+# authorization as create_file — these only WRITE a new file, so a plain
+# "create" tier (not modify/destructive) applies. All libs are pure Python
+# (python-docx, python-pptx, openpyxl, reportlab) — no system deps.
+
+MAX_DOC_BLOCKS = 500     # cap on paragraphs/slides/rows to bound generation time
+MAX_DOC_CONTENT_CHARS = 200_000
+
+
+def _authorize_new_file(path_arg: str) -> tuple[str | None, str | None]:
+    """Shared create-file preamble: sanitize, block, authorize, and refuse if
+    the file already exists. Returns (real_path, None) on success or
+    (None, error_message) on failure."""
+    path = _sanitize_path_input(path_arg or "")
+    if not path:
+        return None, "Error: path is required (or contains invalid characters)"
+    real_path = os.path.realpath(path)
+    if _is_blocked_path(real_path):
+        return None, f"Error: access denied — system path blocked: {path}"
+    if not _authorize_path(real_path):
+        return None, f"Error: directory not authorized: {path}"
+    if Path(real_path).exists():
+        return None, f"Error: file already exists: {path}"
+    return real_path, None
+
+
+def _split_paragraphs(content: str) -> list[str]:
+    """Split freeform text into paragraphs on blank lines, capped in count."""
+    parts = [p.strip() for p in re.split(r"\n\s*\n", content or "") if p.strip()]
+    return parts[:MAX_DOC_BLOCKS]
+
+
+async def _handle_create_word_document(tool_name: str, args: dict) -> str:
+    """Create a .docx file from plain text.
+
+    Args: path (required), title (optional, becomes the document heading),
+    content (required). Paragraphs are separated by a blank line; a paragraph
+    starting with "# "/"## "/"### " becomes a heading; lines starting with
+    "- " or "* " become a bullet list.
+    """
+    real_path, err = _authorize_new_file(args.get("path", ""))
+    if err:
+        return err
+
+    content = str(args.get("content", ""))[:MAX_DOC_CONTENT_CHARS]
+    if not content.strip() and not args.get("title"):
+        return "Error: content or title is required"
+
+    try:
+        import docx
+    except ImportError:
+        return "Error: python-docx not installed — run: pip install python-docx"
+
+    try:
+        doc = docx.Document()
+        if args.get("title"):
+            doc.add_heading(str(args["title"])[:300], level=0)
+
+        for para in _split_paragraphs(content):
+            heading_m = re.match(r"^(#{1,3})\s+(.*)", para)
+            if heading_m:
+                doc.add_heading(heading_m.group(2).strip(), level=len(heading_m.group(1)))
+                continue
+            lines = para.split("\n")
+            if all(re.match(r"^[-*]\s+", l) for l in lines):
+                for l in lines:
+                    doc.add_paragraph(re.sub(r"^[-*]\s+", "", l).strip(), style="List Bullet")
+            else:
+                doc.add_paragraph(para)
+
+        Path(real_path).parent.mkdir(parents=True, exist_ok=True)
+        doc.save(real_path)
+        return f"Created Word document: {args.get('path')}"
+    except Exception as e:
+        return f"Error creating Word document: {e}"
+
+
+async def _handle_create_powerpoint(tool_name: str, args: dict) -> str:
+    """Create a .pptx file.
+
+    Args: path (required), title (optional, adds a title slide),
+    slides (required) — a list of {"title": str, "bullets": [str, ...]}.
+    """
+    real_path, err = _authorize_new_file(args.get("path", ""))
+    if err:
+        return err
+
+    slides = args.get("slides")
+    if not isinstance(slides, list) or not slides:
+        return "Error: slides (a non-empty list of {title, bullets}) is required"
+    slides = slides[:MAX_DOC_BLOCKS]
+
+    try:
+        from pptx import Presentation
+        from pptx.util import Pt
+    except ImportError:
+        return "Error: python-pptx not installed — run: pip install python-pptx"
+
+    try:
+        prs = Presentation()
+
+        if args.get("title"):
+            title_layout = prs.slide_layouts[0]
+            slide = prs.slides.add_slide(title_layout)
+            slide.shapes.title.text = str(args["title"])[:300]
+            if args.get("subtitle") and len(slide.placeholders) > 1:
+                slide.placeholders[1].text = str(args["subtitle"])[:300]
+
+        bullet_layout = prs.slide_layouts[1]
+        for s in slides:
+            if not isinstance(s, dict):
+                continue
+            slide = prs.slides.add_slide(bullet_layout)
+            slide.shapes.title.text = str(s.get("title", ""))[:300]
+            body = slide.placeholders[1].text_frame
+            bullets = s.get("bullets") or []
+            if isinstance(bullets, str):
+                bullets = [bullets]
+            body.clear()
+            for i, b in enumerate(bullets[:50]):
+                p = body.paragraphs[0] if i == 0 else body.add_paragraph()
+                p.text = str(b)[:500]
+                p.font.size = Pt(18)
+
+        Path(real_path).parent.mkdir(parents=True, exist_ok=True)
+        prs.save(real_path)
+        return f"Created PowerPoint: {args.get('path')} ({len(slides)} slide(s))"
+    except Exception as e:
+        return f"Error creating PowerPoint: {e}"
+
+
+async def _handle_create_excel(tool_name: str, args: dict) -> str:
+    """Create an .xlsx file.
+
+    Args: path (required), sheets (required) — either a single sheet's data
+    as {"headers": [...], "rows": [[...], ...]}, or multiple sheets as
+    {"Sheet1": {"headers": [...], "rows": [...]}, "Sheet2": {...}}.
+    """
+    real_path, err = _authorize_new_file(args.get("path", ""))
+    if err:
+        return err
+
+    sheets = args.get("sheets")
+    if not isinstance(sheets, dict) or not sheets:
+        return "Error: sheets is required (see tool description for shape)"
+
+    # Normalize: a single {"headers":.., "rows":..} dict means one sheet.
+    if "rows" in sheets or "headers" in sheets:
+        sheets = {args.get("sheet_name", "Sheet1"): sheets}
+
+    try:
+        import openpyxl
+    except ImportError:
+        return "Error: openpyxl not installed — run: pip install openpyxl"
+
+    try:
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)  # drop the default blank sheet
+
+        sheet_names = list(sheets.items())[:50]
+        for name, data in sheet_names:
+            if not isinstance(data, dict):
+                continue
+            ws = wb.create_sheet(title=str(name)[:31])  # Excel sheet-name limit
+            headers = data.get("headers") or []
+            rows = data.get("rows") or []
+            if headers:
+                ws.append([str(h)[:200] for h in headers])
+            for row in rows[:MAX_DOC_BLOCKS * 20]:
+                if isinstance(row, (list, tuple)):
+                    ws.append([("" if c is None else c) for c in row])
+
+        if not wb.sheetnames:
+            return "Error: no valid sheet data provided"
+
+        Path(real_path).parent.mkdir(parents=True, exist_ok=True)
+        wb.save(real_path)
+        return f"Created Excel workbook: {args.get('path')} ({len(wb.sheetnames)} sheet(s))"
+    except Exception as e:
+        return f"Error creating Excel workbook: {e}"
+
+
+async def _handle_create_pdf(tool_name: str, args: dict) -> str:
+    """Create a .pdf file from plain text.
+
+    Args: path (required), title (optional), content (required). Paragraphs
+    are separated by a blank line, mirroring create_word_document.
+    """
+    real_path, err = _authorize_new_file(args.get("path", ""))
+    if err:
+        return err
+
+    content = str(args.get("content", ""))[:MAX_DOC_CONTENT_CHARS]
+    if not content.strip() and not args.get("title"):
+        return "Error: content or title is required"
+
+    try:
+        from reportlab.lib.pagesizes import LETTER
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, ListFlowable, ListItem
+        from reportlab.lib.units import inch
+        from xml.sax.saxutils import escape as xml_escape
+    except ImportError:
+        return "Error: reportlab not installed — run: pip install reportlab"
+
+    try:
+        Path(real_path).parent.mkdir(parents=True, exist_ok=True)
+        styles = getSampleStyleSheet()
+        story = []
+
+        if args.get("title"):
+            story.append(Paragraph(xml_escape(str(args["title"])[:300]), styles["Title"]))
+            story.append(Spacer(1, 0.25 * inch))
+
+        for para in _split_paragraphs(content):
+            heading_m = re.match(r"^(#{1,3})\s+(.*)", para)
+            if heading_m:
+                level = len(heading_m.group(1))
+                style = styles["Heading1"] if level == 1 else styles["Heading2"] if level == 2 else styles["Heading3"]
+                story.append(Paragraph(xml_escape(heading_m.group(2).strip()), style))
+                continue
+            lines = para.split("\n")
+            if all(re.match(r"^[-*]\s+", l) for l in lines):
+                items = [ListItem(Paragraph(xml_escape(re.sub(r"^[-*]\s+", "", l).strip()), styles["Normal"]))
+                         for l in lines]
+                story.append(ListFlowable(items, bulletType="bullet"))
+            else:
+                story.append(Paragraph(xml_escape(para).replace("\n", "<br/>"), styles["Normal"]))
+            story.append(Spacer(1, 0.15 * inch))
+
+        doc = SimpleDocTemplate(real_path, pagesize=LETTER)
+        doc.build(story)
+        return f"Created PDF: {args.get('path')}"
+    except Exception as e:
+        return f"Error creating PDF: {e}"
 
 
 # ── Tier 2: Modify Operations ────────────────────────────────────────────────

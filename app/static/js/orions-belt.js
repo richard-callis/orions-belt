@@ -54,15 +54,33 @@ function invalidateFetchCache(url) {
 
 // ── Markdown rendering ───────────────────────────────────────────────────────
 // Mirrors ORION web's chat markdown: marked (GFM) → highlight.js code fences →
-// DOMPurify sanitize. Returns a sanitized HTML string safe for innerHTML.
-// Falls back to escaped text if the libs failed to load.
+// DOMPurify sanitize. ```mermaid fences render as native diagrams. Returns a
+// sanitized HTML string safe for innerHTML. Falls back to escaped text if the
+// libs failed to load.
 let _markedConfigured = false;
+let _mermaidInitialized = false;
 
 function _configureMarked() {
   if (_markedConfigured || typeof marked === 'undefined') return;
-  // marked v5+ dropped the built-in highlight option; code fences are
-  // highlighted after render via hljs.highlightElement (see renderMarkdownInto).
-  try { marked.setOptions({ gfm: true, breaks: true }); } catch (e) {}
+  try {
+    // Custom code-block renderer: a ```mermaid fence becomes a <div
+    // class="mermaid"> holding the raw diagram source, which mermaid.run()
+    // (called from renderMarkdownInto) replaces with an SVG. Everything else
+    // renders as a normal <pre><code class="language-X"> for hljs to pick up.
+    const renderer = new marked.Renderer();
+    renderer.code = function (token) {
+      const isTokenObj = token && typeof token === 'object';
+      const text = isTokenObj ? (token.text ?? '') : String(token ?? '');
+      const rawLang = isTokenObj ? token.lang : arguments[1];
+      const lang = (rawLang || '').trim().split(/\s+/)[0].toLowerCase();
+      if (lang === 'mermaid') {
+        return `<div class="mermaid">${escHtml(text)}</div>`;
+      }
+      const cls = lang ? ` class="language-${escHtml(lang)}"` : '';
+      return `<pre><code${cls}>${escHtml(text)}</code></pre>`;
+    };
+    marked.setOptions({ gfm: true, breaks: true, renderer });
+  } catch (e) {}
   _markedConfigured = true;
 }
 
@@ -87,8 +105,8 @@ function renderMarkdown(text) {
   });
 }
 
-// Render a markdown string into an element: sanitize, harden links, and
-// syntax-highlight code fences with highlight.js.
+// Render a markdown string into an element: sanitize, harden links,
+// syntax-highlight code fences with highlight.js, and render mermaid diagrams.
 function renderMarkdownInto(el, text) {
   if (!el) return;
   el.innerHTML = renderMarkdown(text);
@@ -100,6 +118,22 @@ function renderMarkdownInto(el, text) {
     el.querySelectorAll('pre code').forEach(block => {
       try { hljs.highlightElement(block); } catch (e) {}
     });
+  }
+  if (typeof mermaid !== 'undefined') {
+    const nodes = el.querySelectorAll('.mermaid');
+    if (nodes.length) {
+      try {
+        if (!_mermaidInitialized) {
+          mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'strict' });
+          _mermaidInitialized = true;
+        }
+        // Diagram source may still be arriving mid-stream (incomplete syntax);
+        // mermaid renders an inline error for a malformed diagram and the next
+        // re-render self-heals once the full source has streamed in.
+        const result = mermaid.run({ nodes: Array.from(nodes), suppressErrors: true });
+        if (result && typeof result.catch === 'function') result.catch(() => {});
+      } catch (e) {}
+    }
   }
 }
 

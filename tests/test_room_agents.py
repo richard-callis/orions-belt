@@ -167,6 +167,60 @@ class TestConversationOrchestration:
                 self._cleanup("r-tm", ["nova", "atlas"])
 
 
+class TestPostMessagePiiScan:
+    """Human room messages are PII-scanned before persisting (so sanitized text
+    is what agents see on every subsequent round, not just the first)."""
+
+    def test_human_message_is_sanitized_before_storing(self, app, client, monkeypatch):
+        from app.models.chat_room import ChatRoom, ChatRoomMessage
+
+        class FakeGuard:
+            def scan(self, text, session_id=None, direction="outbound"):
+                return text.replace("secret@example.com", "[PII:EMAIL:abc123]"), True, ["EMAIL"]
+
+        monkeypatch.setattr(
+            "app.services.pii_guard.get_pii_guard", lambda: FakeGuard()
+        )
+        with app.app_context():
+            db.session.add(ChatRoom(id="r-pii", name="r-pii"))
+            db.session.commit()
+        try:
+            resp = client.post("/api/chat-rooms/r-pii/messages",
+                               json={"content": "email me at secret@example.com"})
+            assert resp.status_code == 201
+            data = resp.get_json()
+            assert "secret@example.com" not in data["content"]
+            assert "[PII:EMAIL:abc123]" in data["content"]
+            with app.app_context():
+                stored = ChatRoomMessage.query.filter_by(room_id="r-pii").first()
+                assert "secret@example.com" not in stored.content
+        finally:
+            with app.app_context():
+                ChatRoomMessage.query.filter_by(room_id="r-pii").delete()
+                ChatRoom.query.filter_by(id="r-pii").delete()
+                db.session.commit()
+
+    def test_scan_failure_does_not_block_posting(self, app, client, monkeypatch):
+        from app.models.chat_room import ChatRoom, ChatRoomMessage
+
+        def broken_guard():
+            raise RuntimeError("model not loaded")
+
+        monkeypatch.setattr("app.services.pii_guard.get_pii_guard", broken_guard)
+        with app.app_context():
+            db.session.add(ChatRoom(id="r-pii-fail", name="r-pii-fail"))
+            db.session.commit()
+        try:
+            resp = client.post("/api/chat-rooms/r-pii-fail/messages", json={"content": "hello"})
+            assert resp.status_code == 201
+            assert resp.get_json()["content"] == "hello"
+        finally:
+            with app.app_context():
+                ChatRoomMessage.query.filter_by(room_id="r-pii-fail").delete()
+                ChatRoom.query.filter_by(id="r-pii-fail").delete()
+                db.session.commit()
+
+
 class TestPostMessageTrigger:
     def test_human_post_returns_message(self, app, client):
         with app.app_context():

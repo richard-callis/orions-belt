@@ -209,6 +209,82 @@ def _seed_builtin_tools(app):
             }),
         ),
         dict(
+            name="create_word_document",
+            tier=1,
+            description="Create a Word (.docx) document from plain text. Paragraphs separated "
+                        "by a blank line; '# '/'## '/'### ' prefixes become headings; '- '/'* ' "
+                        "prefixed lines become a bullet list.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path of the .docx file to create"},
+                    "title": {"type": "string", "description": "Optional document title (top heading)"},
+                    "content": {"type": "string", "description": "Document body text"},
+                },
+                "required": ["path", "content"],
+            }),
+        ),
+        dict(
+            name="create_powerpoint",
+            tier=1,
+            description="Create a PowerPoint (.pptx) presentation from a list of slides, "
+                        "each with a title and bullet points.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path of the .pptx file to create"},
+                    "title": {"type": "string", "description": "Optional title-slide title"},
+                    "subtitle": {"type": "string", "description": "Optional title-slide subtitle"},
+                    "slides": {
+                        "type": "array",
+                        "description": "List of {title, bullets: [str, ...]}",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string"},
+                                "bullets": {"type": "array", "items": {"type": "string"}},
+                            },
+                        },
+                    },
+                },
+                "required": ["path", "slides"],
+            }),
+        ),
+        dict(
+            name="create_excel",
+            tier=1,
+            description="Create an Excel (.xlsx) workbook. Supports a single sheet "
+                        "({headers, rows}) or multiple named sheets.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path of the .xlsx file to create"},
+                    "sheet_name": {"type": "string", "description": "Sheet name when providing a single sheet (default 'Sheet1')"},
+                    "sheets": {
+                        "type": "object",
+                        "description": "{headers: [...], rows: [[...], ...]} for one sheet, OR "
+                                        "{SheetName: {headers, rows}, ...} for multiple sheets",
+                    },
+                },
+                "required": ["path", "sheets"],
+            }),
+        ),
+        dict(
+            name="create_pdf",
+            tier=1,
+            description="Create a PDF document from plain text, with the same "
+                        "heading/bullet conventions as create_word_document.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path of the .pdf file to create"},
+                    "title": {"type": "string", "description": "Optional document title"},
+                    "content": {"type": "string", "description": "Document body text"},
+                },
+                "required": ["path", "content"],
+            }),
+        ),
+        dict(
             name="modify_file",
             tier=2,
             description="Overwrite an existing file with new content",

@@ -142,3 +142,13 @@ code, pre, .font-mono {
 .md-body thead { border-bottom: 1px solid #2d2d2d; }
 .md-body th { padding: 0.375rem 0.75rem; text-align: left; font-weight: 600; color: #aaaaaa; }
 .md-body td { padding: 0.375rem 0.75rem; border-top: 1px solid #1e1e1e; }
+
+/* Mermaid diagrams rendered from ```mermaid fences (see renderMarkdownInto) */
+.md-body .mermaid {
+  background: transparent;
+  margin: 0.5rem 0;
+  padding: 0.5rem;
+  overflow-x: auto;
+  border-radius: 0.5rem;
+}
+.md-body .mermaid svg { max-width: 100%; height: auto; }
