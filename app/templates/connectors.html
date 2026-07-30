@@ -32,6 +32,9 @@
         ('database', 'SQL Server', 'pyodbc connection — run SELECT queries, inspect schema, export results.'),
         ('kanban-square', 'Azure DevOps', 'Personal access token auth — create backlog work items (User Story/Bug/Task).'),
         ('github', 'GitHub', 'Personal access token auth — create issues in a repository.'),
+        ('list-checks', 'Google', 'OAuth 2.0 — create tasks in Google Tasks.'),
+        ('users', 'Microsoft Graph', 'OAuth 2.0 — post Teams channel messages and create Planner tasks.'),
+        ('cloud', 'Salesforce', 'OAuth 2.0 — create records via the Salesforce REST API.'),
       ] %}
       {% for icon, title, desc in types %}
       <div class="rounded-lg border border-border-subtle bg-bg-card p-3.5">
@@ -70,6 +73,9 @@
           <option value="sql_server">SQL Server</option>
           <option value="azure_devops">Azure DevOps</option>
           <option value="github">GitHub</option>
+          <option value="google">Google</option>
+          <option value="microsoft_graph">Microsoft Graph (Teams/Planner)</option>
+          <option value="salesforce">Salesforce</option>
         </select>
       </div>
 
@@ -100,8 +106,10 @@
 
 {% block scripts %}
 <script>
-  const TYPE_ICONS = { rest_api: 'plug', sql_server: 'database', outlook: 'mail', azure_devops: 'kanban-square', github: 'github' };
-  const TYPE_LABELS = { rest_api: 'REST API', sql_server: 'SQL Server', outlook: 'Outlook', azure_devops: 'Azure DevOps', github: 'GitHub' };
+  const TYPE_ICONS = { rest_api: 'plug', sql_server: 'database', outlook: 'mail', azure_devops: 'kanban-square', github: 'github',
+                        google: 'list-checks', microsoft_graph: 'users', salesforce: 'cloud' };
+  const TYPE_LABELS = { rest_api: 'REST API', sql_server: 'SQL Server', outlook: 'Outlook', azure_devops: 'Azure DevOps', github: 'GitHub',
+                         google: 'Google', microsoft_graph: 'Microsoft Graph', salesforce: 'Salesforce' };
 
   // ── Field templates ──────────────────────────────────────────────────────────
 
@@ -222,6 +230,139 @@
       </div>`;
   }
 
+  // ── OAuth connectors (Google / Microsoft Graph / Salesforce) ─────────────────
+  // All three share the same RFC 8252 loopback-redirect flow (app/services/oauth.py)
+  // — only the client credentials + one provider-specific config field differ.
+
+  function oauthConnectSection() {
+    const editId = document.getElementById('edit-connector-id').value;
+    if (!editId) {
+      return `<div class="rounded-lg border border-status-info/20 bg-status-info/5 p-3 text-xs text-status-info">
+        <i data-lucide="info" class="w-3.5 h-3.5 inline mr-1"></i>
+        Save the connector first, then reopen it (Edit) to complete the OAuth connection.
+      </div>`;
+    }
+    const connected = !!window.__connectorOAuthConnected;
+    return `
+      <div class="rounded-lg border border-border-subtle bg-bg-raised p-3">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-xs ${connected ? 'text-status-healthy' : 'text-text-muted'}" id="oauth-status-label">
+            ${connected ? '✓ Connected' : 'Not connected'}
+          </span>
+          <button type="button" onclick="startConnectorOAuth('${editId}')" id="oauth-connect-btn"
+                  class="px-3 py-1.5 rounded text-xs bg-accent/15 text-accent hover:bg-accent/30 transition-colors font-medium">
+            ${connected ? 'Reconnect' : 'Connect'}
+          </button>
+        </div>
+      </div>`;
+  }
+
+  function googleFields(cfg, auth) {
+    cfg = cfg || {}; auth = auth || {};
+    const cls = 'w-full px-2.5 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent';
+    return `
+      <div class="space-y-3">
+        <div>
+          <label class="text-xs text-text-muted block mb-1.5">OAuth Client ID</label>
+          <input type="text" id="auth-client_id" placeholder="....apps.googleusercontent.com" class="${cls}" />
+        </div>
+        <div>
+          <label class="text-xs text-text-muted block mb-1.5">OAuth Client Secret</label>
+          <input type="password" id="auth-client_secret" placeholder="leave blank to keep existing when editing" class="${cls}" />
+          <p class="text-[10px] text-text-muted mt-1">Create an OAuth 2.0 Client ID (type: Desktop app) in Google Cloud Console &rarr; APIs &amp; Services &rarr; Credentials, with the Tasks API enabled.</p>
+        </div>
+        ${oauthConnectSection()}
+      </div>`;
+  }
+
+  function microsoftGraphFields(cfg, auth) {
+    cfg = cfg || {}; auth = auth || {};
+    const cls = 'w-full px-2.5 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent';
+    return `
+      <div class="space-y-3">
+        <div>
+          <label class="text-xs text-text-muted block mb-1.5">Tenant ID</label>
+          <input type="text" id="cfg-tenant_id" value="${esc(cfg.tenant_id||'')}" placeholder="common (or your tenant GUID)" class="${cls}" />
+        </div>
+        <div>
+          <label class="text-xs text-text-muted block mb-1.5">OAuth Client ID (Application ID)</label>
+          <input type="text" id="auth-client_id" class="${cls}" />
+        </div>
+        <div>
+          <label class="text-xs text-text-muted block mb-1.5">OAuth Client Secret</label>
+          <input type="password" id="auth-client_secret" placeholder="leave blank to keep existing when editing" class="${cls}" />
+          <p class="text-[10px] text-text-muted mt-1">Register an app in Azure AD &rarr; App registrations, add a "Mobile and desktop applications" redirect platform with a http://127.0.0.1 redirect URI, and grant ChannelMessage.Send + Tasks.ReadWrite delegated permissions.</p>
+        </div>
+        ${oauthConnectSection()}
+      </div>`;
+  }
+
+  function salesforceFields(cfg, auth) {
+    cfg = cfg || {}; auth = auth || {};
+    const cls = 'w-full px-2.5 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent';
+    return `
+      <div class="space-y-3">
+        <div>
+          <label class="text-xs text-text-muted block mb-1.5">Instance URL</label>
+          <input type="url" id="cfg-instance_url" value="${esc(cfg.instance_url||'')}" placeholder="https://login.salesforce.com (or your My Domain URL)" class="${cls}" />
+        </div>
+        <div>
+          <label class="text-xs text-text-muted block mb-1.5">Consumer Key (Client ID)</label>
+          <input type="text" id="auth-client_id" class="${cls}" />
+        </div>
+        <div>
+          <label class="text-xs text-text-muted block mb-1.5">Consumer Secret (Client Secret)</label>
+          <input type="password" id="auth-client_secret" placeholder="leave blank to keep existing when editing" class="${cls}" />
+          <p class="text-[10px] text-text-muted mt-1">Create a Connected App in Salesforce Setup with OAuth enabled, a callback URL of http://127.0.0.1/callback, and the "api" + "refresh_token, offline_access" scopes.</p>
+        </div>
+        ${oauthConnectSection()}
+      </div>`;
+  }
+
+  async function startConnectorOAuth(id) {
+    const btn = document.getElementById('oauth-connect-btn');
+    const label = document.getElementById('oauth-status-label');
+    const origText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Opening browser…';
+    try {
+      const resp = await fetch(`/connectors/api/connectors/${id}/oauth/start`, { method: 'POST' });
+      const data = await resp.json();
+      if (!resp.ok) { showToast(data.error || 'Failed to start OAuth flow', 'error'); return; }
+      label.textContent = 'Waiting for browser consent…';
+      await pollConnectorOAuthStatus(id, data.flow_id, label);
+    } catch (e) {
+      showToast(`Error: ${e}`, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = origText;
+    }
+  }
+
+  async function pollConnectorOAuthStatus(connectorId, flowId, label) {
+    const deadline = Date.now() + 5 * 60 * 1000;
+    while (Date.now() < deadline) {
+      const resp = await fetch(`/connectors/api/connectors/${connectorId}/oauth/status?flow_id=${flowId}`);
+      const data = await resp.json();
+      if (data.status === 'connected') {
+        label.textContent = '✓ Connected';
+        label.className = 'text-xs text-status-healthy';
+        window.__connectorOAuthConnected = true;
+        showToast('Connected', 'ok');
+        return;
+      }
+      if (data.status === 'error') {
+        label.textContent = `Failed: ${data.error || 'unknown error'}`;
+        label.className = 'text-xs text-status-error';
+        showToast(`OAuth failed: ${data.error || 'unknown error'}`, 'error');
+        return;
+      }
+      await new Promise(r => setTimeout(r, 2000));
+    }
+    label.textContent = 'Timed out waiting for consent';
+    label.className = 'text-xs text-status-error';
+  }
+
   function updateConnectorFields(cfg, auth) {
     const type = document.getElementById('connector-type').value;
     const container = document.getElementById('connector-type-fields');
@@ -230,6 +371,9 @@
     else if (type === 'outlook') container.innerHTML = outlookFields();
     else if (type === 'azure_devops') container.innerHTML = adoFields(cfg, auth);
     else if (type === 'github') container.innerHTML = githubFields(cfg, auth);
+    else if (type === 'google') container.innerHTML = googleFields(cfg, auth);
+    else if (type === 'microsoft_graph') container.innerHTML = microsoftGraphFields(cfg, auth);
+    else if (type === 'salesforce') container.innerHTML = salesforceFields(cfg, auth);
     else container.innerHTML = '';
     lucide.createIcons();
     if (type === 'rest_api') updateAuthFields();
@@ -261,6 +405,23 @@
     } else if (type === 'github') {
       const pat = document.getElementById('auth-pat')?.value || '';
       if (pat) auth = { pat };
+    } else if (type === 'google') {
+      const clientId = document.getElementById('auth-client_id')?.value || '';
+      const clientSecret = document.getElementById('auth-client_secret')?.value || '';
+      if (clientId) auth.client_id = clientId;
+      if (clientSecret) auth.client_secret = clientSecret;
+    } else if (type === 'microsoft_graph') {
+      config = { tenant_id: document.getElementById('cfg-tenant_id')?.value || '' };
+      const clientId = document.getElementById('auth-client_id')?.value || '';
+      const clientSecret = document.getElementById('auth-client_secret')?.value || '';
+      if (clientId) auth.client_id = clientId;
+      if (clientSecret) auth.client_secret = clientSecret;
+    } else if (type === 'salesforce') {
+      config = { instance_url: (document.getElementById('cfg-instance_url')?.value || '').replace(/\/$/, '') };
+      const clientId = document.getElementById('auth-client_id')?.value || '';
+      const clientSecret = document.getElementById('auth-client_secret')?.value || '';
+      if (clientId) auth.client_id = clientId;
+      if (clientSecret) auth.client_secret = clientSecret;
     }
     return { name, connector_type: type, config, auth };
   }
@@ -365,7 +526,10 @@
     grid.innerHTML = connectors.map(c => {
       const icon = TYPE_ICONS[c.connector_type] || 'plug';
       const label = TYPE_LABELS[c.connector_type] || c.connector_type;
-      const endpoint = c.config?.base_url || c.config?.server || c.config?.org_url || (c.connector_type === 'outlook' ? 'COM Automation' : '');
+      const endpoint = c.config?.base_url || c.config?.server || c.config?.org_url || c.config?.instance_url
+        || (c.connector_type === 'outlook' ? 'COM Automation' : '')
+        || (c.connector_type === 'google' ? (c.oauth_connected ? 'Connected' : 'Not connected') : '')
+        || (c.connector_type === 'microsoft_graph' ? `Tenant: ${c.config?.tenant_id || 'common'} — ${c.oauth_connected ? 'Connected' : 'Not connected'}` : '');
       return `
       <div class="rounded-lg border border-border-subtle bg-bg-card p-4 hover:border-border-visible transition-colors">
         <div class="flex items-start gap-3">
@@ -412,6 +576,7 @@
     document.getElementById('connector-name').value = existing?.name || '';
     document.getElementById('connector-type').value = existing?.connector_type || '';
     document.getElementById('save-btn').textContent = 'Test & Save';
+    window.__connectorOAuthConnected = existing?.oauth_connected || false;
     hideModalError();
     if (existing) updateConnectorFields(existing.config, {});
     else document.getElementById('connector-type-fields').innerHTML = '';

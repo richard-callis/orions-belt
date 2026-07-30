@@ -71,6 +71,12 @@ class Connector(db.Model):
             "enabled": self.enabled,
             "config": json.loads(self.config or "{}"),
         }
+        if self.connector_type in ("google", "microsoft_graph", "salesforce"):
+            # Never expose the tokens/secrets themselves — just enough for the
+            # UI to know whether "Connect" or "Reconnect" is the right label.
+            auth = self.get_auth()
+            d["oauth_connected"] = bool(auth.get("refresh_token"))
+            d["oauth_client_configured"] = bool(auth.get("client_id") and auth.get("client_secret"))
         return d
 
 

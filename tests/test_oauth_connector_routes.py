@@ -23,6 +23,42 @@ def google_connector(client):
     db.session.commit()
 
 
+class TestToDictOAuthFields:
+    def test_non_oauth_connector_has_no_oauth_fields(self, client):
+        c = Connector(name="test-plain-rest", connector_type="rest_api", config='{"base_url": "https://x"}')
+        db.session.add(c)
+        db.session.commit()
+        try:
+            d = c.to_dict()
+            assert "oauth_connected" not in d
+            assert "oauth_client_configured" not in d
+        finally:
+            Connector.query.filter_by(id=c.id).delete()
+            db.session.commit()
+
+    def test_oauth_connector_reports_not_connected_and_no_credentials(self, client, google_connector):
+        c = Connector.query.get(google_connector)
+        d = c.to_dict()
+        assert d["oauth_connected"] is False
+        assert d["oauth_client_configured"] is False
+
+    def test_oauth_connector_reports_credentials_configured_but_not_connected(self, client, google_connector):
+        c = Connector.query.get(google_connector)
+        c.set_auth({"client_id": "cid", "client_secret": "secret"})
+        db.session.commit()
+        d = c.to_dict()
+        assert d["oauth_connected"] is False
+        assert d["oauth_client_configured"] is True
+
+    def test_oauth_connector_reports_connected(self, client, google_connector):
+        c = Connector.query.get(google_connector)
+        c.set_auth({"client_id": "cid", "client_secret": "secret", "refresh_token": "r"})
+        db.session.commit()
+        d = c.to_dict()
+        assert d["oauth_connected"] is True
+        assert d["oauth_client_configured"] is True
+
+
 class TestCreateOAuthConnectorTypes:
     @pytest.mark.parametrize("connector_type", ["google", "microsoft_graph", "salesforce"])
     def test_create_connector_accepts_oauth_types(self, client, connector_type):
