@@ -63,7 +63,7 @@ CACHEABLE_TOOLS = {"read_file", "list_directory", "search_files"}
 # are stale and must be invalidated so a follow-up read sees fresh content.
 WRITE_TOOLS = {"create_file", "append_to_file", "modify_file", "create_directory",
                "delete_file", "move_file", "create_word_document", "create_powerpoint",
-               "create_excel", "create_pdf"}
+               "create_excel", "create_pdf", "create_ado_workitem"}
 
 
 # ── Tier system ───────────────────────────────────────────────────────────────
@@ -235,6 +235,7 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         "create_powerpoint": _handle_create_powerpoint,
         "create_excel": _handle_create_excel,
         "create_pdf": _handle_create_pdf,
+        "create_ado_workitem": _handle_create_ado_workitem,
         # Tier 2: modify operations
         "modify_file": _handle_modify_file,
         "create_directory": _handle_create_directory,
@@ -960,6 +961,79 @@ async def _handle_call_connector(tool_name: str, args: dict) -> str:
             return f"Error: unsupported connector type: {ctype}"
     except Exception as e:
         return f"Error calling connector: {e}"
+
+
+async def _handle_create_ado_workitem(tool_name: str, args: dict) -> str:
+    """Create a work item (User Story/Bug/Task/etc.) in an Azure DevOps project
+    via a configured azure_devops connector.
+
+    Uses the Azure DevOps REST API's work item creation endpoint directly
+    (JSON-Patch body, api-version=7.1) rather than the generic call_connector
+    rest_api path — ADO's content type (application/json-patch+json) and
+    method (POST to a type-specific URL) don't fit that generic GET/POST-
+    with-plain-json shape.
+    """
+    import urllib.parse
+
+    connector_name = args.get("connector", "")
+    project = (args.get("project") or "").strip()
+    work_item_type = (args.get("work_item_type") or "").strip()
+    title = (args.get("title") or "").strip()
+    description = args.get("description") or ""
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not project:
+        return "Error: project is required"
+    if not work_item_type:
+        return "Error: work_item_type is required (e.g. 'User Story', 'Bug', 'Task')"
+    if not title:
+        return "Error: title is required"
+
+    connector = _get_connector(connector_name)
+    if not connector:
+        return f"Error: connector '{connector_name}' not found"
+    if connector["type"] != "azure_devops":
+        return f"Error: connector '{connector_name}' is not an azure_devops connector"
+
+    config = connector["config"]
+    org_url = (config.get("org_url") or "").rstrip("/")
+    if not org_url:
+        return f"Error: connector '{connector_name}' has no org_url configured"
+
+    pat = (connector.get("auth") or {}).get("pat")
+    if not pat:
+        return f"Error: connector '{connector_name}' has no personal access token configured"
+
+    from app.services.connector_auth import build_auth_headers, validate_target_url
+
+    url = (
+        f"{org_url}/{urllib.parse.quote(project)}/_apis/wit/workitems/"
+        f"${urllib.parse.quote(work_item_type)}?api-version=7.1"
+    )
+    url_err = validate_target_url(url)
+    if url_err:
+        return url_err
+
+    headers = build_auth_headers("basic", {"username": "", "password": pat})
+    headers["Content-Type"] = "application/json-patch+json"
+
+    patch = [{"op": "add", "path": "/fields/System.Title", "value": title}]
+    if description:
+        patch.append({"op": "add", "path": "/fields/System.Description", "value": description})
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, headers=headers, json=patch)
+        if resp.status_code in (200, 201):
+            data = resp.json()
+            work_item_id = data.get("id")
+            link = f"{org_url}/{urllib.parse.quote(project)}/_workitems/edit/{work_item_id}" if work_item_id else ""
+            return f"Created {work_item_type} #{work_item_id} in {project}: {title}\n{link}"
+        return f"Error: ADO returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error creating ADO work item: {e}"
 
 
 async def _handle_search_emails(tool_name: str, args: dict) -> str:

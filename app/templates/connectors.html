@@ -30,6 +30,7 @@
         ('plug', 'REST API', 'HTTP/HTTPS endpoints with custom headers, auth, and body templates. GET/POST/PUT/PATCH/DELETE.'),
         ('mail', 'Outlook', 'Windows COM automation — read emails, search calendar, access contacts. Read-only.'),
         ('database', 'SQL Server', 'pyodbc connection — run SELECT queries, inspect schema, export results.'),
+        ('kanban-square', 'Azure DevOps', 'Personal access token auth — create backlog work items (User Story/Bug/Task).'),
       ] %}
       {% for icon, title, desc in types %}
       <div class="rounded-lg border border-border-subtle bg-bg-card p-3.5">
@@ -66,6 +67,7 @@
           <option value="rest_api">REST API</option>
           <option value="outlook">Outlook</option>
           <option value="sql_server">SQL Server</option>
+          <option value="azure_devops">Azure DevOps</option>
         </select>
       </div>
 
@@ -96,8 +98,8 @@
 
 {% block scripts %}
 <script>
-  const TYPE_ICONS = { rest_api: 'plug', sql_server: 'database', outlook: 'mail' };
-  const TYPE_LABELS = { rest_api: 'REST API', sql_server: 'SQL Server', outlook: 'Outlook' };
+  const TYPE_ICONS = { rest_api: 'plug', sql_server: 'database', outlook: 'mail', azure_devops: 'kanban-square' };
+  const TYPE_LABELS = { rest_api: 'REST API', sql_server: 'SQL Server', outlook: 'Outlook', azure_devops: 'Azure DevOps' };
 
   // ── Field templates ──────────────────────────────────────────────────────────
 
@@ -188,12 +190,30 @@
     </div>`;
   }
 
+  function adoFields(cfg, auth) {
+    cfg = cfg || {}; auth = auth || {};
+    const cls = 'w-full px-2.5 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent';
+    return `
+      <div class="space-y-3">
+        <div>
+          <label class="text-xs text-text-muted block mb-1.5">Organization URL</label>
+          <input type="url" id="cfg-org_url" value="${esc(cfg.org_url||'')}" placeholder="https://dev.azure.com/your-org" class="${cls}" />
+        </div>
+        <div>
+          <label class="text-xs text-text-muted block mb-1.5">Personal Access Token</label>
+          <input type="password" id="auth-pat" placeholder="your PAT (leave blank to keep existing when editing)" class="${cls}" />
+          <p class="text-[10px] text-text-muted mt-1">Needs "Work Items (Read &amp; Write)" scope. Created in Azure DevOps &rarr; User Settings &rarr; Personal Access Tokens.</p>
+        </div>
+      </div>`;
+  }
+
   function updateConnectorFields(cfg, auth) {
     const type = document.getElementById('connector-type').value;
     const container = document.getElementById('connector-type-fields');
     if (type === 'rest_api') container.innerHTML = restApiFields(cfg, auth);
     else if (type === 'sql_server') container.innerHTML = sqlServerFields(cfg, auth);
     else if (type === 'outlook') container.innerHTML = outlookFields();
+    else if (type === 'azure_devops') container.innerHTML = adoFields(cfg, auth);
     else container.innerHTML = '';
     lucide.createIcons();
     if (type === 'rest_api') updateAuthFields();
@@ -218,6 +238,10 @@
       const authType = document.getElementById('cfg-auth_type')?.value || 'windows';
       config = { server: document.getElementById('cfg-server')?.value || '', database: document.getElementById('cfg-database')?.value || '', auth_type: authType };
       if (authType === 'sql') auth = { username: document.getElementById('auth-username')?.value || '', password: document.getElementById('auth-password')?.value || '' };
+    } else if (type === 'azure_devops') {
+      config = { org_url: (document.getElementById('cfg-org_url')?.value || '').replace(/\/$/, '') };
+      const pat = document.getElementById('auth-pat')?.value || '';
+      if (pat) auth = { pat };
     }
     return { name, connector_type: type, config, auth };
   }
@@ -322,7 +346,7 @@
     grid.innerHTML = connectors.map(c => {
       const icon = TYPE_ICONS[c.connector_type] || 'plug';
       const label = TYPE_LABELS[c.connector_type] || c.connector_type;
-      const endpoint = c.config?.base_url || c.config?.server || (c.connector_type === 'outlook' ? 'COM Automation' : '');
+      const endpoint = c.config?.base_url || c.config?.server || c.config?.org_url || (c.connector_type === 'outlook' ? 'COM Automation' : '');
       return `
       <div class="rounded-lg border border-border-subtle bg-bg-card p-4 hover:border-border-visible transition-colors">
         <div class="flex items-start gap-3">

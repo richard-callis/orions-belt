@@ -19,8 +19,10 @@ def build_auth_headers(auth_type: str, auth: dict | None) -> dict:
         headers["Authorization"] = f"Bearer {auth['token']}"
     elif auth_type == "api_key" and auth.get("api_key"):
         headers[auth.get("header_name") or "X-API-Key"] = auth["api_key"]
-    elif auth_type == "basic" and auth.get("username"):
-        creds = base64.b64encode(f"{auth['username']}:{auth.get('password', '')}".encode()).decode()
+    elif auth_type == "basic" and (auth.get("username") or auth.get("password")):
+        # Empty username + a password is a valid Basic credential (e.g. Azure
+        # DevOps personal access tokens: "" : <PAT>) — don't require username.
+        creds = base64.b64encode(f"{auth.get('username', '')}:{auth.get('password', '')}".encode()).decode()
         headers["Authorization"] = f"Basic {creds}"
     return headers
 

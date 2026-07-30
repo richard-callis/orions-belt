@@ -184,6 +184,22 @@ def _seed_builtin_tools(app):
             }),
         ),
         dict(
+            name="create_ado_workitem",
+            tier=1,
+            description="Create a work item (User Story, Bug, Task, etc.) in an Azure DevOps project via a configured azure_devops connector",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Azure DevOps connector name as configured in Settings"},
+                    "project": {"type": "string", "description": "Azure DevOps project name"},
+                    "work_item_type": {"type": "string", "description": "Work item type, e.g. 'User Story', 'Bug', 'Task'"},
+                    "title": {"type": "string", "description": "Work item title"},
+                    "description": {"type": "string", "description": "Work item description (optional)"},
+                },
+                "required": ["connector", "project", "work_item_type", "title"],
+            }),
+        ),
+        dict(
             name="run_sql_query",
             tier=1,
             description="Run a read-only SELECT query via a configured SQL connector",
