@@ -273,7 +273,7 @@ def set_setting(key):
 
     # Store certain keys as their proper types
     _JSON_KEYS = {"llm.providers"}
-    _BOOL_KEYS = {"debug.llm", "pii.guard.enabled"}
+    _BOOL_KEYS = {"debug.llm", "pii.guard.enabled", "agents.dream_enabled"}
     if key in _JSON_KEYS:
         if key == "llm.providers":
             value = _prepare_providers_for_save(value)

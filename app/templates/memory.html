@@ -8,7 +8,7 @@
   <!-- Filter sidebar -->
   <aside class="hidden lg:flex flex-col w-52 border-r border-border-subtle bg-bg-sidebar flex-shrink-0 p-3 gap-2">
     <span class="text-xs font-semibold text-text-muted uppercase tracking-wider px-1 mb-1">Type</span>
-    {% for label, value in [('All',''),('Persistent','persistent'),('Project','project'),('Entity','entity')] %}
+    {% for label, value in [('All',''),('Persistent','persistent'),('Project','project'),('Entity','entity'),('Lesson','lesson')] %}
     <button onclick="filterType('{{ value }}')"
             data-filter="{{ value }}"
             class="filter-btn flex items-center justify-between px-3 py-2 rounded-lg text-xs transition-colors
@@ -40,6 +40,23 @@
         <i data-lucide="plus" class="w-3 h-3"></i>
         Add Memory
       </button>
+    </div>
+
+    <!-- Dream: LLM-extracted lessons, pending human review before they become
+         real, recallable memories -->
+    <div class="px-5 py-3 border-b border-border-subtle bg-bg-card">
+      <div class="flex items-center justify-between mb-2">
+        <div class="flex items-center gap-2">
+          <i data-lucide="moon-star" class="w-3.5 h-3.5 text-accent"></i>
+          <span class="text-xs font-semibold text-text-primary">Dream</span>
+          <span class="text-[10px] text-text-muted">Periodically extracts durable lessons from room activity for you to review</span>
+        </div>
+        <label class="relative flex-shrink-0 cursor-pointer">
+          <input type="checkbox" id="dream-enabled-toggle" class="sr-only peer" />
+          <div class="w-9 h-5 bg-border-visible rounded-full peer peer-checked:bg-accent after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-4"></div>
+        </label>
+      </div>
+      <div id="dream-pending-list" class="space-y-1.5"></div>
     </div>
 
     <div id="memList" class="flex-1 overflow-y-auto p-5 space-y-3">
@@ -225,6 +242,62 @@ async function deleteMemory(id) {
   loadMemories();
 }
 
+// ── Dream: pending lesson review ────────────────────────────────────────────
+
+async function loadDreamToggle() {
+  try {
+    const r = await fetch('/api/settings/agents.dream_enabled');
+    const d = await r.json();
+    document.getElementById('dream-enabled-toggle').checked = d.data?.value === true;
+  } catch (_) {}
+}
+
+document.getElementById('dream-enabled-toggle').addEventListener('change', async function () {
+  await fetch('/api/settings/agents.dream_enabled', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: this.checked }),
+  });
+});
+
+async function loadDreamPending() {
+  const el = document.getElementById('dream-pending-list');
+  try {
+    const rows = await fetch('/api/dream/pending').then(r => r.json());
+    if (!rows.length) {
+      el.innerHTML = '<div class="text-[11px] text-text-muted">No pending lessons to review.</div>';
+      return;
+    }
+    el.innerHTML = rows.map(l => `
+      <div class="flex items-start gap-2 px-2.5 py-2 rounded bg-bg-raised text-xs">
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 mb-0.5">
+            <span class="font-medium text-text-primary truncate">${escHtml(l.title)}</span>
+            ${l.folder ? `<span class="px-1.5 py-0.5 rounded-full bg-accent/10 text-accent text-[10px] flex-shrink-0">${escHtml(l.folder)}</span>` : ''}
+          </div>
+          <div class="text-text-secondary">${escHtml(l.content)}</div>
+        </div>
+        <div class="flex items-center gap-1.5 flex-shrink-0">
+          <button onclick="reviewDreamLesson('${l.id}', 'approve')" class="text-status-healthy hover:underline">Approve</button>
+          <button onclick="reviewDreamLesson('${l.id}', 'reject')" class="text-status-error hover:underline">Reject</button>
+        </div>
+      </div>`).join('');
+  } catch (e) {
+    el.innerHTML = '<div class="text-[11px] text-text-muted">Could not load pending lessons.</div>';
+  }
+}
+
+async function reviewDreamLesson(id, action) {
+  try {
+    await fetch(`/api/dream/pending/${id}/${action}`, { method: 'POST' });
+  } catch (e) { console.error('Failed to review lesson:', e); }
+  loadDreamPending();
+  if (action === 'approve') loadMemories();
+}
+window.reviewDreamLesson = reviewDreamLesson;
+
 loadMemories();
+loadDreamToggle();
+loadDreamPending();
 </script>
 {% endblock %}

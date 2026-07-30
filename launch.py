@@ -77,6 +77,7 @@ def run_flask():
     # Register on-shutdown backup + periodic scheduled backups
     from app.services.backup import register_shutdown_backup, start_periodic_backups
     from app.services.retention import start_retention_service, stop_retention_service
+    from app.services.dream import start_dream_service, stop_dream_service
     from app.services.db_crypto import set_db_path, enforce_file_permissions
     from config import Config
 
@@ -87,6 +88,12 @@ def run_flask():
     # Start data retention service
     atexit.register(stop_retention_service)
     start_retention_service(interval_hours=6.0)
+
+    # Dream (lessons-learned extraction) — off by default (agents.dream_enabled
+    # setting), started unconditionally like the other periodic services but a
+    # no-op every tick until the user opts in via Settings.
+    atexit.register(stop_dream_service)
+    start_dream_service(interval_hours=2.0)
 
     register_shutdown_backup()
     start_periodic_backups(interval_minutes=30)
