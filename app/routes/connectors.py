@@ -35,8 +35,8 @@ def create_connector():
 
     if not name:
         return jsonify({"error": "name is required"}), 400
-    if connector_type not in ("rest_api", "sql_server", "outlook"):
-        return jsonify({"error": "connector_type must be rest_api, sql_server, or outlook"}), 400
+    if connector_type not in ("rest_api", "sql_server", "outlook", "azure_devops"):
+        return jsonify({"error": "connector_type must be rest_api, sql_server, outlook, or azure_devops"}), 400
     if Connector.query.filter_by(name=name).first():
         return jsonify({"error": f"Connector '{name}' already exists"}), 409
 
@@ -141,6 +141,8 @@ def test_connector(connector_id):
             return _test_sql_server(c)
         elif c.connector_type == "outlook":
             return _test_outlook(c)
+        elif c.connector_type == "azure_devops":
+            return _test_azure_devops(c)
         else:
             return jsonify({"ok": False, "message": f"Unknown type: {c.connector_type}"}), 400
     except Exception as e:
@@ -149,23 +151,15 @@ def test_connector(connector_id):
 
 
 def _test_rest_api(c: Connector):
+    from app.services.connector_auth import build_auth_headers
+
     cfg = json.loads(c.config or "{}")
     base_url = (cfg.get("base_url") or "").rstrip("/")
     if not base_url:
         return jsonify({"ok": False, "message": "No base_url configured"}), 200
 
     import httpx
-    auth = c.get_auth()
-    headers = {}
-    auth_type = cfg.get("auth_type", "none")
-    if auth_type == "bearer" and auth.get("token"):
-        headers["Authorization"] = f"Bearer {auth['token']}"
-    elif auth_type == "api_key" and auth.get("api_key"):
-        headers[auth.get("header_name", "X-API-Key")] = auth["api_key"]
-    elif auth_type == "basic" and auth.get("username"):
-        import base64
-        creds = base64.b64encode(f"{auth['username']}:{auth.get('password', '')}".encode()).decode()
-        headers["Authorization"] = f"Basic {creds}"
+    headers = build_auth_headers(cfg.get("auth_type", "none"), c.get_auth())
 
     try:
         with httpx.Client(timeout=10.0) as client:
@@ -213,3 +207,31 @@ def _test_outlook(c: Connector):
         return jsonify({"ok": True, "message": "win32com available — Outlook connector ready"})
     except ImportError:
         return jsonify({"ok": False, "message": "pywin32 not installed (Windows only) — run: pip install pywin32"})
+
+
+def _test_azure_devops(c: Connector):
+    from app.services.connector_auth import build_auth_headers
+
+    cfg = json.loads(c.config or "{}")
+    org_url = (cfg.get("org_url") or "").rstrip("/")
+    if not org_url:
+        return jsonify({"ok": False, "message": "No org_url configured"}), 200
+
+    auth = c.get_auth()
+    if not auth.get("pat"):
+        return jsonify({"ok": False, "message": "No personal access token configured"}), 200
+
+    import httpx
+    # PAT auth is HTTP Basic with an empty username — see build_auth_headers("basic", ...).
+    headers = build_auth_headers("basic", {"username": "", "password": auth["pat"]})
+    url = f"{org_url}/_apis/projects?api-version=7.1"
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(url, headers=headers)
+        if resp.status_code == 401:
+            return jsonify({"ok": False, "message": "Auth failed (401) — check the personal access token"})
+        return jsonify({"ok": resp.status_code < 500, "message": f"HTTP {resp.status_code}"})
+    except httpx.ConnectError as e:
+        return jsonify({"ok": False, "message": f"Connection refused: {e}"})
+    except httpx.TimeoutException:
+        return jsonify({"ok": False, "message": "Connection timed out (10s)"})

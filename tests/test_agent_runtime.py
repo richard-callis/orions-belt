@@ -23,8 +23,8 @@ class TestAgentRuntimeTools:
     def test_allows_low_tier_by_default(self, app, monkeypatch):
         # A Tier-0 tool is within the default ceiling → it is dispatched (we stub
         # the actual executor so no real tool runs).
-        import app.routes.chat as chat_routes
-        monkeypatch.setattr(chat_routes, "_run_tool", lambda name, args, **k: f"ran:{name}")
+        import app.services.mcp.tools as mcp_tools
+        monkeypatch.setattr(mcp_tools, "run_tool_sync", lambda name, args, **k: f"ran:{name}")
         with app.app_context():
             rt = AgentRuntime(_agent(), provider={"base_url": "x", "api_key": "y", "model": "m"})
             out = rt.run_tool("read_file", {"path": "/x"}, tier=0)

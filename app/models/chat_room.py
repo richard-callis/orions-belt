@@ -30,6 +30,12 @@ class ChatRoom(db.Model):
     # Optional link to a task
     task_id = db.Column(db.String(36), db.ForeignKey("tasks.id"), nullable=True)
 
+    # Optional link to the work hierarchy — set when a room is created from
+    # "Plan with AI" on a work item, mirroring Session's linked_* fields.
+    linked_epic_id = db.Column(db.String(36), db.ForeignKey("epics.id"), nullable=True)
+    linked_feature_id = db.Column(db.String(36), db.ForeignKey("features.id"), nullable=True)
+    linked_task_id = db.Column(db.String(36), db.ForeignKey("tasks.id"), nullable=True)
+
     created_at = db.Column(db.DateTime, default=_now)
     updated_at = db.Column(db.DateTime, default=_now, onupdate=_now)
 
@@ -46,6 +52,9 @@ class ChatRoom(db.Model):
             "description":  self.description,
             "room_type":    self.room_type,
             "task_id":      self.task_id,
+            "linked_epic_id":    self.linked_epic_id,
+            "linked_feature_id": self.linked_feature_id,
+            "linked_task_id":    self.linked_task_id,
             "created_at":   self.created_at.isoformat(),
             "updated_at":   self.updated_at.isoformat(),
             "member_count": len(self.members),
@@ -99,12 +108,24 @@ class ChatRoomMessage(db.Model):
     agent = db.relationship("Agent")
 
     def to_dict(self):
+        content = self.content
+        if content and "[PII:" in content:
+            # The persisted content stays tokenized (it's re-fed as agent
+            # context on every future round) — restore is display-only, done
+            # here at the single read path so both human and agent messages
+            # show their real values without ever writing plaintext PII back
+            # into stored/re-fed history.
+            try:
+                from app.services.pii_guard import get_pii_guard
+                content = get_pii_guard().restore(content)
+            except Exception:
+                pass
         return {
             "id":          self.id,
             "room_id":     self.room_id,
             "agent_id":    self.agent_id,
             "agent_name":  self.agent.name if self.agent else None,
             "sender_type": self.sender_type,
-            "content":     self.content,
+            "content":     content,
             "created_at":  self.created_at.isoformat(),
         }

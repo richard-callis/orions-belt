@@ -33,6 +33,10 @@ jobs:
             requests \
             httpx \
             numpy \
+            python-docx \
+            python-pptx \
+            openpyxl \
+            reportlab \
             pytest \
             pytest-cov
 

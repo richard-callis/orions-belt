@@ -72,6 +72,7 @@ def run_flask():
         _ensure_projects_dir(app)
         _migrate_schema(app)
         _seed_builtin_tools(app)
+        _seed_agents(app)
 
     # Register on-shutdown backup + periodic scheduled backups
     from app.services.backup import register_shutdown_backup, start_periodic_backups
@@ -183,6 +184,22 @@ def _seed_builtin_tools(app):
             }),
         ),
         dict(
+            name="create_ado_workitem",
+            tier=1,
+            description="Create a work item (User Story, Bug, Task, etc.) in an Azure DevOps project via a configured azure_devops connector",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Azure DevOps connector name as configured in Settings"},
+                    "project": {"type": "string", "description": "Azure DevOps project name"},
+                    "work_item_type": {"type": "string", "description": "Work item type, e.g. 'User Story', 'Bug', 'Task'"},
+                    "title": {"type": "string", "description": "Work item title"},
+                    "description": {"type": "string", "description": "Work item description (optional)"},
+                },
+                "required": ["connector", "project", "work_item_type", "title"],
+            }),
+        ),
+        dict(
             name="run_sql_query",
             tier=1,
             description="Run a read-only SELECT query via a configured SQL connector",
@@ -206,6 +223,82 @@ def _seed_builtin_tools(app):
                     "count": {"type": "integer", "description": "Maximum number of emails to return (default 20)"},
                 },
                 "required": [],
+            }),
+        ),
+        dict(
+            name="create_word_document",
+            tier=1,
+            description="Create a Word (.docx) document from plain text. Paragraphs separated "
+                        "by a blank line; '# '/'## '/'### ' prefixes become headings; '- '/'* ' "
+                        "prefixed lines become a bullet list.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path of the .docx file to create"},
+                    "title": {"type": "string", "description": "Optional document title (top heading)"},
+                    "content": {"type": "string", "description": "Document body text"},
+                },
+                "required": ["path", "content"],
+            }),
+        ),
+        dict(
+            name="create_powerpoint",
+            tier=1,
+            description="Create a PowerPoint (.pptx) presentation from a list of slides, "
+                        "each with a title and bullet points.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path of the .pptx file to create"},
+                    "title": {"type": "string", "description": "Optional title-slide title"},
+                    "subtitle": {"type": "string", "description": "Optional title-slide subtitle"},
+                    "slides": {
+                        "type": "array",
+                        "description": "List of {title, bullets: [str, ...]}",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string"},
+                                "bullets": {"type": "array", "items": {"type": "string"}},
+                            },
+                        },
+                    },
+                },
+                "required": ["path", "slides"],
+            }),
+        ),
+        dict(
+            name="create_excel",
+            tier=1,
+            description="Create an Excel (.xlsx) workbook. Supports a single sheet "
+                        "({headers, rows}) or multiple named sheets.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path of the .xlsx file to create"},
+                    "sheet_name": {"type": "string", "description": "Sheet name when providing a single sheet (default 'Sheet1')"},
+                    "sheets": {
+                        "type": "object",
+                        "description": "{headers: [...], rows: [[...], ...]} for one sheet, OR "
+                                        "{SheetName: {headers, rows}, ...} for multiple sheets",
+                    },
+                },
+                "required": ["path", "sheets"],
+            }),
+        ),
+        dict(
+            name="create_pdf",
+            tier=1,
+            description="Create a PDF document from plain text, with the same "
+                        "heading/bullet conventions as create_word_document.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path of the .pdf file to create"},
+                    "title": {"type": "string", "description": "Optional document title"},
+                    "content": {"type": "string", "description": "Document body text"},
+                },
+                "required": ["path", "content"],
             }),
         ),
         dict(
@@ -901,6 +994,90 @@ def _seed_novas(app):
                 config=json.dumps(config),
                 **nova_def,
             ))
+    db.session.commit()
+
+
+def _seed_agents(app):
+    """Seed default live Agent rows so chat rooms have real agents to add on
+    first run, not just Nova templates. Safe to call on every startup — skips
+    existing names (Agent.name has no DB uniqueness constraint, so this
+    filter-first check is what keeps it idempotent).
+    """
+    import json
+    from app.models.agent import Agent
+    from app.models.nova import Nova
+    from app import db
+
+    # Reuse the project_planner Nova's own system_prompt rather than
+    # duplicating it by hand — falls back to an inline prompt if that Nova
+    # was ever removed/renamed.
+    planner_nova = Nova.query.filter_by(name="project_planner").first()
+    if planner_nova:
+        planner_prompt = json.loads(planner_nova.config or "{}").get("system_prompt", "")
+    else:
+        planner_prompt = (
+            "You are a project planning specialist. When given a goal or feature request, "
+            "clarify scope, break it into epics/features/tasks, flag dependencies and risks, "
+            "and estimate relative complexity (S/M/L/XL)."
+        )
+
+    defaults = [
+        dict(
+            name="Project Planner",
+            description="Breaks down a high-level goal into a structured plan with epics, features, and tasks.",
+            system_prompt=planner_prompt,
+            # Widened beyond the project_planner Nova's read-only tool list so
+            # this agent can also produce a shareable plan document.
+            allowed_tools=["read_file", "search_files", "create_word_document", "create_excel"],
+            max_iterations=15,
+        ),
+        dict(
+            name="Email Assistant",
+            description="Searches Outlook email to answer questions and surface relevant messages.",
+            system_prompt=(
+                "You are an email assistant. Use search_emails to find messages relevant to the "
+                "user's request and summarize what you find clearly. You can only search and read "
+                "email — you cannot send, reply to, or delete messages."
+            ),
+            allowed_tools=["search_emails"],
+            max_iterations=10,
+        ),
+        dict(
+            name="Document Writer",
+            description="Creates Word documents, PowerPoint decks, Excel workbooks, and PDFs from plain-text content.",
+            system_prompt=(
+                "You are a document production specialist. When asked to produce a deliverable, "
+                "pick the right format for the content (Word for reports/memos, PowerPoint for "
+                "presentations, Excel for tabular data, PDF for fixed-layout documents) and use the "
+                "matching create_* tool. Read source files first if the content needs to come from "
+                "somewhere else in the project."
+            ),
+            allowed_tools=["create_word_document", "create_powerpoint", "create_excel", "create_pdf", "read_file"],
+            max_iterations=15,
+        ),
+        dict(
+            name="Research Assistant",
+            description="Gathers information from files, databases, and notes to compile thorough research reports.",
+            system_prompt=(
+                "You are a research assistant. When given a research question:\n"
+                "1. Identify what information sources are available (files, databases, notes)\n"
+                "2. Systematically gather relevant information\n"
+                "3. Synthesize findings into a structured report\n"
+                "4. Cite your sources (file names, query results)\n"
+                "5. Distinguish between confirmed facts and inferences\n"
+                "6. End with a clear summary and any open questions\n\n"
+                "Be thorough but concise. Quality over quantity."
+            ),
+            allowed_tools=["read_file", "list_directory", "search_files", "run_sql_query"],
+            max_iterations=25,
+        ),
+    ]
+
+    for agent_def in defaults:
+        existing = Agent.query.filter_by(name=agent_def["name"]).first()
+        if not existing:
+            allowed_tools = agent_def.pop("allowed_tools")
+            db.session.add(Agent(allowed_tools=json.dumps(allowed_tools), **agent_def))
     db.session.commit()
 
 

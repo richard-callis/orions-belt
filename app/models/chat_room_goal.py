@@ -19,6 +19,9 @@ class ChatRoomGoal(db.Model):
     room_id = db.Column(db.String(36), db.ForeignKey("chat_rooms.id"), nullable=False, index=True)
 
     goal_text = db.Column(db.Text, nullable=False)
+    # Optional explicit acceptance criteria a reviewer checks before a
+    # self-reported "done" is trusted. Falls back to goal_text when unset.
+    success_criteria = db.Column(db.Text, nullable=True)
     status = db.Column(db.String(32), default="active")  # active | completed | abandoned
     set_by = db.Column(db.String(64), default="user")    # user | agent
 
@@ -30,6 +33,7 @@ class ChatRoomGoal(db.Model):
             "id": self.id,
             "room_id": self.room_id,
             "goal_text": self.goal_text,
+            "success_criteria": self.success_criteria,
             "status": self.status,
             "set_by": self.set_by,
             "created_at": self.created_at.isoformat(),

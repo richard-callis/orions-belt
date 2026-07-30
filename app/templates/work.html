@@ -161,9 +161,9 @@ async function api(method, path, body) {
 }
 
 // ── Plan with AI ──────────────────────────────────────────────────
-// Matches Orion's pattern: create linked session, store initial context,
-// navigate to /chat?session=<id>. Chat page auto-sends the context and
-// shows a "Save Plan" button that writes back to the item.
+// Creates a chat ROOM (not a 1:1 session) linked to the work item, with the
+// Project Planner agent added as a member, stores the initial context so
+// chat.html can auto-send it, then navigates to /chat?room=<id>.
 async function planWithAI(itemType, itemId, itemTitle, itemDescription) {
   const linkField = { epic: 'linked_epic_id', feature: 'linked_feature_id', task: 'linked_task_id' }[itemType];
   const prefix = { epic: '◆ EPIC · ', feature: '▸ FEAT · ', task: '● TASK · ' }[itemType] || '';
@@ -175,21 +175,33 @@ async function planWithAI(itemType, itemId, itemTitle, itemDescription) {
     : `I want to plan this task:\n\n**${itemTitle}**\n\n${itemDescription || 'No description yet.'}\n\nHelp me write a clear implementation plan. Ask me clarifying questions first.`;
 
   try {
-    const session = await api('POST', '/chat/api/sessions', {
+    // Best-effort: add the seeded Project Planner agent if it exists. A
+    // renamed/deleted agent must not block planning — the room is still
+    // created (empty), just without an agent pre-added.
+    let agentIds = [];
+    try {
+      const agents = await api('GET', '/agents/api/agents');
+      const planner = (agents || []).find(a => a.name === 'Project Planner');
+      if (planner) agentIds = [planner.id];
+    } catch (e) { /* non-fatal — proceed without a pre-added agent */ }
+
+    const room = await api('POST', '/api/chat-rooms', {
       name: `${prefix}${itemTitle}`,
+      room_type: 'planning',
       [linkField]: itemId,
+      agent_ids: agentIds,
     });
     // Store the initial context so chat.html can auto-send it
     sessionStorage.setItem('planContext', JSON.stringify({
-      sessionId: session.id,
+      roomId: room.id,
       initialContext,
       itemType,
       itemId,
       itemTitle,
     }));
-    window.location.href = `/chat?session=${session.id}`;
+    window.location.href = `/chat?room=${room.id}`;
   } catch(e) {
-    alert(`Failed to start planning session: ${e.message}`);
+    alert(`Failed to start planning room: ${e.message}`);
   }
 }
 

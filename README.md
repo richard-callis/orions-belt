@@ -212,13 +212,11 @@ cd orions-belt
 # 2. Set a persistent secret key (important — prevents session loss on restart)
 export SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")
 
-# 3. Run setup (creates venv, installs deps, downloads spaCy model)
-bash setup.sh
-
-# 4. Activate venv and launch
-source .venv/bin/activate
-python launch.py
+# 3. Run — installs (venv, deps, spaCy model) on first run, just starts on every run after
+bash run.sh
 ```
+
+`run.sh` is the single entry point: if `.venv` doesn't exist yet it runs `setup.sh` first, then starts the app either way. You can still run `bash setup.sh` on its own if you just want to (re-)install without starting.
 
 On first launch, the app opens in a native window. Configure your LLM provider in **Settings** before starting a chat.
 
@@ -233,13 +231,11 @@ On first launch a setup screen downloads the AI models (~670 MB). After that it 
 ### Windows — from source
 
 ```cmd
-REM Double-click setup.bat OR run in cmd:
-setup.bat
-
-REM After setup completes:
+REM Double-click run.bat, or run in cmd:
 run.bat
-REM  — or double-click the desktop shortcut created by setup.bat
 ```
+
+`run.bat` is the single entry point: on first run (no `.venv` yet) it runs `setup.bat` automatically, then starts the app; on every run after, it just starts. Double-click it every time — no need to run setup separately. (`setup.bat` still works standalone if you want to (re-)install without starting.)
 
 ### Run in Browser Mode
 
@@ -355,9 +351,10 @@ orions-belt/
 ├── download_models.py       # Pre-download HuggingFace models
 ├── create_icon.py           # Generate tray icon
 ├── requirements.txt         # Python dependencies
-├── setup.sh                 # Linux/macOS setup script
-├── setup.bat                # Windows setup script
-├── run.bat                  # Windows launcher
+├── setup.sh                 # Linux/macOS install script (run standalone or via run.sh)
+├── setup.bat                # Windows install script (run standalone or via run.bat)
+├── run.sh                   # Linux/macOS entry point — installs if needed, then starts
+├── run.bat                  # Windows entry point — installs if needed, then starts
 ├── start_silent.vbs         # Windows silent launcher (no console)
 ├── logs/                    # Application logs (created at startup)
 ├── models/                  # HuggingFace model cache (created at startup)
