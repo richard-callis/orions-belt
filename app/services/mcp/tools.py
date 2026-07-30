@@ -134,6 +134,18 @@ def _authorize_path(path: str) -> bool:
     return False
 
 
+def _authorized_dirs_hint() -> str:
+    """Short " (authorized: alias=/path, ...)" suffix for not-authorized errors,
+    so an agent that guessed a relative/wrong path can self-correct on retry
+    instead of guessing blindly again. Safe to expose — these are directories
+    the user themselves explicitly authorized via Settings, not a leak."""
+    dirs = AuthorizedDirectory.query.filter_by(enabled=True).all()
+    if not dirs:
+        return " (no authorized directories are configured)"
+    listing = ", ".join(f"{d.alias}={d.path}" for d in dirs)
+    return f" (authorized directories: {listing})"
+
+
 def _get_effective_tier(path: str, tool_tier: int) -> int:
     """Calculate effective tier based on path settings."""
     real_path = os.path.realpath(path)
@@ -382,7 +394,7 @@ async def _handle_read_file(tool_name: str, args: dict) -> str:
     if _is_blocked_path(real_path):
         return f"Error: access denied — system path blocked: {path}"
     if not _authorize_path(real_path):
-        return f"Error: directory not authorized: {path}"
+        return f"Error: directory not authorized: {path}{_authorized_dirs_hint()}"
 
     try:
         content = Path(real_path).read_text(encoding="utf-8")
@@ -406,7 +418,7 @@ async def _handle_list_directory(tool_name: str, args: dict) -> str:
     if _is_blocked_path(real_path):
         return f"Error: access denied — system path blocked: {path}"
     if not _authorize_path(real_path):
-        return f"Error: directory not authorized: {path}"
+        return f"Error: directory not authorized: {path}{_authorized_dirs_hint()}"
 
     try:
         entries = sorted(Path(real_path).iterdir())
@@ -428,7 +440,7 @@ async def _handle_search_files(tool_name: str, args: dict) -> str:
     pattern = args.get("pattern", "*")
     real_path = os.path.realpath(path)
     if not _authorize_path(real_path):
-        return f"Error: directory not authorized: {path}"
+        return f"Error: directory not authorized: {path}{_authorized_dirs_hint()}"
 
     try:
         matches = list(Path(real_path).glob(f"**/{pattern}"))
@@ -507,7 +519,7 @@ async def _handle_create_file(tool_name: str, args: dict) -> str:
     if _is_blocked_path(real_path):
         return f"Error: access denied — system path blocked: {path}"
     if not _authorize_path(real_path):
-        return f"Error: directory not authorized: {path}"
+        return f"Error: directory not authorized: {path}{_authorized_dirs_hint()}"
     if Path(real_path).exists():
         return f"Error: file already exists: {path}"
 
@@ -530,7 +542,7 @@ async def _handle_append_to_file(tool_name: str, args: dict) -> str:
     if _is_blocked_path(real_path):
         return f"Error: access denied — system path blocked: {path}"
     if not _authorize_path(real_path):
-        return f"Error: directory not authorized: {path}"
+        return f"Error: directory not authorized: {path}{_authorized_dirs_hint()}"
 
     try:
         Path(real_path).parent.mkdir(parents=True, exist_ok=True)
@@ -566,7 +578,7 @@ def _authorize_new_file(path_arg: str) -> tuple[str | None, str | None]:
     if _is_blocked_path(real_path):
         return None, f"Error: access denied — system path blocked: {path}"
     if not _authorize_path(real_path):
-        return None, f"Error: directory not authorized: {path}"
+        return None, f"Error: directory not authorized: {path}{_authorized_dirs_hint()}"
     if Path(real_path).exists():
         return None, f"Error: file already exists: {path}"
     return real_path, None
@@ -796,7 +808,7 @@ async def _handle_modify_file(tool_name: str, args: dict) -> str:
     if _is_blocked_path(real_path):
         return f"Error: access denied — system path blocked: {path}"
     if not _authorize_path(real_path):
-        return f"Error: directory not authorized: {path}"
+        return f"Error: directory not authorized: {path}{_authorized_dirs_hint()}"
 
     try:
         Path(real_path).parent.mkdir(parents=True, exist_ok=True)
@@ -819,7 +831,7 @@ async def _handle_create_directory(tool_name: str, args: dict) -> str:
     # SECURITY FIX: authorization check was missing — added to prevent
     # arbitrary directory creation outside of authorized paths.
     if not _authorize_path(real_path):
-        return f"Error: directory not authorized: {path}"
+        return f"Error: directory not authorized: {path}{_authorized_dirs_hint()}"
 
     try:
         Path(real_path).mkdir(parents=True, exist_ok=True)
@@ -840,7 +852,7 @@ async def _handle_delete_file(tool_name: str, args: dict) -> str:
     if _is_blocked_path(real_path):
         return f"Error: access denied — system path blocked: {path}"
     if not _authorize_path(real_path):
-        return f"Error: directory not authorized: {path}"
+        return f"Error: directory not authorized: {path}{_authorized_dirs_hint()}"
 
     try:
         Path(real_path).unlink()
@@ -864,9 +876,9 @@ async def _handle_move_file(tool_name: str, args: dict) -> str:
         return "Error: access denied — system path blocked"
     # SECURITY FIX: auth checks were missing on both source and destination.
     if not _authorize_path(real_src):
-        return f"Error: source directory not authorized: {src}"
+        return f"Error: source directory not authorized: {src}{_authorized_dirs_hint()}"
     if not _authorize_path(real_dst):
-        return f"Error: destination directory not authorized: {dst}"
+        return f"Error: destination directory not authorized: {dst}{_authorized_dirs_hint()}"
 
     try:
         Path(real_src).rename(real_dst)

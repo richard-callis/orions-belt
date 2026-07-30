@@ -125,7 +125,7 @@ def _seed_builtin_tools(app):
             input_schema=json.dumps({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Directory path to list"},
+                    "path": {"type": "string", "description": "Absolute path to list — must be under one of the authorized directories listed in your system prompt"},
                 },
                 "required": ["path"],
             }),
@@ -321,7 +321,7 @@ def _seed_builtin_tools(app):
             input_schema=json.dumps({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Directory path to create"},
+                    "path": {"type": "string", "description": "Absolute path to create — must be under one of the authorized directories listed in your system prompt"},
                 },
                 "required": ["path"],
             }),

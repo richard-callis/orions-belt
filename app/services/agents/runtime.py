@@ -55,6 +55,29 @@ class AgentRuntime:
             q = q.filter(MCPTool.name.in_(allowed))
         return q.all()
 
+    def _authorized_dirs_block(self) -> str:
+        """A system-prompt block listing authorized directories, so an agent
+        with file tools knows what absolute paths are actually valid instead
+        of guessing (e.g. a bare relative path like "notes") and getting
+        refused with no way to self-correct. Empty string if the agent has no
+        file-touching tools or none are configured."""
+        file_tool_names = {"read_file", "list_directory", "search_files", "create_file",
+                            "append_to_file", "modify_file", "create_directory",
+                            "delete_file", "move_file", "create_word_document",
+                            "create_powerpoint", "create_excel", "create_pdf"}
+        if not any(t.name in file_tool_names for t in self.tools()):
+            return ""
+        from app.models.connector import AuthorizedDirectory
+        dirs = AuthorizedDirectory.query.filter_by(enabled=True).all()
+        if not dirs:
+            return ""
+        listing = "\n".join(f"- {d.alias}: {d.path}" for d in dirs)
+        return (
+            "\n\n## Authorized directories\n"
+            "File tools only work with ABSOLUTE paths under one of these directories:\n"
+            f"{listing}"
+        )
+
     def run_tool(self, name: str, args: dict, tier: int = 0,
                  allow_tier: int = TIER_HARD_STOP - 1,
                  session_id: str | None = None, run_id: str | None = None) -> str:
@@ -91,6 +114,10 @@ class AgentRuntime:
         tier_map = {t.name: t.tier for t in tools}
 
         convo = list(messages)
+        dirs_block = self._authorized_dirs_block()
+        if dirs_block and convo and convo[0].get("role") == "system":
+            convo[0] = {**convo[0], "content": (convo[0].get("content") or "") + dirs_block}
+
         final_text = ""
         for _ in range(max_tool_iters):
             text, tool_calls, _tok = retry_with_recovery(
