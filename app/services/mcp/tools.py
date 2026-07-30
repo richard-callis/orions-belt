@@ -7,12 +7,14 @@ Mirrors the harness spec with:
 - Structured error types (for retry logic)
 - Tool availability checks (filtered at prompt-build time)
 """
+import asyncio
 import glob as glob_mod
 import json
 import logging
 import os
 import re
 import shutil
+import sys
 import tempfile
 import time
 from enum import Enum
@@ -63,7 +65,8 @@ CACHEABLE_TOOLS = {"read_file", "list_directory", "search_files"}
 # are stale and must be invalidated so a follow-up read sees fresh content.
 WRITE_TOOLS = {"create_file", "append_to_file", "modify_file", "create_directory",
                "delete_file", "move_file", "create_word_document", "create_powerpoint",
-               "create_excel", "create_pdf", "create_ado_workitem"}
+               "create_excel", "create_pdf", "create_ado_workitem",
+               "run_python", "run_shell", "git_commit"}
 
 
 # ── Tier system ───────────────────────────────────────────────────────────────
@@ -240,6 +243,7 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         "run_sql_query": _handle_run_sql_query,
         "search_emails": _handle_search_emails,
         "call_connector": _handle_call_connector,
+        "fetch_url": _handle_fetch_url,
         # Tier 1: create operations
         "create_file": _handle_create_file,
         "append_to_file": _handle_append_to_file,
@@ -257,9 +261,12 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         "modify_file": _handle_modify_file,
         "create_directory": _handle_create_directory,
         "send_email": _handle_send_email,
+        "http_request": _handle_http_request,
         # Tier 3: destructive operations
         "delete_file": _handle_delete_file,
         "move_file": _handle_move_file,
+        "run_python": _handle_run_python,
+        "run_shell": _handle_run_shell,
     }
 
     handler = handlers.get(tool_name)
@@ -509,6 +516,82 @@ async def _handle_run_sql_query(tool_name: str, args: dict) -> str:
         return f"{header}\n{separator}\n" + "\n".join(data_rows)
     except Exception as e:
         return f"Error running query: {e}"
+
+
+# Response body cap for fetch_url/http_request — these hit arbitrary,
+# LLM-chosen hosts (not a connector's own configured base_url), so nothing
+# bounds response size upstream; httpx will otherwise buffer the full body
+# regardless of how large it is. Streamed and enforced during download, not
+# after, so a multi-GB response can't be fully pulled first and discarded.
+_MAX_HTTP_RESPONSE_BYTES = 500_000
+
+
+async def _http_fetch_capped(client, method: str, url: str, **kwargs) -> tuple:
+    """GET/POST/etc via a streaming request, capped at _MAX_HTTP_RESPONSE_BYTES.
+    Returns (status_code, headers, text, truncated)."""
+    async with client.stream(method, url, **kwargs) as resp:
+        chunks = []
+        total = 0
+        truncated = False
+        async for chunk in resp.aiter_bytes():
+            total += len(chunk)
+            if total > _MAX_HTTP_RESPONSE_BYTES:
+                chunks.append(chunk[: _MAX_HTTP_RESPONSE_BYTES - (total - len(chunk))])
+                truncated = True
+                break
+            chunks.append(chunk)
+        content = b"".join(chunks)
+        text = content.decode(resp.encoding or "utf-8", errors="replace")
+        return resp.status_code, resp.headers, text, truncated
+
+
+async def _handle_fetch_url(tool_name: str, args: dict) -> str:
+    """Fetch an HTTP/HTTPS URL via GET and return its response body as text."""
+    from app.services.connector_auth import validate_untrusted_url
+
+    url = (args.get("url") or "").strip()
+    if not url:
+        return "Error: url is required"
+    err = validate_untrusted_url(url)
+    if err:
+        return err
+
+    try:
+        timeout = min(float(args.get("timeout") or 10), 30)
+    except (TypeError, ValueError):
+        timeout = 10
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            hops = 0
+            while True:
+                status, headers, text, truncated = await _http_fetch_capped(client, "GET", url)
+                if status not in (301, 302, 303, 307, 308):
+                    break
+                location = headers.get("location")
+                if not location or hops >= 3:
+                    break
+                # Revalidate the redirect TARGET before following it — a URL
+                # that passed the initial check can still redirect to a
+                # private/loopback address, which is exactly what
+                # follow_redirects=False + manual revalidation exists to catch.
+                from urllib.parse import urljoin
+                next_url = urljoin(url, location)
+                redirect_err = validate_untrusted_url(next_url)
+                if redirect_err:
+                    return f"Error: redirect target blocked — {redirect_err}"
+                url = next_url
+                hops += 1
+        if status >= 400:
+            return f"Error: HTTP {status} fetching {url}"
+        if truncated:
+            text += "\n...[truncated]"
+        return text
+    except httpx.TimeoutException:
+        return f"Error: request to {url} timed out after {timeout}s"
+    except Exception as e:
+        return f"Error fetching {url}: {e}"
 
 
 
@@ -893,6 +976,107 @@ async def _handle_move_file(tool_name: str, args: dict) -> str:
         return f"Error: source not found: {src}"
     except Exception as e:
         return f"Error moving: {e}"
+
+
+def _real_python_executable() -> str | None:
+    """Resolve an actual Python interpreter to run code with.
+
+    sys.executable is NOT a Python interpreter in the PyInstaller-frozen
+    build this app ships as (getattr(sys, "frozen", False)) — it's
+    OrionsBelt.exe itself, so subprocess.run([sys.executable, "-c", code])
+    would relaunch the whole app instead of running the snippet. Falls back
+    to whatever "python"/"python3" is on PATH; returns None if neither
+    exists so the caller can fail with a clear error instead of silently
+    doing the wrong thing.
+    """
+    if not getattr(sys, "frozen", False):
+        return sys.executable
+    return shutil.which("python3") or shutil.which("python")
+
+
+_MAX_SUBPROCESS_OUTPUT_CHARS = 20_000
+
+
+async def _handle_run_python(tool_name: str, args: dict) -> str:
+    """Execute a Python code snippet in a subprocess and return stdout/stderr.
+
+    Not sandboxed (no container/seccomp) — this app's threat model gates
+    dangerous operations by tier, not OS-level isolation (run_shell, the
+    equivalent tool for arbitrary commands, is Tier 3 for the same reason).
+    Takes no path argument, so it never goes through _authorize_path — that
+    is exactly why it's Tier 3 rather than Tier 2: it has no filesystem
+    authorization boundary the way file tools do.
+    """
+    code = args.get("code") or ""
+    if not code:
+        return "Error: code is required"
+    try:
+        timeout = min(float(args.get("timeout") or 30), 120)
+    except (TypeError, ValueError):
+        timeout = 30
+
+    python = _real_python_executable()
+    if not python:
+        return "Error: no Python interpreter found to run code with"
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            python, "-c", code,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return f"Error: run_python timed out after {timeout}s"
+        out = stdout.decode("utf-8", errors="replace")[:_MAX_SUBPROCESS_OUTPUT_CHARS]
+        err = stderr.decode("utf-8", errors="replace")[:_MAX_SUBPROCESS_OUTPUT_CHARS]
+        return f"exit_code={proc.returncode}\nstdout:\n{out}\nstderr:\n{err}"
+    except Exception as e:
+        return f"Error running Python code: {e}"
+
+
+async def _handle_run_shell(tool_name: str, args: dict) -> str:
+    """Execute a shell command and return stdout/stderr. Tier 3 — requires
+    explicit approval, same as delete_file/move_file."""
+    command = args.get("command") or ""
+    if not command:
+        return "Error: command is required"
+    try:
+        timeout = min(float(args.get("timeout") or 60), 300)
+    except (TypeError, ValueError):
+        timeout = 60
+
+    working_dir = _sanitize_path_input(args.get("working_dir") or "")
+    if working_dir:
+        real_wd = os.path.realpath(working_dir)
+        if _is_blocked_path(real_wd):
+            return f"Error: access denied — system path blocked: {working_dir}"
+        if not _authorize_path(real_wd):
+            return f"Error: working_dir not authorized: {working_dir}{_authorized_dirs_hint()}"
+    else:
+        authorized = AuthorizedDirectory.query.filter_by(enabled=True).first()
+        if not authorized:
+            return "Error: no authorized directories configured — set working_dir explicitly or configure one in Settings"
+        real_wd = os.path.realpath(authorized.path)
+
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            command, cwd=real_wd,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return f"Error: run_shell timed out after {timeout}s"
+        out = stdout.decode("utf-8", errors="replace")[:_MAX_SUBPROCESS_OUTPUT_CHARS]
+        err = stderr.decode("utf-8", errors="replace")[:_MAX_SUBPROCESS_OUTPUT_CHARS]
+        return f"exit_code={proc.returncode}\nstdout:\n{out}\nstderr:\n{err}"
+    except Exception as e:
+        return f"Error running shell command: {e}"
 
 
 # ── Connector helpers ─────────────────────────────────────────────────────────
@@ -1432,3 +1616,48 @@ async def _handle_send_email(tool_name: str, args: dict) -> str:
         return f"Email sent to {to}: {subject}"
     except Exception as e:
         return f"Error sending email: {e}"
+
+
+async def _handle_http_request(tool_name: str, args: dict) -> str:
+    """Make an HTTP request with full control over method, headers, and body.
+
+    Tier 2 (not Tier 1 like fetch_url, its GET-only sibling): this tool can
+    send arbitrary POST/PUT/PATCH/DELETE to any allowed host, which is a
+    materially different effect than a read-only GET — Tier 2 is refused
+    under autonomous goal pursuit's Tier-1 ceiling while remaining allowed
+    in attended chat, so an unattended run can't use this to write anywhere.
+    """
+    from app.services.connector_auth import validate_untrusted_url
+
+    url = (args.get("url") or "").strip()
+    method = (args.get("method") or "GET").strip().upper()
+    if not url:
+        return "Error: url is required"
+    if method not in ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"):
+        return f"Error: unsupported method '{method}'"
+    err = validate_untrusted_url(url)
+    if err:
+        return err
+
+    headers = args.get("headers") if isinstance(args.get("headers"), dict) else {}
+    body = args.get("body")
+    try:
+        timeout = min(float(args.get("timeout") or 10), 30)
+    except (TypeError, ValueError):
+        timeout = 10
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            kwargs = {"headers": headers}
+            if body is not None and method not in ("GET", "HEAD"):
+                kwargs["content"] = body if isinstance(body, str) else json.dumps(body)
+            status, resp_headers, text, truncated = await _http_fetch_capped(client, method, url, **kwargs)
+        if truncated:
+            text += "\n...[truncated]"
+        content_type = resp_headers.get("content-type", "")
+        return f"HTTP {status} ({content_type})\n{text}"
+    except httpx.TimeoutException:
+        return f"Error: request to {url} timed out after {timeout}s"
+    except Exception as e:
+        return f"Error making request: {e}"

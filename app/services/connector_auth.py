@@ -41,6 +41,27 @@ def validate_action_segment(action: str) -> str | None:
     return None
 
 
+def _resolved_ips(host: str) -> list:
+    """Best-effort DNS resolution to ipaddress objects. This app is
+    offline-first, so a failed lookup (no network, DNS hiccup) yields an
+    empty list rather than raising — the outbound request will simply fail
+    on its own if the host is unreachable. This is a best-effort guard
+    against the common case (an agent-controlled action targeting a literal
+    blocked address), not a defense against a determined DNS-rebinding
+    attacker who can flip the answer between check and use."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (socket.gaierror, UnicodeError, OSError):
+        return []
+    ips = []
+    for info in infos:
+        try:
+            ips.append(ipaddress.ip_address(info[4][0].split("%")[0]))
+        except ValueError:
+            continue
+    return ips
+
+
 # Hosts an agent-controlled connector call must never be able to reach: this
 # app's own API (which has no auth and normally only listens on loopback) and
 # link-local/metadata endpoints. Ordinary private (RFC1918) addresses are
@@ -55,32 +76,40 @@ def is_blocked_host(host: str) -> bool:
     if lowered in ("localhost", "localhost.localdomain"):
         return True
 
-    # IP literal — check directly, no DNS involved.
     try:
         ip = ipaddress.ip_address(host.strip("[]"))
         return ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified
     except ValueError:
         pass
 
-    # Hostname — best-effort DNS check. This app is offline-first, so a failed
-    # lookup (no network, DNS hiccup) is not treated as blocked — the outbound
-    # request will simply fail on its own if the host is unreachable. This is
-    # a best-effort guard against the common case (an agent-controlled action
-    # targeting a literal loopback/link-local address), not a defense against
-    # a determined DNS-rebinding attacker.
+    return any(ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified
+               for ip in _resolved_ips(host))
+
+
+def is_private_or_blocked_host(host: str) -> bool:
+    """Stricter than is_blocked_host: also treats RFC1918/private addresses as
+    blocked, not just loopback/link-local.
+
+    Meant for a URL an LLM chose itself (fetch_url/http_request), not one an
+    operator configured on a connector — is_blocked_host's private-network
+    allowance is a deliberate feature for the latter (on-prem/corporate API
+    calls a human explicitly set up), which is the wrong default when
+    there's no human in the loop approving the specific host.
+    """
+    if not host:
+        return True
+    lowered = host.strip().lower()
+    if lowered in ("localhost", "localhost.localdomain"):
+        return True
+
     try:
-        infos = socket.getaddrinfo(host, None)
-    except (socket.gaierror, UnicodeError, OSError):
-        return False
-    for info in infos:
-        ip_str = info[4][0]
-        try:
-            ip = ipaddress.ip_address(ip_str.split("%")[0])
-        except ValueError:
-            continue
-        if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified:
-            return True
-    return False
+        ip = ipaddress.ip_address(host.strip("[]"))
+        return ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified or ip.is_private
+    except ValueError:
+        pass
+
+    return any(ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified or ip.is_private
+               for ip in _resolved_ips(host))
 
 
 def validate_target_url(url: str) -> str | None:
@@ -93,4 +122,23 @@ def validate_target_url(url: str) -> str | None:
         return "Error: invalid URL (no host)"
     if is_blocked_host(host):
         return f"Error: connector target '{host}' is not allowed (loopback/link-local addresses are blocked)"
+    return None
+
+
+def validate_untrusted_url(url: str) -> str | None:
+    """Like validate_target_url, but for a URL an LLM chose on its own
+    (fetch_url/http_request) rather than one an operator configured on a
+    connector — also rejects private (RFC1918) addresses and non-http(s)
+    schemes."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return "Error: invalid URL"
+    if parsed.scheme not in ("http", "https"):
+        return f"Error: unsupported URL scheme '{parsed.scheme or '(none)'}' — only http/https are allowed"
+    host = parsed.hostname
+    if not host:
+        return "Error: invalid URL (no host)"
+    if is_private_or_blocked_host(host):
+        return f"Error: target '{host}' is not allowed (private/loopback/link-local addresses are blocked)"
     return None

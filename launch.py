@@ -72,6 +72,7 @@ def run_flask():
         _ensure_projects_dir(app)
         _migrate_schema(app)
         _seed_builtin_tools(app)
+        _reconcile_nova_tool_schemas(app)
         _seed_agents(app)
 
     # Register on-shutdown backup + periodic scheduled backups
@@ -482,6 +483,91 @@ def _seed_builtin_tools(app):
     db.session.commit()
 
 
+def _reconcile_nova_tool_schemas(app):
+    """Reconcile tier/schema for specific Nova-sourced MCPTool rows whose published
+    contract changed after they first shipped.
+
+    _seed_builtin_tools (above) only reconciles source="builtin" rows. A tool activated
+    via a Nova (source="nova", created once by app/routes/nova.py::_import_mcp_tool) is
+    never touched again once it exists — so a tier or schema correction to one of these
+    would otherwise silently not apply on any install where the Nova was already
+    activated. This is deliberately narrow: it only UPDATES rows that already exist
+    under these specific names, and never creates one. Auto-creating run_shell here
+    (the way _seed_builtin_tools' loop would) would silently advertise shell execution
+    to every agent on every fresh install, defeating the whole point of Novas being an
+    opt-in activation flow.
+    """
+    import json
+    from app.models.mcp_tool import MCPTool
+    from app import db
+
+    reconciled = {
+        "fetch_url": dict(
+            tier=1,
+            description="Fetch the content of an HTTP/HTTPS URL via GET and return the response body as text",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The full HTTP/HTTPS URL to fetch"},
+                    "timeout": {"type": "integer", "description": "Timeout in seconds (default 10)"},
+                },
+                "required": ["url"],
+            }),
+        ),
+        "run_python": dict(
+            tier=3,
+            description="Execute a Python code snippet in a subprocess and return stdout and stderr. "
+                        "Not sandboxed — gated at Tier 3 (requires explicit approval) since it has no "
+                        "filesystem-path authorization boundary the way file tools do.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string", "description": "Python source code to execute"},
+                    "timeout": {"type": "integer", "description": "Execution timeout in seconds (default 30, max 120)"},
+                },
+                "required": ["code"],
+            }),
+        ),
+        "run_shell": dict(
+            tier=3,
+            description="Execute a shell command and return stdout and stderr. Requires explicit approval (Tier 3).",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "The shell command to execute"},
+                    "working_dir": {"type": "string", "description": "Working directory for the command — must be an authorized directory (default: the first configured authorized directory)"},
+                    "timeout": {"type": "integer", "description": "Timeout in seconds (default 60, max 300)"},
+                },
+                "required": ["command"],
+            }),
+        ),
+        "http_request": dict(
+            tier=2,
+            description="Make an HTTP request with full control over method, headers, and body. "
+                        "Tier 2 — refused during unattended autonomous goal pursuit, allowed in attended chat.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "url":     {"type": "string",  "description": "Full URL"},
+                    "method":  {"type": "string",  "description": "HTTP method: GET, POST, PUT, PATCH, DELETE"},
+                    "headers": {"type": "object",  "description": "Request headers"},
+                    "body":    {"type": "string",  "description": "Request body (JSON string or plain text)"},
+                    "timeout": {"type": "integer", "description": "Timeout seconds (default 10)"},
+                },
+                "required": ["url", "method"],
+            }),
+        ),
+    }
+    for name, patch in reconciled.items():
+        row = MCPTool.query.filter_by(name=name, source="nova").first()
+        if not row:
+            continue
+        row.tier = patch["tier"]
+        row.description = patch["description"]
+        row.input_schema = patch["input_schema"]
+    db.session.commit()
+
+
 def _seed_novas(app):
     """Seed bundled Nova templates. Safe to call on every startup — skips existing names."""
     import json
@@ -715,22 +801,19 @@ def _seed_novas(app):
             display_name="Web Fetcher",
             nova_type="mcp_tool",
             category="Web",
-            description="Adds a fetch_url tool — agents can retrieve content from any HTTP/HTTPS URL and return the response body.",
+            description="Adds a fetch_url tool — agents can retrieve content from any HTTP/HTTPS URL via GET and return the response body.",
             tags=["web", "http", "scraping", "fetch"],
             config={
                 "tools": [
                     {
                         "name": "fetch_url",
-                        "description": "Fetch the content of an HTTP/HTTPS URL and return the response body as text",
+                        "description": "Fetch the content of an HTTP/HTTPS URL via GET and return the response body as text",
                         "tier": 1,
                         "input_schema": {
                             "type": "object",
                             "properties": {
-                                "url": {"type": "string", "description": "The full URL to fetch (http or https)"},
-                                "method": {"type": "string", "description": "HTTP method: GET (default) or POST"},
-                                "headers": {"type": "object", "description": "Optional HTTP headers as key-value pairs"},
-                                "body": {"type": "string", "description": "Optional request body (for POST)"},
-                                "timeout": {"type": "integer", "description": "Timeout in seconds (default 30)"},
+                                "url": {"type": "string", "description": "The full HTTP/HTTPS URL to fetch"},
+                                "timeout": {"type": "integer", "description": "Timeout in seconds (default 10)"},
                             },
                             "required": ["url"],
                         },
@@ -743,14 +826,14 @@ def _seed_novas(app):
             display_name="Python Runner",
             nova_type="mcp_tool",
             category="Code Execution",
-            description="Adds a run_python tool — agents can execute Python snippets in a sandboxed subprocess and capture stdout/stderr.",
+            description="Adds a run_python tool — agents can execute Python snippets in a subprocess and capture stdout/stderr. Not sandboxed; gated at Tier 3 (requires explicit approval).",
             tags=["python", "code execution", "scripting", "compute"],
             config={
                 "tools": [
                     {
                         "name": "run_python",
-                        "description": "Execute a Python code snippet in a subprocess and return stdout and stderr",
-                        "tier": 2,
+                        "description": "Execute a Python code snippet in a subprocess and return stdout and stderr. Not sandboxed — gated at Tier 3 (requires explicit approval) since it has no filesystem-path authorization boundary the way file tools do.",
+                        "tier": 3,
                         "input_schema": {
                             "type": "object",
                             "properties": {
@@ -780,7 +863,7 @@ def _seed_novas(app):
                             "type": "object",
                             "properties": {
                                 "command": {"type": "string", "description": "The shell command to execute"},
-                                "working_dir": {"type": "string", "description": "Working directory for the command (default: project root)"},
+                                "working_dir": {"type": "string", "description": "Working directory for the command — must be an authorized directory (default: the first configured authorized directory)"},
                                 "timeout": {"type": "integer", "description": "Timeout in seconds (default 60, max 300)"},
                             },
                             "required": ["command"],
@@ -794,14 +877,14 @@ def _seed_novas(app):
             display_name="HTTP Request",
             nova_type="mcp_tool",
             category="Web",
-            description="Adds an http_request tool — full-featured HTTP client with header control, body, and response inspection.",
+            description="Adds an http_request tool — full-featured HTTP client with header control, body, and response inspection. Tier 2: refused during unattended autonomous goal pursuit.",
             tags=["http", "api", "rest", "request"],
             config={
                 "tools": [
                     {
                         "name": "http_request",
-                        "description": "Make an HTTP request with full control over method, headers, and body",
-                        "tier": 1,
+                        "description": "Make an HTTP request with full control over method, headers, and body. Tier 2 — refused during unattended autonomous goal pursuit, allowed in attended chat.",
+                        "tier": 2,
                         "input_schema": {
                             "type": "object",
                             "properties": {
@@ -809,7 +892,7 @@ def _seed_novas(app):
                                 "method":  {"type": "string",  "description": "HTTP method: GET, POST, PUT, PATCH, DELETE"},
                                 "headers": {"type": "object",  "description": "Request headers"},
                                 "body":    {"type": "string",  "description": "Request body (JSON string or plain text)"},
-                                "timeout": {"type": "integer", "description": "Timeout seconds (default 30)"},
+                                "timeout": {"type": "integer", "description": "Timeout seconds (default 10)"},
                             },
                             "required": ["url", "method"],
                         },
