@@ -57,6 +57,10 @@ class Config:
     LLM_API_KEY = ""
     LLM_MODEL = "gpt-4o"
     LLM_MAX_TOKENS = 4096
+    # Non-streaming request timeout (seconds). Reasoning models that emit long
+    # <think>/reasoning_content before the answer can take minutes, so this is
+    # generous; overridable via the LLM_TIMEOUT env var.
+    LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "600"))
 
     # ── PII Guard — transformers-based pipeline ───────────────
     # Stage 1: Presidio rule-based (SSN, email, phone, credit card...)

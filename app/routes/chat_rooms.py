@@ -55,6 +55,21 @@ def _max_agent_turns() -> int:
     return max(1, min(n, _MAX_AGENT_TURNS_CEILING))
 
 
+def _post_room_system(room_id: str, text: str):
+    """Post a system message into a room (used to surface errors/status)."""
+    try:
+        db.session.add(ChatRoomMessage(
+            id=_uuid(), room_id=room_id, sender_type="system", content=text,
+        ))
+        room = ChatRoom.query.get(room_id)
+        if room:
+            room.updated_at = _now()
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        log.warning("failed to post room system message room=%s: %s", room_id, e)
+
+
 def _normalize_handle(name: str) -> str:
     """A comparable @handle for an agent name: lowercased, spaces→hyphens."""
     return re.sub(r"[^a-z0-9-]", "", (name or "").lower().replace(" ", "-"))
@@ -155,6 +170,16 @@ def _run_room_conversation(app, room_id: str, human_content: str):
             roster = {a.id: a.name for a in agents}
 
             prov = resolve_active_provider()
+            # Surface a missing/broken provider in the room instead of failing
+            # silently (the #1 reason "the room does nothing").
+            if not prov or not prov.get("base_url") or not prov.get("model"):
+                _post_room_system(
+                    room_id,
+                    "⚠ No LLM provider is configured, so agents can't respond. "
+                    "Set an active provider in Settings → LLM Provider."
+                )
+                return
+
             cap = _max_agent_turns()   # admin-configurable
 
             queue = list(_mentioned_agents(human_content, agents) or agents)
@@ -172,6 +197,11 @@ def _run_room_conversation(app, room_id: str, human_content: str):
                 except Exception as e:
                     db.session.rollback()
                     log.warning("room reply failed agent=%s room=%s: %s", agent.id, room_id, e)
+                    # Surface the failure in the room so it isn't invisible.
+                    _post_room_system(
+                        room_id,
+                        f"⚠ {agent.name} couldn't respond: {str(e)[:300]}"
+                    )
                     continue
 
                 reply = (reply or "").strip()
