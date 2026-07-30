@@ -250,6 +250,8 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         "create_ado_workitem": _handle_create_ado_workitem,
         "create_github_issue": _handle_create_github_issue,
         "create_google_task": _handle_create_google_task,
+        "post_teams_message": _handle_post_teams_message,
+        "create_planner_task": _handle_create_planner_task,
         # Tier 2: modify operations
         "modify_file": _handle_modify_file,
         "create_directory": _handle_create_directory,
@@ -1154,6 +1156,107 @@ async def _handle_create_google_task(tool_name: str, args: dict) -> str:
         return f"Error: Google Tasks API returned HTTP {resp.status_code}\n{resp.text[:1000]}"
     except Exception as e:
         return f"Error creating Google Task: {e}"
+
+
+def _get_graph_connector_and_token(connector_name: str):
+    """Look up a microsoft_graph connector and return (connector, access_token)
+    or (None, error_message) — shared by post_teams_message/create_planner_task
+    since both act on the same Graph OAuth identity."""
+    from app.models.connector import Connector
+    from app.services import oauth
+    from app.services.oauth_providers import get_provider_config
+
+    conn = Connector.query.filter_by(name=connector_name, enabled=True).first()
+    if not conn:
+        return None, f"Error: connector '{connector_name}' not found"
+    if conn.connector_type != "microsoft_graph":
+        return None, f"Error: connector '{connector_name}' is not a microsoft_graph connector"
+
+    cfg = json.loads(conn.config or "{}")
+    provider_cfg = get_provider_config("microsoft_graph", cfg)
+
+    try:
+        access_token = oauth.get_valid_access_token(conn, provider_cfg["token_endpoint"])
+    except oauth.ReAuthRequired:
+        return None, f"Error: connector '{connector_name}' needs to be reconnected (OAuth consent expired or was never completed)"
+    except Exception as e:
+        return None, f"Error: could not obtain a valid Microsoft Graph access token: {e}"
+
+    return access_token, None
+
+
+async def _handle_post_teams_message(tool_name: str, args: dict) -> str:
+    """Post a message to a Microsoft Teams channel via a configured microsoft_graph connector."""
+    connector_name = args.get("connector", "")
+    team_id = (args.get("team_id") or "").strip()
+    channel_id = (args.get("channel_id") or "").strip()
+    message = (args.get("message") or "").strip()
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not team_id:
+        return "Error: team_id is required"
+    if not channel_id:
+        return "Error: channel_id is required"
+    if not message:
+        return "Error: message is required"
+
+    access_token, err = _get_graph_connector_and_token(connector_name)
+    if err:
+        return err
+
+    url = f"https://graph.microsoft.com/v1.0/teams/{team_id}/channels/{channel_id}/messages"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    payload = {"body": {"content": message}}
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code in (200, 201):
+            return f"Posted message to Teams channel {channel_id}"
+        return f"Error: Microsoft Graph returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error posting Teams message: {e}"
+
+
+async def _handle_create_planner_task(tool_name: str, args: dict) -> str:
+    """Create a task in Microsoft Planner via a configured microsoft_graph connector."""
+    connector_name = args.get("connector", "")
+    plan_id = (args.get("plan_id") or "").strip()
+    title = (args.get("title") or "").strip()
+    bucket_id = (args.get("bucket_id") or "").strip()
+    due_date_time = args.get("due_date_time") or ""
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not plan_id:
+        return "Error: plan_id is required"
+    if not title:
+        return "Error: title is required"
+
+    access_token, err = _get_graph_connector_and_token(connector_name)
+    if err:
+        return err
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    payload = {"planId": plan_id, "title": title}
+    if bucket_id:
+        payload["bucketId"] = bucket_id
+    if due_date_time:
+        payload["dueDateTime"] = due_date_time
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post("https://graph.microsoft.com/v1.0/planner/tasks", headers=headers, json=payload)
+        if resp.status_code in (200, 201):
+            data = resp.json()
+            task_id = data.get("id", "")
+            return f"Created Planner task: {title}\n{task_id}"
+        return f"Error: Microsoft Graph returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error creating Planner task: {e}"
 
 
 async def _handle_search_emails(tool_name: str, args: dict) -> str:

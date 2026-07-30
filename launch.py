@@ -244,6 +244,37 @@ def _seed_builtin_tools(app):
             }),
         ),
         dict(
+            name="post_teams_message",
+            tier=1,
+            description="Post a message to a Microsoft Teams channel via a configured microsoft_graph connector",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Microsoft Graph connector name as configured in Settings"},
+                    "team_id": {"type": "string", "description": "Microsoft Teams team ID"},
+                    "channel_id": {"type": "string", "description": "Teams channel ID within the team"},
+                    "message": {"type": "string", "description": "Message text to post"},
+                },
+                "required": ["connector", "team_id", "channel_id", "message"],
+            }),
+        ),
+        dict(
+            name="create_planner_task",
+            tier=1,
+            description="Create a task in Microsoft Planner via a configured microsoft_graph connector",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Microsoft Graph connector name as configured in Settings"},
+                    "plan_id": {"type": "string", "description": "Planner plan ID"},
+                    "title": {"type": "string", "description": "Task title"},
+                    "bucket_id": {"type": "string", "description": "Planner bucket ID (optional)"},
+                    "due_date_time": {"type": "string", "description": "Due date as RFC 3339 timestamp, e.g. 2026-08-01T00:00:00.000Z (optional)"},
+                },
+                "required": ["connector", "plan_id", "title"],
+            }),
+        ),
+        dict(
             name="run_sql_query",
             tier=1,
             description="Run a read-only SELECT query via a configured SQL connector",
