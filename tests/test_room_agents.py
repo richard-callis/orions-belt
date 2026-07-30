@@ -106,9 +106,33 @@ class TestConversationOrchestration:
                 cr._run_room_conversation(app, "r-cap", "everyone talk")
                 count = ChatRoomMessage.query.filter_by(
                     room_id="r-cap", sender_type="agent").count()
-                assert count == cr._MAX_AGENT_TURNS   # capped, not infinite
+                assert count == cr._max_agent_turns()   # capped, not infinite
             finally:
                 self._cleanup("r-cap", ["nova", "atlas"])
+
+    def test_admin_setting_overrides_cap(self, app, monkeypatch):
+        import app.routes.chat_rooms as cr
+        from app.models.settings import Setting
+        monkeypatch.setattr("app.routes.settings._get_active_provider",
+                            lambda: {"base_url": "x", "api_key": "y", "model": "m"})
+        def fake_reply(agent, *a, **k):
+            other = "atlas" if agent.name.lower() == "nova" else "nova"
+            return f"over to @{other}"
+        monkeypatch.setattr(cr, "_generate_agent_reply", fake_reply)
+        with app.app_context():
+            Setting.set("agents.max_agent_turns", "3", value_type="string")
+            db.session.commit()
+            self._make_room("r-set", [("nova", "Nova"), ("atlas", "Atlas")])
+            try:
+                assert cr._max_agent_turns() == 3
+                cr._run_room_conversation(app, "r-set", "everyone talk")
+                count = ChatRoomMessage.query.filter_by(
+                    room_id="r-set", sender_type="agent").count()
+                assert count == 3   # honored the admin setting, not the default 6
+            finally:
+                Setting.set("agents.max_agent_turns", "", value_type="string")
+                db.session.commit()
+                self._cleanup("r-set", ["nova", "atlas"])
 
     def test_no_cascade_when_no_mentions(self, app, monkeypatch):
         import app.routes.chat_rooms as cr

@@ -36,9 +36,23 @@ def _uuid():
 # capped so agents can't run away talking to each other. Only human messages
 # start a burst; agent messages never trigger a new one on their own.
 
-_MAX_AGENT_TURNS = 6   # max agent messages per human message (anti-runaway cap)
-_MAX_TOOL_ITERS  = 5   # tool-calling iterations within a single agent reply
-_TIER_HARD_STOP  = 3   # tools at/above this tier are NOT auto-run in a room
+_MAX_AGENT_TURNS_DEFAULT = 6   # default cap; overridable via admin setting
+_MAX_AGENT_TURNS_CEILING = 30  # hard upper bound for the admin setting
+
+
+def _max_agent_turns() -> int:
+    """The admin-configurable cap on agent messages per human message.
+
+    Read from the `agents.max_agent_turns` setting so an administrator can tune
+    how much agents talk to each other, clamped to a sane range.
+    """
+    from app.models.settings import Setting
+    try:
+        raw = Setting.get("agents.max_agent_turns")
+        n = int(raw) if raw not in (None, "") else _MAX_AGENT_TURNS_DEFAULT
+    except (ValueError, TypeError):
+        n = _MAX_AGENT_TURNS_DEFAULT
+    return max(1, min(n, _MAX_AGENT_TURNS_CEILING))
 
 
 def _normalize_handle(name: str) -> str:
@@ -58,20 +72,6 @@ def _mentioned_agents(content: str, agents: list) -> list:
         if handle in tokens or (first and first in tokens):
             hits.append(a)
     return hits
-
-
-def _agent_tools(agent):
-    """The MCP tools an agent may use — its allowed_tools, or all enabled tools
-    when it has no explicit allowlist."""
-    from app.models.mcp_tool import MCPTool
-    try:
-        allowed = json.loads(agent.allowed_tools or "[]")
-    except Exception:
-        allowed = []
-    q = MCPTool.query.filter_by(enabled=True)
-    if allowed:
-        q = q.filter(MCPTool.name.in_(allowed))
-    return q.all()
 
 
 def _build_room_history(room_id: str, agent, roster: dict) -> list:
@@ -119,56 +119,15 @@ def _build_room_history(room_id: str, agent, roster: dict) -> list:
     return msgs
 
 
-def _generate_agent_reply(agent, base_url, api_key, model, room_id, roster) -> str:
-    """Produce one agent reply, running a bounded MCP tool-calling loop.
+def _generate_agent_reply(agent, provider, room_id, roster) -> str:
+    """Produce one agent reply via the shared AgentRuntime (tools + tier gating).
 
-    Tier 0-2 tools auto-run (audited); Tier 3 (destructive) tools are refused in
-    chat — those must go through a Task where they can be approved.
+    Tools are the AGENT's (its allowed_tools). Tier 0-2 auto-run; Tier 3
+    (destructive) are refused in chat and must go through a Task.
     """
-    from app.services.llm import build_tool_definitions, retry_with_recovery
-
-    tools = _agent_tools(agent)
-    tool_defs = build_tool_definitions(tools)
-    tier_map = {t.name: t.tier for t in tools}
-
+    from app.services.agents.runtime import AgentRuntime
     convo = _build_room_history(room_id, agent, roster)
-    final_text = ""
-    for _ in range(_MAX_TOOL_ITERS):
-        text, tool_calls, _tok = retry_with_recovery(
-            base_url, api_key, model, convo, tool_defs, max_retries=2
-        )
-        final_text = (text or "").strip()
-        if not tool_calls:
-            break
-
-        convo.append({
-            "role": "assistant",
-            "content": text or None,
-            "tool_calls": [
-                {"id": tc.get("id", ""), "type": "function",
-                 "function": {"name": tc.get("name", ""),
-                              "arguments": json.dumps(tc.get("args", {}) or {})}}
-                for tc in tool_calls
-            ],
-        })
-        for tc in tool_calls:
-            name = tc.get("name", "")
-            args = tc.get("args", {}) or {}
-            tier = tier_map.get(name, 0)
-            if tier >= _TIER_HARD_STOP:
-                result = (f"[Refused] '{name}' is a high-risk (Tier {tier}) action that "
-                          "requires explicit approval and cannot run from chat. Ask the user "
-                          "to run it as a Task.")
-            else:
-                try:
-                    from app.routes.chat import _run_tool
-                    result = _run_tool(name, args, session_id=None, run_id=None)
-                except Exception as e:
-                    result = f"Error: {e}"
-            convo.append({
-                "role": "tool", "tool_call_id": tc.get("id", ""), "content": str(result),
-            })
-    return final_text
+    return AgentRuntime(agent, provider).chat_reply(convo)
 
 
 def _run_room_conversation(app, room_id: str, human_content: str):
@@ -183,7 +142,7 @@ def _run_room_conversation(app, room_id: str, human_content: str):
     with app.app_context():
         try:
             from app.models.agent import Agent
-            from app.routes.settings import _get_active_provider
+            from app.services.agents.runtime import resolve_active_provider
 
             members = (
                 ChatRoomMember.query.filter_by(room_id=room_id)
@@ -195,23 +154,21 @@ def _run_room_conversation(app, room_id: str, human_content: str):
                 return
             roster = {a.id: a.name for a in agents}
 
-            prov = _get_active_provider() or {}
-            base_url = prov.get("base_url")
-            api_key = prov.get("api_key")
+            prov = resolve_active_provider()
+            cap = _max_agent_turns()   # admin-configurable
 
             queue = list(_mentioned_agents(human_content, agents) or agents)
             queued_ids = {a.id for a in queue}
             turns = 0
             last_id = None
 
-            while queue and turns < _MAX_AGENT_TURNS:
+            while queue and turns < cap:
                 agent = queue.pop(0)
                 queued_ids.discard(agent.id)
                 if agent.id == last_id:
                     continue  # no immediate self-reply
                 try:
-                    model = agent.llm_model_override or prov.get("model")
-                    reply = _generate_agent_reply(agent, base_url, api_key, model, room_id, roster)
+                    reply = _generate_agent_reply(agent, prov, room_id, roster)
                 except Exception as e:
                     db.session.rollback()
                     log.warning("room reply failed agent=%s room=%s: %s", agent.id, room_id, e)
