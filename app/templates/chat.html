@@ -360,23 +360,29 @@ document.addEventListener('DOMContentLoaded', async () => {
     sessionStorage.removeItem('planContext');
   }
 
-  // Check URL for a specific session to open
+  // Check URL for a specific session or room to open
   const urlParams = new URLSearchParams(window.location.search);
   const targetSessionId = urlParams.get('session');
+  const targetRoomId = urlParams.get('room');
 
-  // Resume a session; prefer the one specified in ?session=
-  try {
-    allSessions = await cachedFetch('/chat/api/sessions');
-    if (targetSessionId) {
-      await switchSession(targetSessionId);
-    } else if (allSessions.length > 0) {
-      await switchSession(allSessions[0].id);   // sorted by updated_at desc
-    } else {
+  if (targetRoomId) {
+    // Deep-link straight into a room (e.g. from work.html's "Plan with AI").
+    await switchToRoom(targetRoomId);
+  } else {
+    // Resume a session; prefer the one specified in ?session=
+    try {
+      allSessions = await cachedFetch('/chat/api/sessions');
+      if (targetSessionId) {
+        await switchSession(targetSessionId);
+      } else if (allSessions.length > 0) {
+        await switchSession(allSessions[0].id);   // sorted by updated_at desc
+      } else {
+        await createNewSession();
+      }
+    } catch (e) {
+      console.error('Failed to load sessions on init:', e);
       await createNewSession();
     }
-  } catch (e) {
-    console.error('Failed to load sessions on init:', e);
-    await createNewSession();
   }
 
   const input = document.getElementById('chat-input');
@@ -1399,6 +1405,21 @@ async function switchToRoom(roomId) {
 
   roomPollTimer = setInterval(pollRoomMessages, 3000);
   loadRooms(); // refresh sidebar highlight
+
+  // Auto-send the initial planning brief left by work.html's planWithAI(),
+  // same pattern as the 1:1 session path — only if this is the linked room
+  // and it has no messages yet (beyond the "Room created" system message).
+  if (pendingPlanContext && pendingPlanContext.roomId === roomId) {
+    const ctx = pendingPlanContext;
+    pendingPlanContext = null;
+    const agentMsgCount = msgs.filter(m => m.sender_type !== 'system').length;
+    if (agentMsgCount === 0) {
+      setTimeout(() => {
+        document.getElementById('room-input').value = ctx.initialContext;
+        sendRoomMessage();
+      }, 200);
+    }
+  }
 
   // Wire room input keyboard shortcut
   const input = document.getElementById('room-input');

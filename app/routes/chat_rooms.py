@@ -594,6 +594,9 @@ def create_room():
         description=body.get("description", ""),
         room_type=room_type,
         task_id=body.get("task_id") or None,
+        linked_epic_id=body.get("linked_epic_id") or None,
+        linked_feature_id=body.get("linked_feature_id") or None,
+        linked_task_id=body.get("linked_task_id") or None,
     )
     db.session.add(room)
     db.session.flush()

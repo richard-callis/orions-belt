@@ -61,6 +61,31 @@ class TestSchemaReconcile:
                     conn.execute(db.text("DROP TABLE IF EXISTS features"))
                 db.create_all()
 
+    def test_adds_missing_chat_room_linked_columns(self, app):
+        """ChatRoom gained linked_epic_id/linked_feature_id/linked_task_id —
+        a DB from before that change must get them ALTER-added too."""
+        with app.app_context():
+            db.session.remove()
+            with db.engine.begin() as conn:
+                conn.execute(db.text("DROP TABLE IF EXISTS chat_rooms"))
+                conn.execute(db.text(
+                    "CREATE TABLE chat_rooms ("
+                    "  id VARCHAR(36) PRIMARY KEY,"
+                    "  name VARCHAR(128) NOT NULL,"
+                    "  room_type VARCHAR(32),"
+                    "  created_at DATETIME,"
+                    "  updated_at DATETIME)"
+                ))
+            try:
+                _migrate_schema(app)
+                with db.engine.connect() as conn:
+                    cols = {r[1] for r in conn.execute(db.text("PRAGMA table_info(chat_rooms)"))}
+                assert {"linked_epic_id", "linked_feature_id", "linked_task_id"} <= cols
+            finally:
+                with db.engine.begin() as conn:
+                    conn.execute(db.text("DROP TABLE IF EXISTS chat_rooms"))
+                db.create_all()
+
     def test_idempotent_on_full_schema(self, app):
         """Running against an up-to-date DB adds nothing and does not error."""
         with app.app_context():

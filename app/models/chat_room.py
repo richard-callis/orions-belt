@@ -30,6 +30,12 @@ class ChatRoom(db.Model):
     # Optional link to a task
     task_id = db.Column(db.String(36), db.ForeignKey("tasks.id"), nullable=True)
 
+    # Optional link to the work hierarchy — set when a room is created from
+    # "Plan with AI" on a work item, mirroring Session's linked_* fields.
+    linked_epic_id = db.Column(db.String(36), db.ForeignKey("epics.id"), nullable=True)
+    linked_feature_id = db.Column(db.String(36), db.ForeignKey("features.id"), nullable=True)
+    linked_task_id = db.Column(db.String(36), db.ForeignKey("tasks.id"), nullable=True)
+
     created_at = db.Column(db.DateTime, default=_now)
     updated_at = db.Column(db.DateTime, default=_now, onupdate=_now)
 
@@ -46,6 +52,9 @@ class ChatRoom(db.Model):
             "description":  self.description,
             "room_type":    self.room_type,
             "task_id":      self.task_id,
+            "linked_epic_id":    self.linked_epic_id,
+            "linked_feature_id": self.linked_feature_id,
+            "linked_task_id":    self.linked_task_id,
             "created_at":   self.created_at.isoformat(),
             "updated_at":   self.updated_at.isoformat(),
             "member_count": len(self.members),
