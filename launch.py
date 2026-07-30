@@ -229,6 +229,21 @@ def _seed_builtin_tools(app):
             }),
         ),
         dict(
+            name="create_google_task",
+            tier=1,
+            description="Create a task in Google Tasks via a configured google connector",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Google connector name as configured in Settings"},
+                    "title": {"type": "string", "description": "Task title"},
+                    "notes": {"type": "string", "description": "Task notes/description (optional)"},
+                    "due": {"type": "string", "description": "Due date as RFC 3339 timestamp, e.g. 2026-08-01T00:00:00.000Z (optional)"},
+                },
+                "required": ["connector", "title"],
+            }),
+        ),
+        dict(
             name="run_sql_query",
             tier=1,
             description="Run a read-only SELECT query via a configured SQL connector",

@@ -249,6 +249,7 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         "create_pdf": _handle_create_pdf,
         "create_ado_workitem": _handle_create_ado_workitem,
         "create_github_issue": _handle_create_github_issue,
+        "create_google_task": _handle_create_google_task,
         # Tier 2: modify operations
         "modify_file": _handle_modify_file,
         "create_directory": _handle_create_directory,
@@ -1099,6 +1100,60 @@ async def _handle_create_github_issue(tool_name: str, args: dict) -> str:
         return f"Error: GitHub returned HTTP {resp.status_code}\n{resp.text[:1000]}"
     except Exception as e:
         return f"Error creating GitHub issue: {e}"
+
+
+async def _handle_create_google_task(tool_name: str, args: dict) -> str:
+    """Create a task in Google Tasks via a configured google connector."""
+    from app.models.connector import Connector
+    from app.services import oauth
+    from app.services.oauth_providers import get_provider_config
+
+    connector_name = args.get("connector", "")
+    title = (args.get("title") or "").strip()
+    notes = args.get("notes") or ""
+    due = args.get("due") or ""
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not title:
+        return "Error: title is required"
+
+    conn = Connector.query.filter_by(name=connector_name, enabled=True).first()
+    if not conn:
+        return f"Error: connector '{connector_name}' not found"
+    if conn.connector_type != "google":
+        return f"Error: connector '{connector_name}' is not a google connector"
+
+    cfg = json.loads(conn.config or "{}")
+    provider_cfg = get_provider_config("google", cfg)
+
+    try:
+        access_token = oauth.get_valid_access_token(conn, provider_cfg["token_endpoint"])
+    except oauth.ReAuthRequired:
+        return f"Error: connector '{connector_name}' needs to be reconnected (OAuth consent expired or was never completed)"
+    except Exception as e:
+        return f"Error: could not obtain a valid Google access token: {e}"
+
+    payload = {"title": title}
+    if notes:
+        payload["notes"] = notes
+    if due:
+        payload["due"] = due
+
+    try:
+        import httpx
+        headers = {"Authorization": f"Bearer {access_token}"}
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                "https://tasks.googleapis.com/tasks/v1/lists/@default/tasks",
+                headers=headers, json=payload,
+            )
+        if resp.status_code in (200, 201):
+            data = resp.json()
+            return f"Created Google Task: {title}\n{data.get('selfLink', '')}"
+        return f"Error: Google Tasks API returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error creating Google Task: {e}"
 
 
 async def _handle_search_emails(tool_name: str, args: dict) -> str:

@@ -6,6 +6,7 @@ from flask import Blueprint, jsonify, render_template, request
 
 from app import db
 from app.models.connector import Connector
+from app.services.oauth_providers import OAUTH_CONNECTOR_TYPES, get_provider_config
 
 bp = Blueprint("connectors", __name__, url_prefix="/connectors")
 log = logging.getLogger("orions-belt")
@@ -35,8 +36,10 @@ def create_connector():
 
     if not name:
         return jsonify({"error": "name is required"}), 400
-    if connector_type not in ("rest_api", "sql_server", "outlook", "azure_devops", "github"):
-        return jsonify({"error": "connector_type must be rest_api, sql_server, outlook, azure_devops, or github"}), 400
+    _VALID_TYPES = ("rest_api", "sql_server", "outlook", "azure_devops", "github",
+                    "google", "microsoft_graph", "salesforce")
+    if connector_type not in _VALID_TYPES:
+        return jsonify({"error": f"connector_type must be one of {_VALID_TYPES}"}), 400
     if Connector.query.filter_by(name=name).first():
         return jsonify({"error": f"Connector '{name}' already exists"}), 409
 
@@ -145,6 +148,8 @@ def test_connector(connector_id):
             return _test_azure_devops(c)
         elif c.connector_type == "github":
             return _test_github(c)
+        elif c.connector_type in OAUTH_CONNECTOR_TYPES:
+            return _test_oauth_connector(c)
         else:
             return jsonify({"ok": False, "message": f"Unknown type: {c.connector_type}"}), 400
     except Exception as e:
@@ -237,6 +242,69 @@ def _test_azure_devops(c: Connector):
         return jsonify({"ok": False, "message": f"Connection refused: {e}"})
     except httpx.TimeoutException:
         return jsonify({"ok": False, "message": "Connection timed out (10s)"})
+
+
+def _test_oauth_connector(c: Connector):
+    from app.services import oauth
+
+    cfg = json.loads(c.config or "{}")
+    auth = c.get_auth()
+    if not auth.get("client_id") or not auth.get("client_secret"):
+        return jsonify({"ok": False, "message": "No client_id/client_secret configured"}), 200
+    if not auth.get("refresh_token"):
+        return jsonify({"ok": False, "message": "Not connected yet — click Connect to complete OAuth consent"}), 200
+
+    provider_cfg = get_provider_config(c.connector_type, cfg)
+    try:
+        oauth.get_valid_access_token(c, provider_cfg["token_endpoint"])
+        return jsonify({"ok": True, "message": "Connected — access token is valid"})
+    except oauth.ReAuthRequired as e:
+        return jsonify({"ok": False, "message": str(e)})
+    except Exception as e:
+        return jsonify({"ok": False, "message": f"Token refresh failed: {e}"})
+
+
+# ── OAuth connect flow ───────────────────────────────────────────────────────
+
+@bp.route("/api/connectors/<connector_id>/oauth/start", methods=["POST"])
+def start_connector_oauth(connector_id):
+    c = Connector.query.get(connector_id)
+    if not c:
+        return jsonify({"error": "Connector not found"}), 404
+    if c.connector_type not in OAUTH_CONNECTOR_TYPES:
+        return jsonify({"error": f"{c.connector_type} is not an OAuth connector"}), 400
+
+    cfg = json.loads(c.config or "{}")
+    auth = c.get_auth()
+    client_id = auth.get("client_id")
+    client_secret = auth.get("client_secret")
+    if not client_id or not client_secret:
+        return jsonify({"error": "client_id and client_secret must be configured before connecting"}), 400
+
+    from app.services import oauth
+    provider_cfg = get_provider_config(c.connector_type, cfg)
+    try:
+        result = oauth.start_oauth_flow(
+            c.id, provider_cfg["authorize_endpoint"], provider_cfg["token_endpoint"],
+            client_id, client_secret, provider_cfg["scope"],
+            provider_cfg.get("extra_authorize_params"),
+        )
+    except Exception as e:
+        log.warning("OAuth start failed for connector %s: %s", connector_id, e)
+        return jsonify({"error": str(e)}), 500
+    return jsonify(result)
+
+
+@bp.route("/api/connectors/<connector_id>/oauth/status", methods=["GET"])
+def connector_oauth_status(connector_id):
+    c = Connector.query.get(connector_id)
+    if not c:
+        return jsonify({"error": "Connector not found"}), 404
+    flow_id = request.args.get("flow_id")
+    if not flow_id:
+        return jsonify({"error": "flow_id is required"}), 400
+    from app.services import oauth
+    return jsonify(oauth.get_oauth_flow_status(flow_id))
 
 
 def _test_github(c: Connector):
