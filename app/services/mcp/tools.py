@@ -252,6 +252,7 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         "search_linear_issues": _handle_search_linear_issues,
         "check_calendar_availability": _handle_check_calendar_availability,
         "read_onedrive_file": _handle_read_onedrive_file,
+        "query_salesforce": _handle_query_salesforce,
         # Tier 1: create operations
         "create_file": _handle_create_file,
         "append_to_file": _handle_append_to_file,
@@ -2286,12 +2287,43 @@ async def _handle_create_onedrive_file(tool_name: str, args: dict) -> str:
         return f"Error creating OneDrive file: {e}"
 
 
-async def _handle_create_salesforce_record(tool_name: str, args: dict) -> str:
-    """Create a record (Lead, Case, Account, etc.) via a configured salesforce connector."""
+def _get_salesforce_connector(connector_name: str):
+    """Look up a salesforce connector and return (access_token, instance_url, None)
+    or (None, None, error_message) — shared by every Salesforce tool.
+
+    The org's real API host, returned by Salesforce alongside the tokens
+    (persisted by oauth.py's _store_tokens/get_valid_access_token), always
+    wins over the connector's configured instance_url — that config value
+    may be nothing more than the generic login.salesforce.com the user
+    authenticated against, which isn't a valid API host after login.
+    """
     from app.models.connector import Connector
     from app.services import oauth
     from app.services.oauth_providers import get_provider_config
 
+    conn = Connector.query.filter_by(name=connector_name, enabled=True).first()
+    if not conn:
+        return None, None, f"Error: connector '{connector_name}' not found"
+    if conn.connector_type != "salesforce":
+        return None, None, f"Error: connector '{connector_name}' is not a salesforce connector"
+
+    cfg = json.loads(conn.config or "{}")
+    provider_cfg = get_provider_config("salesforce", cfg)
+
+    try:
+        access_token = oauth.get_valid_access_token(conn, provider_cfg["token_endpoint"])
+    except oauth.ReAuthRequired:
+        return None, None, f"Error: connector '{connector_name}' needs to be reconnected (OAuth consent expired or was never completed)"
+    except Exception as e:
+        return None, None, f"Error: could not obtain a valid Salesforce access token: {e}"
+
+    instance_url = (conn.get_auth().get("instance_url") or cfg.get("instance_url")
+                    or "https://login.salesforce.com").rstrip("/")
+    return access_token, instance_url, None
+
+
+async def _handle_create_salesforce_record(tool_name: str, args: dict) -> str:
+    """Create a record (Lead, Case, Account, etc.) via a configured salesforce connector."""
     connector_name = args.get("connector", "")
     sobject_type = (args.get("sobject_type") or "").strip()
     fields = args.get("fields")
@@ -2305,29 +2337,9 @@ async def _handle_create_salesforce_record(tool_name: str, args: dict) -> str:
     if not _is_safe_path_segment(sobject_type):
         return "Error: sobject_type must not contain '/', '\\', whitespace, '..', '?', '#', or '%'"
 
-    conn = Connector.query.filter_by(name=connector_name, enabled=True).first()
-    if not conn:
-        return f"Error: connector '{connector_name}' not found"
-    if conn.connector_type != "salesforce":
-        return f"Error: connector '{connector_name}' is not a salesforce connector"
-
-    cfg = json.loads(conn.config or "{}")
-    provider_cfg = get_provider_config("salesforce", cfg)
-
-    try:
-        access_token = oauth.get_valid_access_token(conn, provider_cfg["token_endpoint"])
-    except oauth.ReAuthRequired:
-        return f"Error: connector '{connector_name}' needs to be reconnected (OAuth consent expired or was never completed)"
-    except Exception as e:
-        return f"Error: could not obtain a valid Salesforce access token: {e}"
-
-    # The org's real API host, returned by Salesforce alongside the tokens
-    # (persisted by oauth.py's _store_tokens/get_valid_access_token), always
-    # wins over the connector's configured instance_url — that config value
-    # may be nothing more than the generic login.salesforce.com the user
-    # authenticated against, which isn't a valid API host after login.
-    instance_url = (conn.get_auth().get("instance_url") or cfg.get("instance_url")
-                    or "https://login.salesforce.com").rstrip("/")
+    access_token, instance_url, err = _get_salesforce_connector(connector_name)
+    if err:
+        return err
 
     url = f"{instance_url}/services/data/v59.0/sobjects/{sobject_type}"
     headers = {"Authorization": f"Bearer {access_token}"}
@@ -2343,6 +2355,76 @@ async def _handle_create_salesforce_record(tool_name: str, args: dict) -> str:
         return f"Error: Salesforce returned HTTP {resp.status_code}\n{resp.text[:1000]}"
     except Exception as e:
         return f"Error creating Salesforce record: {e}"
+
+
+_MAX_SOQL_RECORDS = 50
+
+
+async def _handle_query_salesforce(tool_name: str, args: dict) -> str:
+    """Run a read-only SOQL query via a configured salesforce connector.
+
+    Tier 0 — read-only. Capped at _MAX_SOQL_RECORDS records and never
+    follows nextRecordsUrl: a bulk SELECT over a CRM's full contact/lead
+    table is exactly the kind of thing that shouldn't be a single
+    auto-run, unattended-eligible call with no result-size ceiling.
+
+    The query is sent as a `params=` value, never f-strung into the URL —
+    that's what actually stops it from escaping into a different endpoint
+    via a crafted '&'/'#' (percent-encoding), not a keyword blocklist. SOQL
+    has no DML — /query only ever accepts SELECT — so a simple prefix check
+    is enough defense-in-depth without the SQL-shaped comment-stripping/
+    stacked-query logic _assert_select_only uses for the actual SQL
+    connector.
+
+    Results are PII-scanned (fails open, same as every other PII-scan call
+    site in this app) before being returned — Salesforce records are the
+    highest-PII-density source in this batch (contacts/leads routinely
+    carry names, emails, phone numbers), and tool results otherwise reach
+    the LLM completely unscanned.
+    """
+    connector_name = args.get("connector", "")
+    soql = (args.get("soql") or "").strip()
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not soql:
+        return "Error: soql is required"
+    if not re.match(r"^\s*SELECT\b", soql, re.IGNORECASE):
+        return "Error: only SELECT queries are permitted"
+
+    access_token, instance_url, err = _get_salesforce_connector(connector_name)
+    if err:
+        return err
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(f"{instance_url}/services/data/v59.0/query",
+                                    headers=headers, params={"q": soql})
+        if resp.status_code == 200:
+            data = resp.json()
+            records = data.get("records", [])[:_MAX_SOQL_RECORDS]
+            if not records:
+                return "No records found"
+            lines = [", ".join(f"{k}={v}" for k, v in rec.items() if k != "attributes")
+                     for rec in records]
+            result = "\n".join(lines)
+            total = data.get("totalSize", len(records))
+            if total > len(records):
+                result += f"\n...[{total - len(records)} more record(s) not shown — refine the query]"
+
+            try:
+                from app.services.pii_guard import get_pii_guard
+                cleaned, _detected, _types = get_pii_guard().scan(result, direction="outbound")
+                result = cleaned
+            except Exception as e:
+                log.warning("Salesforce query PII scan failed: %s — returning unscanned", e)
+            return result
+        return f"Error: Salesforce returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error querying Salesforce: {e}"
 
 
 async def _handle_search_emails(tool_name: str, args: dict) -> str:

@@ -520,6 +520,20 @@ def _seed_builtin_tools(app):
             }),
         ),
         dict(
+            name="query_salesforce",
+            tier=0,
+            description="Run a read-only SOQL query via a configured salesforce connector. "
+                        "Capped at 50 records; results are scanned for PII before being returned.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Salesforce connector name as configured in Settings"},
+                    "soql": {"type": "string", "description": "SOQL SELECT query, e.g. \"SELECT Id, Name FROM Lead WHERE Status = 'Open'\""},
+                },
+                "required": ["connector", "soql"],
+            }),
+        ),
+        dict(
             name="run_sql_query",
             tier=1,
             description="Run a read-only SELECT query via a configured SQL connector",
