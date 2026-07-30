@@ -18,6 +18,7 @@ class _FakeMailItem:
         self.CC = None
         self.Subject = None
         self.Body = None
+        self.HTMLBody = None
         self.sent = False
 
     def Send(self):
@@ -40,6 +41,26 @@ def _install_fake_win32com():
     fake_win32com.client = fake_client
     sys.modules["win32com"] = fake_win32com
     sys.modules["win32com.client"] = fake_client
+
+
+class _FakePythoncom:
+    """Tracks CoInitialize/CoUninitialize call order so tests can assert
+    they're actually invoked (and paired) around the COM calls, without
+    needing a real Windows COM apartment."""
+    calls = []
+
+    @staticmethod
+    def CoInitialize():
+        _FakePythoncom.calls.append("init")
+
+    @staticmethod
+    def CoUninitialize():
+        _FakePythoncom.calls.append("uninit")
+
+
+def _install_fake_pythoncom():
+    _FakePythoncom.calls = []
+    sys.modules["pythoncom"] = _FakePythoncom
 
 
 class TestSendEmail:
@@ -81,6 +102,93 @@ class TestSendEmail:
         with app.app_context():
             result = _run(mcp_tools._handle_send_email("send_email", {"to": "a@example.com", "body": "b"}))
         assert "'subject' is required" in result
+
+    def test_html_body_used_instead_of_plain_body_when_given(self, app):
+        _install_fake_win32com()
+        try:
+            with app.app_context():
+                _run(mcp_tools._handle_send_email("send_email", {
+                    "to": "a@example.com", "subject": "s", "body": "plain fallback",
+                    "html": "<p>rich content</p>",
+                }))
+            assert _FakeOutlookApp.last_mail.HTMLBody == "<p>rich content</p>"
+            assert _FakeOutlookApp.last_mail.Body is None  # Body never set when html is given
+        finally:
+            sys.modules.pop("win32com.client", None)
+            sys.modules.pop("win32com", None)
+
+    def test_plain_body_used_when_no_html_given(self, app):
+        _install_fake_win32com()
+        try:
+            with app.app_context():
+                _run(mcp_tools._handle_send_email("send_email", {
+                    "to": "a@example.com", "subject": "s", "body": "plain text",
+                }))
+            assert _FakeOutlookApp.last_mail.Body == "plain text"
+            assert _FakeOutlookApp.last_mail.HTMLBody is None
+        finally:
+            sys.modules.pop("win32com.client", None)
+            sys.modules.pop("win32com", None)
+
+    def test_com_initialize_and_uninitialize_are_called_when_pythoncom_available(self, app):
+        # A scheduled digest fires from a dedicated scheduler thread that has
+        # never exercised this COM path before — CoInitialize/CoUninitialize
+        # must actually run, not just be assumed safe to skip.
+        _install_fake_win32com()
+        _install_fake_pythoncom()
+        try:
+            with app.app_context():
+                _run(mcp_tools._handle_send_email("send_email", {
+                    "to": "a@example.com", "subject": "s", "body": "b",
+                }))
+            assert _FakePythoncom.calls == ["init", "uninit"]
+        finally:
+            sys.modules.pop("win32com.client", None)
+            sys.modules.pop("win32com", None)
+            sys.modules.pop("pythoncom", None)
+
+    def test_com_uninitialize_still_runs_when_send_raises(self, app):
+        _install_fake_win32com()
+        _install_fake_pythoncom()
+
+        class _RaisingMailItem(_FakeMailItem):
+            def Send(self):
+                raise RuntimeError("simulated COM failure")
+
+        class _RaisingOutlookApp:
+            def CreateItem(self, item_type):
+                return _RaisingMailItem()
+
+        import win32com.client as fake_client
+        fake_client.Dispatch = lambda name: _RaisingOutlookApp()
+
+        try:
+            with app.app_context():
+                result = _run(mcp_tools._handle_send_email("send_email", {
+                    "to": "a@example.com", "subject": "s", "body": "b",
+                }))
+            assert "Error sending email" in result
+            assert _FakePythoncom.calls == ["init", "uninit"]
+        finally:
+            sys.modules.pop("win32com.client", None)
+            sys.modules.pop("win32com", None)
+            sys.modules.pop("pythoncom", None)
+
+    def test_works_without_pythoncom_installed(self, app):
+        # pythoncom must be a fully optional import — the tool still works
+        # (just without the explicit COM init) when it isn't present, e.g.
+        # on any non-Windows dev/CI environment.
+        _install_fake_win32com()
+        sys.modules.pop("pythoncom", None)
+        try:
+            with app.app_context():
+                result = _run(mcp_tools._handle_send_email("send_email", {
+                    "to": "a@example.com", "subject": "s", "body": "b",
+                }))
+            assert "Email sent" in result
+        finally:
+            sys.modules.pop("win32com.client", None)
+            sys.modules.pop("win32com", None)
 
     def test_missing_pywin32_returns_clear_error(self, app, monkeypatch):
         # Simulate the package not being installed (e.g. non-Windows dev env).

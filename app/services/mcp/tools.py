@@ -2482,6 +2482,7 @@ async def _handle_send_email(tool_name: str, args: dict) -> str:
     to = (args.get("to") or "").strip()
     subject = (args.get("subject") or "").strip()
     body = args.get("body") or ""
+    html = args.get("html") or ""
     cc = (args.get("cc") or "").strip()
 
     if not to:
@@ -2494,6 +2495,21 @@ async def _handle_send_email(tool_name: str, args: dict) -> str:
     except ImportError:
         return "Error: pywin32 not installed (Windows-only)"
 
+    # COM requires apartment-threading setup PER OS THREAD. This tool has
+    # only ever run from a request thread or an agent's own background
+    # thread, either of which may have had COM implicitly initialized by
+    # pywin32's first use — but the scheduled-digest caller fires from
+    # triggers.py's dedicated scheduler thread, which has never exercised
+    # this path before. CoInitialize is safe to call even if the thread is
+    # already initialized (returns S_FALSE, not an error); pythoncom itself
+    # is Windows-only and optional everywhere else.
+    try:
+        import pythoncom
+        pythoncom.CoInitialize()
+        _com_initialized = True
+    except ImportError:
+        _com_initialized = False
+
     try:
         outlook = win32com.client.Dispatch("Outlook.Application")
         mail = outlook.CreateItem(0)  # 0 = olMailItem
@@ -2501,11 +2517,17 @@ async def _handle_send_email(tool_name: str, args: dict) -> str:
         if cc:
             mail.CC = cc
         mail.Subject = subject
-        mail.Body = body
+        if html:
+            mail.HTMLBody = html
+        else:
+            mail.Body = body
         mail.Send()
         return f"Email sent to {to}: {subject}"
     except Exception as e:
         return f"Error sending email: {e}"
+    finally:
+        if _com_initialized:
+            pythoncom.CoUninitialize()
 
 
 async def _handle_http_request(tool_name: str, args: dict) -> str:

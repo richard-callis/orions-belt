@@ -80,6 +80,7 @@ def run_flask():
     from app.services.retention import start_retention_service, stop_retention_service
     from app.services.dream import start_dream_service, stop_dream_service
     from app.services.triggers import start_trigger_service, stop_trigger_service
+    from app.services.digest import start_digest_service, stop_digest_service
     from app.services.db_crypto import set_db_path, enforce_file_permissions
     from config import Config
 
@@ -101,6 +102,11 @@ def run_flask():
     # list is inherently a no-op, no separate enable flag needed).
     atexit.register(stop_trigger_service)
     start_trigger_service(interval_minutes=15)
+
+    # Scheduled digest emails — same "empty list is an inherent no-op"
+    # reasoning as triggers, always on.
+    atexit.register(stop_digest_service)
+    start_digest_service(interval_minutes=30)
 
     register_shutdown_backup()
     start_periodic_backups(interval_minutes=30)
@@ -569,7 +575,8 @@ def _seed_builtin_tools(app):
                 "properties": {
                     "to": {"type": "string", "description": "Recipient email address(es), semicolon-separated for multiple"},
                     "subject": {"type": "string", "description": "Email subject"},
-                    "body": {"type": "string", "description": "Email body text"},
+                    "body": {"type": "string", "description": "Email body text (plain text)"},
+                    "html": {"type": "string", "description": "Email body as HTML — if given, sent instead of body (optional)"},
                     "cc": {"type": "string", "description": "CC address(es), optional"},
                 },
                 "required": ["to", "subject", "body"],
@@ -708,18 +715,25 @@ def _seed_builtin_tools(app):
         if not existing:
             db.session.add(MCPTool(source="builtin", **tool_def))
             continue
-        if not existing.input_schema or existing.input_schema in ("{}", ""):
-            # Patch tools created by the old schema-less seeder
+        if existing.source == "builtin":
+            # Tier, schema, and description are all code-defined for builtin
+            # tools — there's no route to customize any of them per-install,
+            # so an existing row must keep tracking the current code, not
+            # freeze at whatever it was when the row was first created.
+            # Without this, e.g. adding a new parameter to a tool's schema
+            # (like send_email's `html` field) never actually reaches any DB
+            # that already seeded the row — the same bug already fixed once
+            # for tier alone; generalized here to cover schema/description too.
+            existing.tier = tool_def["tier"]
             existing.input_schema = tool_def["input_schema"]
             existing.description = tool_def["description"]
-        if existing.source == "builtin" and existing.tier != tool_def["tier"]:
-            # Tier is code-defined for builtin tools — there's no route to
-            # customize it per-install, so an existing row must keep
-            # tracking the current code's tier, not freeze at whatever it
-            # was when the row was first created. Without this, correcting
-            # a builtin tool's tier (e.g. Tier 1 -> 2) never actually takes
-            # effect on any DB that already seeded the row.
-            existing.tier = tool_def["tier"]
+        elif not existing.input_schema or existing.input_schema in ("{}", ""):
+            # A non-builtin (e.g. nova-sourced) row with the same name is
+            # left alone except for the one legacy case: patching tools
+            # created by the old schema-less seeder before it recorded a
+            # schema at all.
+            existing.input_schema = tool_def["input_schema"]
+            existing.description = tool_def["description"]
     db.session.commit()
 
 

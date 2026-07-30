@@ -96,6 +96,45 @@ def _dispatch_trigger(app, trigger_id: str, room_id: str, prompt_text: str):
             _run_room_conversation(app, room_id, content, allow_tier=_AUTONOMOUS_ALLOW_TIER)
 
 
+def run_due_schedules(model, now: datetime, dispatch_fn, skip_fn=None) -> int:
+    """Generic claim-then-dispatch pass over any model with
+    enabled/next_run_at/frequency/day_of_week/hour_utc/last_run_at columns
+    (ScheduledTrigger and DigestSchedule both share this shape). Shared so
+    the actual scheduling behavior — advance next_run_at from NOW, not the
+    stale value, so a long-sleeping machine fires once on wake, not once
+    per missed slot; commit that advance BEFORE starting any work, so a
+    round that runs past the next tick can't be double-fired — has exactly
+    one implementation, not one per schedule type.
+
+    `dispatch_fn(row)` does the actual work for one due row. `skip_fn(row)`,
+    if given, can skip dispatch for a due row (its next_run_at still
+    advances, same as a dispatch failure) without counting as an error —
+    used by triggers for the room-busy check.
+
+    Returns the number of rows actually dispatched (skipped/failed ones
+    don't count).
+    """
+    from app import db
+
+    due = model.query.filter(model.enabled.is_(True), model.next_run_at <= now).all()
+    dispatched = 0
+    for row in due:
+        row.last_run_at = now
+        row.next_run_at = _compute_next_run(row.frequency, row.day_of_week, row.hour_utc, after=now)
+        db.session.commit()
+
+        if skip_fn and skip_fn(row):
+            continue
+
+        try:
+            dispatch_fn(row)
+            dispatched += 1
+        except Exception as e:
+            log.error("Schedule %s dispatch failed: %s", row.id, e, exc_info=True)
+
+    return dispatched
+
+
 def run_due_triggers() -> int:
     """One pass: fire every enabled trigger whose next_run_at has arrived.
 
@@ -110,38 +149,22 @@ def run_due_triggers() -> int:
     check below).
     """
     from flask import current_app
-    from app import db
     from app.models.trigger import ScheduledTrigger
     from app.routes.chat_rooms import _is_room_busy
 
     now = datetime.now(timezone.utc)
-    due = ScheduledTrigger.query.filter(
-        ScheduledTrigger.enabled.is_(True),
-        ScheduledTrigger.next_run_at <= now,
-    ).all()
-
-    dispatched = 0
     app = current_app._get_current_object()
-    for trig in due:
-        # Claim-then-dispatch: advance next_run_at (from NOW, not the stale
-        # next_run_at — so a long-sleeping machine fires once on wake, not
-        # once per missed slot) and commit BEFORE starting any work, so a
-        # round that runs past the next tick can't be double-fired.
-        trig.last_run_at = now
-        trig.next_run_at = _compute_next_run(trig.frequency, trig.day_of_week, trig.hour_utc, after=now)
-        db.session.commit()
 
+    def _dispatch(trig):
+        _dispatch_trigger(app, trig.id, trig.room_id, trig.prompt_text)
+
+    def _skip(trig):
         if _is_room_busy(trig.room_id):
             log.info("Trigger %s: room %s busy — skipping this occurrence", trig.id, trig.room_id)
-            continue
+            return True
+        return False
 
-        try:
-            _dispatch_trigger(app, trig.id, trig.room_id, trig.prompt_text)
-            dispatched += 1
-        except Exception as e:
-            log.error("Trigger %s dispatch failed: %s", trig.id, e, exc_info=True)
-
-    return dispatched
+    return run_due_schedules(ScheduledTrigger, now, _dispatch, skip_fn=_skip)
 
 
 def start_trigger_service(interval_minutes: float = _DEFAULT_TICK_MINUTES) -> None:
