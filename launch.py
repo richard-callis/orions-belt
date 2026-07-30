@@ -275,6 +275,20 @@ def _seed_builtin_tools(app):
             }),
         ),
         dict(
+            name="create_salesforce_record",
+            tier=1,
+            description="Create a record (Lead, Case, Account, etc.) via a configured salesforce connector",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Salesforce connector name as configured in Settings"},
+                    "sobject_type": {"type": "string", "description": "Salesforce object API name, e.g. 'Lead', 'Case', 'Account'"},
+                    "fields": {"type": "object", "description": "Field name -> value pairs for the new record"},
+                },
+                "required": ["connector", "sobject_type", "fields"],
+            }),
+        ),
+        dict(
             name="run_sql_query",
             tier=1,
             description="Run a read-only SELECT query via a configured SQL connector",

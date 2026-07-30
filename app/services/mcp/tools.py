@@ -252,6 +252,7 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         "create_google_task": _handle_create_google_task,
         "post_teams_message": _handle_post_teams_message,
         "create_planner_task": _handle_create_planner_task,
+        "create_salesforce_record": _handle_create_salesforce_record,
         # Tier 2: modify operations
         "modify_file": _handle_modify_file,
         "create_directory": _handle_create_directory,
@@ -1257,6 +1258,56 @@ async def _handle_create_planner_task(tool_name: str, args: dict) -> str:
         return f"Error: Microsoft Graph returned HTTP {resp.status_code}\n{resp.text[:1000]}"
     except Exception as e:
         return f"Error creating Planner task: {e}"
+
+
+async def _handle_create_salesforce_record(tool_name: str, args: dict) -> str:
+    """Create a record (Lead, Case, Account, etc.) via a configured salesforce connector."""
+    from app.models.connector import Connector
+    from app.services import oauth
+    from app.services.oauth_providers import get_provider_config
+
+    connector_name = args.get("connector", "")
+    sobject_type = (args.get("sobject_type") or "").strip()
+    fields = args.get("fields")
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not sobject_type:
+        return "Error: sobject_type is required (e.g. 'Lead', 'Case', 'Account')"
+    if not isinstance(fields, dict) or not fields:
+        return "Error: fields is required and must be a non-empty object of field name -> value"
+
+    conn = Connector.query.filter_by(name=connector_name, enabled=True).first()
+    if not conn:
+        return f"Error: connector '{connector_name}' not found"
+    if conn.connector_type != "salesforce":
+        return f"Error: connector '{connector_name}' is not a salesforce connector"
+
+    cfg = json.loads(conn.config or "{}")
+    instance_url = (cfg.get("instance_url") or "https://login.salesforce.com").rstrip("/")
+    provider_cfg = get_provider_config("salesforce", cfg)
+
+    try:
+        access_token = oauth.get_valid_access_token(conn, provider_cfg["token_endpoint"])
+    except oauth.ReAuthRequired:
+        return f"Error: connector '{connector_name}' needs to be reconnected (OAuth consent expired or was never completed)"
+    except Exception as e:
+        return f"Error: could not obtain a valid Salesforce access token: {e}"
+
+    url = f"{instance_url}/services/data/v59.0/sobjects/{sobject_type}"
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, headers=headers, json=fields)
+        if resp.status_code == 201:
+            data = resp.json()
+            record_id = data.get("id", "")
+            return f"Created {sobject_type} record: {record_id}\n{instance_url}/{record_id}"
+        return f"Error: Salesforce returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error creating Salesforce record: {e}"
 
 
 async def _handle_search_emails(tool_name: str, args: dict) -> str:
