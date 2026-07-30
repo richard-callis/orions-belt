@@ -591,7 +591,7 @@ class TestLoopbackListenerRealSocket:
                 try:
                     silent = socket.create_connection(("127.0.0.1", port), timeout=2)
                     break
-                except ConnectionRefusedError:
+                except OSError:
                     time.sleep(0.05)
             assert silent is not None, "loopback listener never came up"
             try:
