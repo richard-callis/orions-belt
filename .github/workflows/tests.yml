@@ -32,6 +32,7 @@ jobs:
             python-dotenv \
             requests \
             httpx \
+            numpy \
             pytest \
             pytest-cov
 
