@@ -221,6 +221,74 @@ class TestPostMessagePiiScan:
                 db.session.commit()
 
 
+class TestAgentReplyPiiScanAndRestore:
+    """Agent replies are scanned before persisting (previously only human
+    messages were), and ChatRoomMessage.to_dict() restores tokens for display
+    while the stored/re-fed copy stays tokenized."""
+
+    def _fake_guard(self):
+        class FakeGuard:
+            def scan(self, text, session_id=None, direction="outbound"):
+                if "secret@example.com" in text:
+                    return text.replace("secret@example.com", "[PII:EMAIL:abc123]"), True, ["EMAIL"]
+                return text, False, []
+
+            def restore(self, text):
+                return text.replace("[PII:EMAIL:abc123]", "secret@example.com")
+        return FakeGuard()
+
+    def test_agent_reply_is_sanitized_before_storing(self, app, monkeypatch):
+        import app.routes.chat_rooms as cr
+        monkeypatch.setattr("app.routes.settings._get_active_provider",
+                            lambda: {"base_url": "x", "api_key": "y", "model": "m"})
+        monkeypatch.setattr(cr, "_generate_agent_reply",
+                            lambda agent, *a, **k: "Contact me at secret@example.com")
+        monkeypatch.setattr("app.services.pii_guard.get_pii_guard", lambda: self._fake_guard())
+        with app.app_context():
+            db.session.add(ChatRoom(id="r-agent-pii", name="r-agent-pii"))
+            db.session.add(Agent(id="nova", name="Nova", status="idle"))
+            db.session.add(ChatRoomMember(id="m1", room_id="r-agent-pii", agent_id="nova"))
+            db.session.commit()
+            try:
+                cr._run_room_conversation(app, "r-agent-pii", "hi")
+                msg = ChatRoomMessage.query.filter_by(room_id="r-agent-pii", sender_type="agent").first()
+                # Stored copy is tokenized — never re-feed plaintext PII into context.
+                assert "secret@example.com" not in msg.content
+                assert "[PII:EMAIL:abc123]" in msg.content
+                # Read path (to_dict) restores it for display.
+                assert msg.to_dict()["content"] == "Contact me at secret@example.com"
+            finally:
+                ChatRoomMessage.query.filter_by(room_id="r-agent-pii").delete()
+                ChatRoomMember.query.filter_by(room_id="r-agent-pii").delete()
+                ChatRoom.query.filter_by(id="r-agent-pii").delete()
+                Agent.query.filter_by(id="nova").delete()
+                db.session.commit()
+
+    def test_human_message_restored_on_read_but_tokenized_in_history(self, app, monkeypatch):
+        import app.routes.chat_rooms as cr
+        monkeypatch.setattr("app.services.pii_guard.get_pii_guard", lambda: self._fake_guard())
+        with app.app_context():
+            room, agent = ChatRoom(id="r-restore", name="r-restore"), Agent(id="a-restore", name="A", status="idle")
+            db.session.add_all([room, agent])
+            db.session.commit()
+            msg = ChatRoomMessage(
+                id="msg-restore", room_id="r-restore", sender_type="human",
+                content=cr._sanitize_for_room("email secret@example.com", "r-restore"),
+            )
+            db.session.add(msg)
+            db.session.commit()
+            try:
+                # Stored content is tokenized (what gets fed back as agent context).
+                assert "secret@example.com" not in msg.content
+                # to_dict() restores it for display.
+                assert msg.to_dict()["content"] == "email secret@example.com"
+            finally:
+                ChatRoomMessage.query.filter_by(room_id="r-restore").delete()
+                ChatRoom.query.filter_by(id="r-restore").delete()
+                Agent.query.filter_by(id="a-restore").delete()
+                db.session.commit()
+
+
 class TestPostMessageTrigger:
     def test_human_post_returns_message(self, app, client):
         with app.app_context():

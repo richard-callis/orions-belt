@@ -99,12 +99,24 @@ class ChatRoomMessage(db.Model):
     agent = db.relationship("Agent")
 
     def to_dict(self):
+        content = self.content
+        if content and "[PII:" in content:
+            # The persisted content stays tokenized (it's re-fed as agent
+            # context on every future round) — restore is display-only, done
+            # here at the single read path so both human and agent messages
+            # show their real values without ever writing plaintext PII back
+            # into stored/re-fed history.
+            try:
+                from app.services.pii_guard import get_pii_guard
+                content = get_pii_guard().restore(content)
+            except Exception:
+                pass
         return {
             "id":          self.id,
             "room_id":     self.room_id,
             "agent_id":    self.agent_id,
             "agent_name":  self.agent.name if self.agent else None,
             "sender_type": self.sender_type,
-            "content":     self.content,
+            "content":     content,
             "created_at":  self.created_at.isoformat(),
         }

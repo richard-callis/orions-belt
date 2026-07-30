@@ -29,6 +29,28 @@ def _uuid():
     return str(uuid.uuid4())
 
 
+def _sanitize_for_room(content: str, room_id: str) -> str:
+    """Scan text for PII before it's persisted as room-message content.
+
+    Room messages (human AND agent) are re-fed as context on every future
+    round, so sanitizing at write time — not just at LLM-call time — keeps
+    PII out of every downstream context, not just the first one. The stored/
+    returned text will show [PII:TYPE:hash] tokens in place of detected
+    values; ChatRoomMessage.to_dict() restores them for display, but the
+    persisted/re-fed copy stays tokenized (never re-introduce plaintext PII
+    into agent context on a later round).
+    """
+    try:
+        from app.services.pii_guard import get_pii_guard
+        cleaned, _detected, _types = get_pii_guard().scan(
+            content, session_id=room_id, direction="outbound"
+        )
+        return cleaned
+    except Exception as e:
+        log.warning("room PII scan failed room=%s: %s — storing unscanned", room_id, e)
+        return content
+
+
 # ── Agent replies in rooms ────────────────────────────────────────────────────
 #
 # A human message starts a bounded "burst" of agent activity. Agents reply, and
@@ -210,7 +232,7 @@ def _run_room_conversation(app, room_id: str, human_content: str):
 
                 db.session.add(ChatRoomMessage(
                     id=_uuid(), room_id=room_id, agent_id=agent.id,
-                    sender_type="agent", content=reply,
+                    sender_type="agent", content=_sanitize_for_room(reply, room_id),
                 ))
                 room = ChatRoom.query.get(room_id)
                 if room:
@@ -477,7 +499,7 @@ def _run_goal_pursuit(app, room_id: str, goal_id: str, generation: int):
 
                 db.session.add(ChatRoomMessage(
                     id=_uuid(), room_id=room_id, agent_id=agent.id,
-                    sender_type="agent", content=shown or reply,
+                    sender_type="agent", content=_sanitize_for_room(shown or reply, room_id),
                 ))
                 room = ChatRoom.query.get(room_id)
                 if room:
@@ -623,21 +645,9 @@ def post_message(room_id):
     agent_id    = body.get("agent_id") or None
     sender_type = "agent" if agent_id else "human"
 
-    # Scan human messages for PII before they're persisted — the stored text is
-    # what gets fed back to agents as room history on every future round, so
-    # sanitizing at write time (not just at LLM-call time) keeps PII out of
-    # every downstream context, not just the first one. Mirrors the 1:1 chat's
-    # outbound-scan behavior (the message the user sees will show [PII:TYPE:…]
-    # tokens in place of detected values, same known tradeoff as 1:1 chat).
-    if sender_type == "human":
-        try:
-            from app.services.pii_guard import get_pii_guard
-            cleaned, _detected, _types = get_pii_guard().scan(
-                content, session_id=room_id, direction="outbound"
-            )
-            content = cleaned
-        except Exception as e:
-            log.warning("room PII scan failed room=%s: %s — storing unscanned", room_id, e)
+    # Scan for PII before persisting — see _sanitize_for_room. ChatRoomMessage
+    # .to_dict() restores tokens for display; the stored copy stays tokenized.
+    content = _sanitize_for_room(content, room_id)
 
     msg = ChatRoomMessage(
         id=_uuid(),
