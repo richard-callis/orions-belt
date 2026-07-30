@@ -245,6 +245,19 @@ _MAX_GOAL_ROUNDS_CEILING = 50   # hard upper bound for the admin setting
 _GOAL_COMPLETE_MARKER = "GOAL_COMPLETE"
 _HELP_NEEDED_MARKER = "HELP_NEEDED"
 
+# Guards against a duplicate pursuit thread: resuming a goal (or reactivating
+# it while an older thread is still mid-round) increments this counter: each
+# running thread checks its captured generation against the current one every
+# round and exits the moment it's stale. In-memory is fine — this app runs
+# single-process (mirrors the JS-side roomSwitchToken pattern in chat.html).
+_goal_generation: dict[str, int] = {}
+
+
+def _bump_goal_generation(goal_id: str) -> int:
+    gen = _goal_generation.get(goal_id, 0) + 1
+    _goal_generation[goal_id] = gen
+    return gen
+
 
 def _max_goal_rounds() -> int:
     """Admin-configurable cap on rounds spent autonomously pursuing one goal."""
@@ -274,28 +287,136 @@ def _goal_lead_agent(room_id: str, agents: list):
     return agents[0]
 
 
-def _build_goal_history(room_id: str, agent, roster: dict, goal_text: str) -> list:
+def _build_goal_history(room_id: str, agent, roster: dict, goal_text: str,
+                        feedback: str | None = None) -> list:
     """Like _build_room_history, but instructs the agent to autonomously pursue
-    the given goal (using tools) instead of just replying conversationally."""
+    the given goal (using tools) instead of just replying conversationally.
+
+    `feedback` carries a reviewer's rejection reason from the previous round
+    (see _judge_goal_completion) so the agent knows why its "done" claim was
+    rejected and what's still missing.
+    """
     msgs = _build_room_history(room_id, agent, roster)
     msgs[0]["content"] += (
         f"\n\n## Active goal\nYou are autonomously working to complete this goal:\n"
         f"\"{goal_text}\"\n\n"
         "Use the available tools to make real progress each turn — don't just describe "
-        "what you would do. When the goal is FULLY met, end your message with the exact "
-        f"line `{_GOAL_COMPLETE_MARKER}` on its own. If you are blocked and need the "
-        f"user to answer a question or make a decision before you can continue, end your "
-        f"message with `{_HELP_NEEDED_MARKER}: <your question>` and stop — do not guess."
+        "what you would do. When you believe the goal is FULLY met, end your message with "
+        f"the exact line `{_GOAL_COMPLETE_MARKER}` by itself as the LAST line — a reviewer "
+        "will independently check your work against the goal before it's accepted, so only "
+        "claim this when you're confident. If you are blocked and need the user to answer a "
+        "question or make a decision before you can continue, end your message with "
+        f"`{_HELP_NEEDED_MARKER}: <your question>` as the LAST line and stop — do not guess."
     )
+    if feedback:
+        msgs[0]["content"] += (
+            f"\n\nA reviewer checked your last completion claim and found it NOT yet met: "
+            f"{feedback}\nAddress this before claiming completion again."
+        )
     return msgs
 
 
-def _run_goal_pursuit(app, room_id: str, goal_id: str):
+def _parse_goal_signal(reply: str) -> tuple[str, str | None, str]:
+    """Extract a GOAL_COMPLETE/HELP_NEEDED control signal from an agent reply.
+
+    Anchored to the LAST non-blank line only — a marker mentioned mid-prose
+    ("I'll say GOAL_COMPLETE when done") is NOT treated as a signal, and the
+    signal line is stripped from what's shown/persisted either way so it can
+    never leak into a later round's history as if it were content.
+
+    Returns (shown_text, signal, help_question) where signal is
+    "complete" | "help" | None.
+    """
+    lines = reply.splitlines()
+    last_idx = None
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].strip():
+            last_idx = i
+            break
+    if last_idx is None:
+        return reply, None, ""
+
+    last_line = lines[last_idx].strip()
+    last_upper = last_line.upper()
+
+    if last_upper == _GOAL_COMPLETE_MARKER or last_upper == f"{_GOAL_COMPLETE_MARKER}.":
+        shown = "\n".join(lines[:last_idx]).strip()
+        return shown, "complete", ""
+
+    if last_upper.startswith(_HELP_NEEDED_MARKER):
+        question = last_line[len(_HELP_NEEDED_MARKER):].lstrip(":").strip()
+        shown = "\n".join(lines[:last_idx]).strip()
+        return shown, "help", question
+
+    return reply, None, ""
+
+
+def _judge_goal_completion(agent, prov: dict, goal, latest_reply: str) -> tuple[bool, str]:
+    """Independent reviewer check before trusting a self-reported GOAL_COMPLETE.
+
+    Mirrors app/services/agents/__init__.py's _run_reviewer pattern (including
+    its NOT-APPROVED substring-trap fix): a one-shot judge call, separate from
+    the acting agent's own tool loop, using success_criteria when set (else
+    the goal text itself). Returns (approved, reason) — reason is empty on
+    approval and a short explanation on rejection, fed back into the next
+    round via _build_goal_history's `feedback` param.
+    """
+    from app.services.llm import retry_with_recovery
+
+    criteria = goal.success_criteria or goal.goal_text
+    prompt = (
+        f"Goal / acceptance criteria:\n{criteria}\n\n"
+        f"The agent just reported this as its completion summary:\n{latest_reply}\n\n"
+        "Does this genuinely satisfy the goal? Reply with exactly 'APPROVED' if yes, or "
+        "'REJECTED: <one short sentence saying what's missing>' if no."
+    )
+    try:
+        resp_text, _tc, _tok = retry_with_recovery(
+            prov.get("base_url"), prov.get("api_key"),
+            agent.llm_model_override or prov.get("model"),
+            [
+                {"role": "system", "content": "You are a strict, independent completion reviewer."},
+                {"role": "user", "content": prompt},
+            ],
+            [],
+            max_retries=2,
+        )
+        up = (resp_text or "").strip()
+        up_check = up.upper()
+        if "REJECT" in up_check or "NOT APPROVED" in up_check:
+            reason = up.split(":", 1)[1].strip() if ":" in up else "criteria not met"
+            return False, reason or "criteria not met"
+        if "APPROVED" in up_check:
+            return True, ""
+        return False, "reviewer response was inconclusive"
+    except Exception as e:
+        log.warning("goal reviewer failed: %s", e)
+        # Fail CLOSED: a reviewer error must not silently accept an unfinished
+        # goal. Worst case here is one extra round (bounded by the round cap
+        # and reviewable by a human at any time); the reverse — wrongly
+        # marking something complete — is silent and much worse.
+        return False, "the completion reviewer hit an error and couldn't verify this"
+
+
+def _run_goal_pursuit(app, room_id: str, goal_id: str, generation: int):
     """Run bounded autonomous rounds toward a room goal until it's met, the
-    agent asks for help, the goal is no longer active, or the round cap hits.
+    agent asks for help, the goal is no longer active, a newer pursuit
+    supersedes this one, or the round cap hits.
 
     Runs in a background thread, independent of what the client is viewing.
+    `generation` is captured by the caller (via _bump_goal_generation) BEFORE
+    the thread starts, so a resume/reactivate that races with an older
+    still-running thread reliably wins — the older thread notices it's stale
+    and exits on its next round check.
+
+    Tool calls are capped at Tier 1 (create) here, one notch below the Tier 2
+    ceiling attended chat_reply() calls get by default — nothing is watching
+    an autonomous round in real time the way a human watches a chat reply, so
+    Tier 2 (modify/overwrite) actions are refused just like Tier 3.
     """
+    from app.services.agents.runtime import TIER_HARD_STOP
+    AUTONOMOUS_ALLOW_TIER = TIER_HARD_STOP - 2  # Tier 1: create-only, unattended
+
     with app.app_context():
         try:
             from app.models.agent import Agent
@@ -305,6 +426,8 @@ def _run_goal_pursuit(app, room_id: str, goal_id: str):
             goal = ChatRoomGoal.query.get(goal_id)
             if not goal or goal.status != "active":
                 return
+            if _goal_generation.get(goal_id) != generation:
+                return  # a newer trigger already superseded this one before it even started
 
             members = (
                 ChatRoomMember.query.filter_by(room_id=room_id)
@@ -328,16 +451,19 @@ def _run_goal_pursuit(app, room_id: str, goal_id: str):
 
             from app.services.agents.runtime import AgentRuntime
             runtime = AgentRuntime(agent, prov)
+            feedback = None  # reviewer's rejection reason, fed into the next round
 
             for round_num in range(cap):
                 db.session.expire_all()
                 goal = ChatRoomGoal.query.get(goal_id)
                 if not goal or goal.status != "active":
                     return  # completed/abandoned/deleted elsewhere — stop immediately
+                if _goal_generation.get(goal_id) != generation:
+                    return  # a newer pursuit for this goal has taken over
 
                 try:
-                    convo = _build_goal_history(room_id, agent, roster, goal.goal_text)
-                    reply = (runtime.chat_reply(convo) or "").strip()
+                    convo = _build_goal_history(room_id, agent, roster, goal.goal_text, feedback=feedback)
+                    reply = (runtime.chat_reply(convo, allow_tier=AUTONOMOUS_ALLOW_TIER) or "").strip()
                 except Exception as e:
                     log.warning("goal pursuit round failed goal=%s room=%s: %s", goal_id, room_id, e)
                     _post_room_system(room_id, f"⚠ {agent.name} hit an error working on the goal: {str(e)[:300]}")
@@ -346,10 +472,8 @@ def _run_goal_pursuit(app, room_id: str, goal_id: str):
                 if not reply:
                     continue
 
-                is_complete = _GOAL_COMPLETE_MARKER in reply.upper()
-                is_blocked = _HELP_NEEDED_MARKER in reply.upper()
-                # Strip the control marker from what's shown — it's a signal, not content.
-                shown = re.sub(rf"{_GOAL_COMPLETE_MARKER}\s*$", "", reply, flags=re.IGNORECASE).strip()
+                shown, signal, help_question = _parse_goal_signal(reply)
+                feedback = None  # consumed; only persists across rounds via the return value below
 
                 db.session.add(ChatRoomMessage(
                     id=_uuid(), room_id=room_id, agent_id=agent.id,
@@ -360,23 +484,33 @@ def _run_goal_pursuit(app, room_id: str, goal_id: str):
                     room.updated_at = _now()
                 db.session.commit()
 
-                if is_complete:
-                    goal.status = "completed"
-                    goal.completed_at = _now()
-                    db.session.commit()
-                    _post_room_system(room_id, f"✅ Goal completed: {goal.goal_text}")
-                    return
+                if _goal_generation.get(goal_id) != generation:
+                    return  # superseded while we were persisting this round's message
 
-                if is_blocked:
+                if signal == "complete":
+                    approved, reason = _judge_goal_completion(agent, prov, goal, shown or reply)
+                    if approved:
+                        goal.status = "completed"
+                        goal.completed_at = _now()
+                        db.session.commit()
+                        _post_room_system(room_id, f"✅ Goal completed: {goal.goal_text}")
+                        return
+                    # Rejected — loop again next round with the reviewer's reason as feedback.
+                    feedback = reason
+                    continue
+
+                if signal == "help":
                     # Leave the goal active — a human reply/mention resumes it via the
                     # normal conversational path; pursuit itself stops here.
+                    if help_question:
+                        _post_room_system(room_id, f"⏸ {agent.name} is waiting on your input to continue.")
                     return
 
             _post_room_system(
                 room_id,
                 f"⚠ Reached the round limit ({cap}) while pursuing this goal without "
                 "completing it. Send a message to help it continue, or adjust the round "
-                "limit in Settings.",
+                "limit in Settings → System Prompts.",
             )
         except Exception as e:
             log.warning("goal pursuit failed goal=%s room=%s: %s", goal_id, room_id, e)
@@ -521,6 +655,11 @@ def post_message(room_id):
     # background thread so this request returns immediately; the client poll
     # delivers the replies). Agent-authored messages never trigger, so agents
     # can't loop replying to each other.
+    #
+    # If the room has an active goal, route to goal pursuit instead of the
+    # plain conversational burst — otherwise both would run concurrently
+    # against the same room (two threads hitting the LLM in parallel), and a
+    # human message is also how a HELP_NEEDED-paused goal resumes.
     if sender_type == "human":
         has_agents = (
             ChatRoomMember.query.filter_by(room_id=room_id)
@@ -528,12 +667,22 @@ def post_message(room_id):
             .first()
         )
         if has_agents:
+            from app.models.chat_room_goal import ChatRoomGoal
+            active_goal = ChatRoomGoal.query.filter_by(room_id=room_id, status="active").first()
             app = current_app._get_current_object()
-            threading.Thread(
-                target=_run_room_conversation,
-                args=(app, room_id, content),
-                daemon=True,
-            ).start()
+            if active_goal:
+                generation = _bump_goal_generation(active_goal.id)
+                threading.Thread(
+                    target=_run_goal_pursuit,
+                    args=(app, room_id, active_goal.id, generation),
+                    daemon=True,
+                ).start()
+            else:
+                threading.Thread(
+                    target=_run_room_conversation,
+                    args=(app, room_id, content),
+                    daemon=True,
+                ).start()
 
     return jsonify(result), 201
 
@@ -637,20 +786,34 @@ def create_room_goal(room_id):
     goal_text = (body.get("goal_text") or "").strip()
     if not goal_text:
         return jsonify({"error": "goal_text is required"}), 400
+
     goal = ChatRoomGoal(
         room_id=room_id,
         goal_text=goal_text,
+        success_criteria=(body.get("success_criteria") or "").strip() or None,
         set_by=body.get("set_by", "user"),
     )
+
+    # Only one goal pursues at a time per room — a second active goal would
+    # mean two concurrent lead-agent threads interleaving into the same room.
+    if goal.status == "active":
+        others = ChatRoomGoal.query.filter_by(room_id=room_id, status="active").all()
+        for o in others:
+            o.status = "abandoned"
+            _goal_generation[o.id] = _goal_generation.get(o.id, 0) + 1  # stop its thread
+        if others:
+            _post_room_system(room_id, "⏹ Superseded by a new goal — previous goal(s) abandoned.")
+
     db.session.add(goal)
     db.session.commit()
 
     # A goal defaults to "active" — kick off autonomous pursuit immediately
     # (background thread; independent of what the client is viewing).
     if goal.status == "active":
+        generation = _bump_goal_generation(goal.id)
         app = current_app._get_current_object()
         threading.Thread(
-            target=_run_goal_pursuit, args=(app, room_id, goal.id), daemon=True,
+            target=_run_goal_pursuit, args=(app, room_id, goal.id, generation), daemon=True,
         ).start()
 
     return jsonify(goal.to_dict()), 201
@@ -667,19 +830,34 @@ def update_room_goal(goal_id):
     was_active = goal.status == "active"
     if "goal_text" in body:
         goal.goal_text = body["goal_text"]
+    if "success_criteria" in body:
+        goal.success_criteria = (body["success_criteria"] or "").strip() or None
     if "status" in body:
         goal.status = body["status"]
         if body["status"] == "completed" and not goal.completed_at:
             goal.completed_at = datetime.now(timezone.utc)
+        if body["status"] != "active":
+            # Being paused/abandoned/completed via the API — invalidate any
+            # thread still mid-round for this goal so it stops on its next check.
+            _goal_generation[goal.id] = _goal_generation.get(goal.id, 0) + 1
     db.session.commit()
 
     # Resuming a paused/abandoned/completed goal (status flips TO active)
-    # restarts pursuit; re-triggering an already-active goal is a no-op guard
-    # inside _run_goal_pursuit itself (it re-checks status each round anyway).
+    # restarts pursuit with a fresh generation, which also naturally supersedes
+    # any older thread that hadn't noticed the earlier deactivation yet.
     if goal.status == "active" and not was_active:
+        others = ChatRoomGoal.query.filter_by(room_id=goal.room_id, status="active").filter(
+            ChatRoomGoal.id != goal.id
+        ).all()
+        for o in others:
+            o.status = "abandoned"
+            _goal_generation[o.id] = _goal_generation.get(o.id, 0) + 1
+        db.session.commit()
+
+        generation = _bump_goal_generation(goal.id)
         app = current_app._get_current_object()
         threading.Thread(
-            target=_run_goal_pursuit, args=(app, goal.room_id, goal.id), daemon=True,
+            target=_run_goal_pursuit, args=(app, goal.room_id, goal.id, generation), daemon=True,
         ).start()
 
     return jsonify(goal.to_dict())

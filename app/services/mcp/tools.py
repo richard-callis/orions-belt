@@ -149,6 +149,24 @@ def _get_effective_tier(path: str, tool_tier: int) -> int:
     return tool_tier
 
 
+def run_tool_sync(tool_name: str, args: dict, session_id: str | None = None, run_id: str | None = None) -> str:
+    """Run the async execute_tool() from a synchronous context.
+
+    The single entry point for "run an MCP tool" from sync callers (chat
+    streaming generators, AgentRuntime, tool-approval resolution). Lives here
+    rather than in a route module so services (AgentRuntime) don't have to
+    import a Flask route to execute a tool.
+    """
+    import asyncio
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(
+            execute_tool(tool_name, args, session_id=session_id, run_id=run_id)
+        )
+    finally:
+        loop.close()
+
+
 async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = None, run_id: str | None = None) -> str:
     """Execute a tool by name with the given args.
 

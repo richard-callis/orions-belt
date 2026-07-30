@@ -2,6 +2,12 @@
 {% block title %}Chat{% endblock %}
 {% block page_title %}Chat{% endblock %}
 
+{% block head %}
+<!-- Mermaid: renders ```mermaid fences in markdown as native diagrams. Only
+     loaded here (3.5MB) — chat.html is the only page that renders markdown. -->
+<script src="{{ url_for('static', filename='js/mermaid.min.js') }}"></script>
+{% endblock %}
+
 {% block header_actions %}
 <!-- Provider pill — lives in the global header next to + New -->
 <div class="relative" id="provider-pill-wrap">
@@ -945,7 +951,10 @@ async function streamResponse(userPrompt) {
           case 'text':
             if (data.content) {
               totalText += data.content;
-              renderMarkdownInto(assistantText, totalText);
+              // Skip mermaid during token-by-token streaming (heavy full-diagram
+              // parse/layout on every chunk); the 'done' handler below does one
+              // final render with mermaid enabled against the complete text.
+              renderMarkdownInto(assistantText, totalText, { skipMermaid: true });
               maybeScroll(msgs);
             }
             break;
@@ -1021,7 +1030,9 @@ async function streamResponse(userPrompt) {
           }
 
           case 'done':
-            // Stream complete — backend already persists the assistant message
+            // Stream complete — backend already persists the assistant message.
+            // Final render WITH mermaid enabled, now that the text is complete.
+            if (totalText) renderMarkdownInto(assistantText, totalText);
             break;
 
           case 'error':

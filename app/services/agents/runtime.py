@@ -68,8 +68,8 @@ class AgentRuntime:
                     "explicit approval and cannot run from a chat. Ask the user to run it "
                     "as a Task.")
         try:
-            from app.routes.chat import _run_tool
-            return str(_run_tool(name, args, session_id=session_id, run_id=run_id))
+            from app.services.mcp.tools import run_tool_sync
+            return str(run_tool_sync(name, args, session_id=session_id, run_id=run_id))
         except Exception as e:
             return f"Error: {e}"
 

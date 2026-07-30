@@ -107,8 +107,16 @@ function renderMarkdown(text) {
 
 // Render a markdown string into an element: sanitize, harden links,
 // syntax-highlight code fences with highlight.js, and render mermaid diagrams.
-function renderMarkdownInto(el, text) {
+//
+// opts.skipMermaid: during token-by-token SSE streaming this is called on
+// every chunk — mermaid.run() does a full diagram parse + layout pass, which
+// is heavy (and pointless on a diagram whose source is still arriving mid-
+// stream). Callers doing live streaming should pass {skipMermaid: true} on
+// each chunk and then call renderMarkdownInto once more WITHOUT it when the
+// stream finishes, so diagrams render exactly once against the final text.
+function renderMarkdownInto(el, text, opts) {
   if (!el) return;
+  opts = opts || {};
   el.innerHTML = renderMarkdown(text);
   el.querySelectorAll('a[href]').forEach(a => {
     a.setAttribute('target', '_blank');
@@ -119,7 +127,7 @@ function renderMarkdownInto(el, text) {
       try { hljs.highlightElement(block); } catch (e) {}
     });
   }
-  if (typeof mermaid !== 'undefined') {
+  if (!opts.skipMermaid && typeof mermaid !== 'undefined') {
     const nodes = el.querySelectorAll('.mermaid');
     if (nodes.length) {
       try {

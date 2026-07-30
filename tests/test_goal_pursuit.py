@@ -91,6 +91,35 @@ class TestBuildGoalHistory:
                 _cleanup("r-hist", ["a-hist"])
 
 
+class TestGoalSignalParsing:
+    def test_complete_marker_on_last_line(self):
+        shown, signal, q = cr._parse_goal_signal(f"I finished the work.\n{cr._GOAL_COMPLETE_MARKER}")
+        assert signal == "complete"
+        assert cr._GOAL_COMPLETE_MARKER not in shown
+
+    def test_help_marker_on_last_line(self):
+        shown, signal, q = cr._parse_goal_signal(f"Progress so far.\n{cr._HELP_NEEDED_MARKER}: which env?")
+        assert signal == "help"
+        assert q == "which env?"
+        assert cr._HELP_NEEDED_MARKER not in shown
+
+    def test_marker_mentioned_in_prose_is_not_a_signal(self):
+        reply = f"I'll say {cr._GOAL_COMPLETE_MARKER} when the work is actually done. Still working."
+        shown, signal, q = cr._parse_goal_signal(reply)
+        assert signal is None
+        assert shown == reply  # unchanged — not treated as a control signal
+
+    def test_marker_not_on_last_line_is_not_a_signal(self):
+        reply = f"{cr._GOAL_COMPLETE_MARKER}\nActually wait, one more thing to check."
+        shown, signal, q = cr._parse_goal_signal(reply)
+        assert signal is None
+
+    def test_plain_reply_no_signal(self):
+        shown, signal, q = cr._parse_goal_signal("Just an update, still working.")
+        assert signal is None
+        assert shown == "Just an update, still working."
+
+
 class TestRunGoalPursuit:
     def _setup(self, app, monkeypatch, rid="r-goal"):
         monkeypatch.setattr(
@@ -102,15 +131,17 @@ class TestRunGoalPursuit:
             goal = ChatRoomGoal(room_id=rid, goal_text="Do the thing", status="active")
             db.session.add(goal)
             db.session.commit()
-            return goal.id
+            gen = cr._bump_goal_generation(goal.id)
+            return goal.id, gen
 
-    def test_completes_on_marker(self, app, monkeypatch):
+    def test_completes_when_reviewer_approves(self, app, monkeypatch):
         from app.services.agents.runtime import AgentRuntime
-        monkeypatch.setattr(AgentRuntime, "chat_reply", lambda self, *a, **k: f"All done. {cr._GOAL_COMPLETE_MARKER}")
-        goal_id = self._setup(app, monkeypatch, "r-complete")
+        monkeypatch.setattr(AgentRuntime, "chat_reply", lambda self, *a, **k: f"All done.\n{cr._GOAL_COMPLETE_MARKER}")
+        monkeypatch.setattr(cr, "_judge_goal_completion", lambda agent, prov, goal, reply: (True, ""))
+        goal_id, gen = self._setup(app, monkeypatch, "r-complete")
         try:
             with app.app_context():
-                cr._run_goal_pursuit(app, "r-complete", goal_id)
+                cr._run_goal_pursuit(app, "r-complete", goal_id, gen)
                 goal = ChatRoomGoal.query.get(goal_id)
                 assert goal.status == "completed"
                 assert goal.completed_at is not None
@@ -121,16 +152,53 @@ class TestRunGoalPursuit:
             with app.app_context():
                 _cleanup("r-complete", ["lead-agent"])
 
+    def test_reviewer_rejection_keeps_looping_with_feedback(self, app, monkeypatch):
+        from app.services.agents.runtime import AgentRuntime
+        call_count = {"n": 0}
+        feedback_seen = {"value": None}
+
+        def fake_reply(self, messages, **k):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return f"Think I'm done.\n{cr._GOAL_COMPLETE_MARKER}"
+            # Second round should see the reviewer's rejection reason injected.
+            feedback_seen["value"] = messages[0]["content"]
+            return "still working, no signal this round"
+
+        monkeypatch.setattr(AgentRuntime, "chat_reply", fake_reply)
+        # Cap at 2 rounds so the test is deterministic regardless of what a
+        # 3rd round (which would need more mock plumbing) might do.
+        monkeypatch.setattr(cr, "_max_goal_rounds", lambda: 2)
+        judge_calls = {"n": 0}
+
+        def fake_judge(agent, prov, goal, reply):
+            judge_calls["n"] += 1
+            return (False, "missing the export step")
+
+        monkeypatch.setattr(cr, "_judge_goal_completion", fake_judge)
+        goal_id, gen = self._setup(app, monkeypatch, "r-reject")
+        try:
+            with app.app_context():
+                cr._run_goal_pursuit(app, "r-reject", goal_id, gen)
+                assert judge_calls["n"] == 1  # only called when a completion was claimed
+                goal = ChatRoomGoal.query.get(goal_id)
+                assert goal.status == "active"  # never marked complete
+                assert call_count["n"] == 2  # looped after rejection
+                assert "missing the export step" in feedback_seen["value"]
+        finally:
+            with app.app_context():
+                _cleanup("r-reject", ["lead-agent"])
+
     def test_stops_on_help_needed_without_completing(self, app, monkeypatch):
         from app.services.agents.runtime import AgentRuntime
         monkeypatch.setattr(
             AgentRuntime, "chat_reply",
             lambda self, *a, **k: f"{cr._HELP_NEEDED_MARKER}: which environment?"
         )
-        goal_id = self._setup(app, monkeypatch, "r-blocked")
+        goal_id, gen = self._setup(app, monkeypatch, "r-blocked")
         try:
             with app.app_context():
-                cr._run_goal_pursuit(app, "r-blocked", goal_id)
+                cr._run_goal_pursuit(app, "r-blocked", goal_id, gen)
                 goal = ChatRoomGoal.query.get(goal_id)
                 assert goal.status == "active"  # left active, not completed/abandoned
                 agent_msgs = ChatRoomMessage.query.filter_by(room_id="r-blocked", sender_type="agent").all()
@@ -153,24 +221,39 @@ class TestRunGoalPursuit:
             return "still working on it"
 
         monkeypatch.setattr(AgentRuntime, "chat_reply", fake_reply)
-        goal_id = self._setup(app, monkeypatch, "r-cancel")
+        goal_id, gen = self._setup(app, monkeypatch, "r-cancel")
         try:
             with app.app_context():
-                cr._run_goal_pursuit(app, "r-cancel", goal_id)
+                cr._run_goal_pursuit(app, "r-cancel", goal_id, gen)
                 # Round 3 must never have run since round 2 flipped status away from active.
                 assert call_count["n"] == 2
         finally:
             with app.app_context():
                 _cleanup("r-cancel", ["lead-agent"])
 
+    def test_stale_generation_never_starts(self, app, monkeypatch):
+        """A newer trigger for the same goal supersedes an older, not-yet-started thread."""
+        from app.services.agents.runtime import AgentRuntime
+        monkeypatch.setattr(AgentRuntime, "chat_reply", lambda self, *a, **k: "should never run")
+        goal_id, gen = self._setup(app, monkeypatch, "r-stale")
+        try:
+            with app.app_context():
+                cr._bump_goal_generation(goal_id)  # a newer trigger fires before the old one runs
+                cr._run_goal_pursuit(app, "r-stale", goal_id, gen)  # stale generation
+                msgs = ChatRoomMessage.query.filter_by(room_id="r-stale").all()
+                assert len(msgs) == 0
+        finally:
+            with app.app_context():
+                _cleanup("r-stale", ["lead-agent"])
+
     def test_round_cap_reached_without_completion(self, app, monkeypatch):
         from app.services.agents.runtime import AgentRuntime
         monkeypatch.setattr(AgentRuntime, "chat_reply", lambda self, *a, **k: "working...")
         monkeypatch.setattr(cr, "_max_goal_rounds", lambda: 3)
-        goal_id = self._setup(app, monkeypatch, "r-cap")
+        goal_id, gen = self._setup(app, monkeypatch, "r-cap")
         try:
             with app.app_context():
-                cr._run_goal_pursuit(app, "r-cap", goal_id)
+                cr._run_goal_pursuit(app, "r-cap", goal_id, gen)
                 goal = ChatRoomGoal.query.get(goal_id)
                 assert goal.status == "active"  # not auto-completed
                 agent_msgs = ChatRoomMessage.query.filter_by(room_id="r-cap", sender_type="agent").all()
@@ -192,9 +275,10 @@ class TestRunGoalPursuit:
             db.session.add(goal)
             db.session.commit()
             goal_id = goal.id
+            gen = cr._bump_goal_generation(goal_id)
         try:
             with app.app_context():
-                cr._run_goal_pursuit(app, "r-inactive", goal_id)
+                cr._run_goal_pursuit(app, "r-inactive", goal_id, gen)
                 msgs = ChatRoomMessage.query.filter_by(room_id="r-inactive").all()
                 assert len(msgs) == 0  # nothing posted — pursuit never started
         finally:

@@ -32,7 +32,7 @@ from app.models.logs import LLMLog, AgentLog
 from app.models.settings import Setting
 from config import Config
 from app.services.llm import build_tool_definitions, build_context, build_context_with_state
-from app.services.mcp.tools import execute_tool
+from app.services.mcp.tools import run_tool_sync as _run_tool
 
 bp = Blueprint("chat", __name__, url_prefix="/chat")
 
@@ -730,25 +730,8 @@ def stream_messages(session_id):
 
 
 # ── Sync stream generators (no async/await for Flask compatibility) ──────────
-
-def _run_tool(tool_name, args, session_id=None, run_id=None):
-    """Run an async MCP tool from a synchronous context.
-
-    Args:
-        tool_name: Tool to execute.
-        args: Tool arguments.
-        session_id: Optional session ID for audit trail.
-        run_id: Optional run ID for audit trail.
-    """
-    import asyncio
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(
-            execute_tool(tool_name, args, session_id=session_id, run_id=run_id)
-        )
-    finally:
-        loop.close()
-
+# _run_tool (imported at module top from the MCP tools service) is the sync
+# wrapper the streaming generators and approval-resolution code below call.
 
 # Tools at or above this tier are NOT auto-executed in chat — they require
 # explicit user approval (mirrors the agent runner's TIER_HARD_STOP=3). This
