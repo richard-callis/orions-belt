@@ -54,6 +54,11 @@ class _FakeAsyncClient:
         self._captured["json"] = json
         return self._response
 
+    async def get(self, url, headers=None):
+        self._captured["url"] = url
+        self._captured["headers"] = headers
+        return self._response
+
 
 class TestPostTeamsMessage:
     def test_posts_with_correct_request_shape(self, app, graph_connector, monkeypatch):
@@ -332,3 +337,138 @@ class TestCheckCalendarAvailability:
                 "connector": "test-graph", "attendees": [], "start": "x", "end": "y",
             }))
         assert "attendees is required" in result
+
+
+class _FakeMultiCallAsyncClient:
+    """Like _FakeAsyncClient but returns a different response per call,
+    consumed in order — needed for create_onedrive_file's existence-check
+    GET followed by its PUT."""
+    def __init__(self, captured, responses):
+        self._captured = captured
+        self._responses = list(responses)
+
+    def __call__(self, timeout=None):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def get(self, url, headers=None):
+        self._captured.setdefault("calls", []).append(("GET", url))
+        return self._responses.pop(0)
+
+    async def put(self, url, headers=None, content=None):
+        self._captured.setdefault("calls", []).append(("PUT", url))
+        self._captured["put_content"] = content
+        return self._responses.pop(0)
+
+
+class TestReadOnedriveFile:
+    def test_reads_file_content(self, app, graph_connector, monkeypatch):
+        captured = {}
+
+        class FakeResponse:
+            status_code = 200
+            text = "file contents here"
+
+        import httpx
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient(captured, FakeResponse()))
+
+        with app.app_context():
+            result = _run(mcp_tools._handle_read_onedrive_file("read_onedrive_file", {
+                "connector": "test-graph", "path": "Documents/notes.txt",
+            }))
+
+        assert result == "file contents here"
+        assert "Documents/notes.txt" in captured["url"] or "Documents%2Fnotes.txt" in captured["url"]
+
+    def test_requires_path(self, app, graph_connector):
+        with app.app_context():
+            result = _run(mcp_tools._handle_read_onedrive_file("read_onedrive_file", {
+                "connector": "test-graph",
+            }))
+        assert "path is required" in result
+
+    def test_returns_error_on_404(self, app, graph_connector, monkeypatch):
+        class FakeResponse:
+            status_code = 404
+            text = "Not Found"
+
+        import httpx
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient({}, FakeResponse()))
+
+        with app.app_context():
+            result = _run(mcp_tools._handle_read_onedrive_file("read_onedrive_file", {
+                "connector": "test-graph", "path": "missing.txt",
+            }))
+        assert "file not found" in result
+
+
+class TestCreateOnedriveFile:
+    def test_creates_file_when_none_exists(self, app, graph_connector, monkeypatch):
+        captured = {}
+
+        class FakeGetResponse:
+            status_code = 404
+            text = "Not Found"
+
+        class FakePutResponse:
+            status_code = 201
+            def json(self):
+                return {"webUrl": "https://acme.sharepoint.com/personal/x/Documents/new.txt"}
+            text = ""
+
+        import httpx
+        monkeypatch.setattr(httpx, "AsyncClient",
+                            _FakeMultiCallAsyncClient(captured, [FakeGetResponse(), FakePutResponse()]))
+
+        with app.app_context():
+            result = _run(mcp_tools._handle_create_onedrive_file("create_onedrive_file", {
+                "connector": "test-graph", "path": "Documents/new.txt", "content": "hello",
+            }))
+
+        assert "Created OneDrive file: Documents/new.txt" in result
+        assert captured["calls"][0][0] == "GET"
+        assert captured["calls"][1][0] == "PUT"
+        assert captured["put_content"] == b"hello"
+
+    def test_refuses_when_file_already_exists(self, app, graph_connector, monkeypatch):
+        captured = {}
+
+        class FakeGetResponse:
+            status_code = 200
+            text = ""
+
+        import httpx
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeMultiCallAsyncClient(captured, [FakeGetResponse()]))
+
+        with app.app_context():
+            result = _run(mcp_tools._handle_create_onedrive_file("create_onedrive_file", {
+                "connector": "test-graph", "path": "Documents/existing.txt", "content": "x",
+            }))
+
+        assert "already exists" in result
+        assert len(captured["calls"]) == 1  # never reached the PUT
+
+    def test_requires_path(self, app, graph_connector):
+        with app.app_context():
+            result = _run(mcp_tools._handle_create_onedrive_file("create_onedrive_file", {
+                "connector": "test-graph", "content": "x",
+            }))
+        assert "path is required" in result
+
+    def test_requires_files_scope(self, app, graph_connector):
+        with app.app_context():
+            c = Connector.query.filter_by(name="test-graph").first()
+            auth = c.get_auth()
+            auth["granted_scope"] = "offline_access ChannelMessage.Send"
+            c.set_auth(auth)
+            db.session.commit()
+
+            result = _run(mcp_tools._handle_read_onedrive_file("read_onedrive_file", {
+                "connector": "test-graph", "path": "x.txt",
+            }))
+        assert "was not granted files access" in result

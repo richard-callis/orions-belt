@@ -251,6 +251,7 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         "search_jira_issues": _handle_search_jira_issues,
         "search_linear_issues": _handle_search_linear_issues,
         "check_calendar_availability": _handle_check_calendar_availability,
+        "read_onedrive_file": _handle_read_onedrive_file,
         # Tier 1: create operations
         "create_file": _handle_create_file,
         "append_to_file": _handle_append_to_file,
@@ -265,6 +266,7 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         "create_jira_issue": _handle_create_jira_issue,
         "create_linear_issue": _handle_create_linear_issue,
         "create_google_task": _handle_create_google_task,
+        "create_onedrive_file": _handle_create_onedrive_file,
         "post_teams_message": _handle_post_teams_message,
         "create_planner_task": _handle_create_planner_task,
         "create_salesforce_record": _handle_create_salesforce_record,
@@ -2202,6 +2204,86 @@ async def _handle_check_calendar_availability(tool_name: str, args: dict) -> str
         return f"Error: Microsoft Graph returned HTTP {resp.status_code}\n{resp.text[:1000]}"
     except Exception as e:
         return f"Error checking calendar availability: {e}"
+
+
+async def _handle_read_onedrive_file(tool_name: str, args: dict) -> str:
+    """Read a file's content from OneDrive via a configured microsoft_graph
+    connector (requires the 'files' scope). Tier 0."""
+    from urllib.parse import quote
+
+    connector_name = args.get("connector", "")
+    path = (args.get("path") or "").strip().lstrip("/")
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not path:
+        return "Error: path is required"
+
+    access_token, err = _get_graph_connector_and_token(connector_name, required_feature="files")
+    if err:
+        return err
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    url = f"https://graph.microsoft.com/v1.0/me/drive/root:/{quote(path)}:/content"
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url, headers=headers)
+        if resp.status_code == 200:
+            text = resp.text
+            if len(text) > MAX_READ_BYTES:
+                text = text[:MAX_READ_BYTES] + "\n[…truncated, file too large]"
+            return text
+        if resp.status_code == 404:
+            return f"Error: file not found: {path}"
+        return f"Error: Microsoft Graph returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error reading OneDrive file: {e}"
+
+
+async def _handle_create_onedrive_file(tool_name: str, args: dict) -> str:
+    """Create a new file in OneDrive via a configured microsoft_graph connector
+    (requires the 'files' scope). Fails if a file already exists at that path
+    — mirrors create_file's semantics. Tier 1."""
+    from urllib.parse import quote
+
+    connector_name = args.get("connector", "")
+    path = (args.get("path") or "").strip().lstrip("/")
+    content = args.get("content") or ""
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not path:
+        return "Error: path is required"
+
+    access_token, err = _get_graph_connector_and_token(connector_name, required_feature="files")
+    if err:
+        return err
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    encoded_path = quote(path)
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # PUT :/content overwrites unconditionally — check existence
+            # first so this tool's semantics actually match create_file's
+            # "fails if the file already exists", not a silent overwrite.
+            existing = await client.get(
+                f"https://graph.microsoft.com/v1.0/me/drive/root:/{encoded_path}", headers=headers)
+            if existing.status_code == 200:
+                return f"Error: file already exists: {path}"
+            resp = await client.put(
+                f"https://graph.microsoft.com/v1.0/me/drive/root:/{encoded_path}:/content",
+                headers=headers, content=content.encode("utf-8"))
+        if resp.status_code in (200, 201):
+            data = resp.json()
+            web_url = data.get("webUrl", "")
+            return f"Created OneDrive file: {path}\n{web_url}"
+        return f"Error: Microsoft Graph returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error creating OneDrive file: {e}"
 
 
 async def _handle_create_salesforce_record(tool_name: str, args: dict) -> str:

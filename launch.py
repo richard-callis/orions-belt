@@ -475,6 +475,35 @@ def _seed_builtin_tools(app):
             }),
         ),
         dict(
+            name="read_onedrive_file",
+            tier=0,
+            description="Read a file's content from OneDrive via a configured microsoft_graph connector "
+                        "(requires the 'files' scope to be granted)",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Microsoft Graph connector name as configured in Settings"},
+                    "path": {"type": "string", "description": "Path to the file within OneDrive, e.g. 'Documents/notes.txt'"},
+                },
+                "required": ["connector", "path"],
+            }),
+        ),
+        dict(
+            name="create_onedrive_file",
+            tier=1,
+            description="Create a new file in OneDrive via a configured microsoft_graph connector (requires the "
+                        "'files' scope). Fails if a file already exists at that path.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Microsoft Graph connector name as configured in Settings"},
+                    "path": {"type": "string", "description": "Path to create within OneDrive, e.g. 'Documents/notes.txt'"},
+                    "content": {"type": "string", "description": "File content"},
+                },
+                "required": ["connector", "path", "content"],
+            }),
+        ),
+        dict(
             name="create_salesforce_record",
             tier=2,
             description="Create a record (Lead, Case, Account, etc.) via a configured salesforce connector. "
