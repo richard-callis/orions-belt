@@ -224,7 +224,7 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
     # Check EVERY path argument — move_file has both source and destination, and
     # writing into a read_only directory must be blocked regardless of which arg
     # it arrives in.
-    path_args = [args.get(k) for k in ("path", "src", "dest", "source", "destination") if args.get(k)]
+    path_args = [args.get(k) for k in ("path", "src", "dest", "source", "destination", "working_dir") if args.get(k)]
     for path_arg in path_args:
         effective_tier = _get_effective_tier(str(path_arg), tool.tier)
         if effective_tier < tool.tier:
@@ -1184,18 +1184,72 @@ def _reject_flag_like(value: str, label: str) -> str | None:
 # but applying it to every call is harmless and one less thing to get wrong.
 _GIT_NO_HOOKS_PATH = "/dev/null/orions-belt-no-hooks"
 
+# Repo-local config keys that can make git execute an ARBITRARY,
+# attacker-chosen command — none of these can be neutralized by a per-
+# invocation `-c key=` override the way core.fsmonitor/core.pager can,
+# because the dangerous part is the attacker-chosen VALUE (a filter driver
+# name, a gpg program path, a credential helper), not a fixed key. Must be
+# detected and refused instead. filter.*.(clean|smudge|process) and
+# diff.*.(command|textconv) apply on ordinary `git diff`/`git add`, not just
+# checkout — verified against a real repo before this was added.
+_DANGEROUS_GIT_CONFIG_RE = re.compile(
+    r"^(filter\..*\.(clean|smudge|process)|diff\..*\.(command|textconv)|"
+    r"core\.(fsmonitor|sshcommand|alternaterefscommand|askpass|gitproxy|pager)|"
+    r"credential\.helper|gpg\.program|commit\.gpgsign|uploadpack\..*|pager\..*)$",
+    re.IGNORECASE,
+)
+
+
+async def _git_config_is_safe(cwd: str, env: dict) -> bool:
+    """True if `cwd`'s repo-local git config contains no key that could
+    result in arbitrary command execution. Listing config (`git config
+    --list`) executes nothing itself — it only parses and prints config
+    files as text (including anything reached via include.path/includeIf,
+    which is fine: the merged listing still shows the effective key either
+    way) — so this is safe to run unconditionally before every git
+    subcommand. Fails CLOSED: any error running the check itself is treated
+    as unsafe.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "config", "--local", "--list", "--null",
+            cwd=cwd, env=env,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+        # Exit code 1 with no output means "no repo-local config at all" —
+        # common and safe, not an error.
+        if proc.returncode not in (0, 1):
+            return False
+        for entry in stdout.decode("utf-8", errors="replace").split("\x00"):
+            if not entry:
+                continue
+            key = entry.split("\n", 1)[0]
+            if _DANGEROUS_GIT_CONFIG_RE.match(key):
+                log.warning("git tool refused: unsafe repo-local config key %r in %s", key, cwd)
+                return False
+        return True
+    except Exception as e:
+        log.warning("git config safety check failed for %s: %s", cwd, e)
+        return False
+
 
 async def _run_git(git_args: list, cwd: str, timeout: float = 30,
                    identity: tuple | None = None) -> tuple:
     """Run a git subcommand with the untrusted-repo hardening every git
     tool needs: a maliciously-configured .git/config can make ordinary
     read commands (status/diff/log) execute arbitrary commands via
-    core.fsmonitor, diff.external, core.pager, or a *.textconv filter, and
-    a repo's .git/hooks/ can execute arbitrary commands on commit — and
-    since create_file (Tier 1) can write .git/config or a hook script inside
-    an authorized directory, an unhardened git tool would let Tier-1 file
-    write plus a Tier-0/Tier-2 git operation bypass the Tier-3 approval gate
-    run_shell exists to enforce.
+    core.fsmonitor, diff.external, core.pager, a *.textconv filter, or a
+    content filter driver, and a repo's .git/hooks/ can execute arbitrary
+    commands on commit — and since create_file (Tier 1) can write
+    .git/config or a hook script inside an authorized directory, an
+    unhardened git tool would let Tier-1 file write plus a Tier-0/Tier-2
+    git operation bypass the Tier-3 approval gate run_shell exists to
+    enforce. Some of those (fsmonitor/pager/hooks path) are neutralized by
+    a fixed -c override below; others (filter drivers, gpg.program,
+    credential helpers) have an attacker-chosen value with no fixed key to
+    override, so _git_config_is_safe refuses the whole operation if any of
+    those are set at all, rather than trying to neutralize them individually.
 
     Blocking system/global git config this way also strips out any identity
     (user.name/user.email) an operator configured globally — pass `identity`
@@ -1207,8 +1261,15 @@ async def _run_git(git_args: list, cwd: str, timeout: float = 30,
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_TERMINAL_PROMPT"] = "0"
+
+    if not await _git_config_is_safe(cwd, env):
+        return (1, "", "Error: this repository's local git config contains a setting that "
+                       "could execute an arbitrary command (a content filter driver, external "
+                       "diff/textconv, credential helper, or gpg program) — refusing to run "
+                       "any git command against it.")
+
     full_args = ["git", "--no-pager", "-c", "core.fsmonitor=", "-c", "core.pager=cat",
-                 "-c", f"core.hooksPath={_GIT_NO_HOOKS_PATH}"]
+                 "-c", f"core.hooksPath={_GIT_NO_HOOKS_PATH}", "-c", "commit.gpgSign=false"]
     if identity:
         name, email = identity
         full_args += ["-c", f"user.name={name}", "-c", f"user.email={email}"]

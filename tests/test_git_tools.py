@@ -210,3 +210,75 @@ class TestGitConfigHardening:
         with app.app_context():
             _run(mcp_tools._handle_git_status("git_status", {"path": str(git_repo)}))
         assert not marker.exists(), "core.fsmonitor command executed — .git/config RCE bypass not neutralized"
+
+    def test_malicious_filter_clean_is_refused_not_executed(self, app, git_repo):
+        """filter.<name>.clean/smudge/process is a content filter driver —
+        the driver name (here "evil") is entirely attacker-chosen, so unlike
+        core.fsmonitor/core.pager there is no FIXED key _run_git could
+        override to neutralize it. This must be detected and the whole
+        operation refused, not selectively patched — verified against a
+        real repo where the naive per-key -c overrides alone (the original
+        implementation) let this run via a Tier-0 git_diff and a Tier-2
+        git_commit (git add)."""
+        marker = git_repo / "FILTER_RAN"
+        (git_repo / ".git" / "config").write_text(
+            (git_repo / ".git" / "config").read_text() +
+            f'\n[filter "evil"]\n\tclean = touch {marker}\n\tsmudge = cat\n'
+        )
+        (git_repo / ".gitattributes").write_text("* filter=evil\n")
+
+        with app.app_context():
+            result_diff = _run(mcp_tools._handle_git_diff("git_diff", {"path": str(git_repo)}))
+            result_status = _run(mcp_tools._handle_git_status("git_status", {"path": str(git_repo)}))
+
+        assert not marker.exists(), "filter.clean command executed — RCE bypass not neutralized"
+        assert "unsafe" in result_diff.lower() or "Error" in result_diff
+        assert "unsafe" in result_status.lower() or "Error" in result_status
+
+    def test_malicious_filter_clean_is_refused_on_commit(self, app, git_repo):
+        marker = git_repo / "FILTER_RAN_COMMIT"
+        (git_repo / ".git" / "config").write_text(
+            (git_repo / ".git" / "config").read_text() +
+            f'\n[filter "evil"]\n\tclean = touch {marker}\n\tsmudge = cat\n'
+        )
+        (git_repo / ".gitattributes").write_text("* filter=evil\n")
+        (git_repo / "new.txt").write_text("content")
+
+        with app.app_context():
+            result = _run(mcp_tools._handle_git_commit("git_commit", {
+                "path": str(git_repo), "message": "msg", "paths": ["new.txt"],
+            }))
+
+        assert not marker.exists(), "filter.clean command executed via git add — RCE bypass not neutralized"
+        assert result.startswith("Error")
+
+    def test_malicious_gpg_program_is_refused_not_executed(self, app, git_repo):
+        """gpg.program (combined with commit.gpgsign=true) is another
+        attacker-chosen executable path with no fixed key to override."""
+        marker = git_repo / "GPG_RAN"
+        (git_repo / ".git" / "config").write_text(
+            (git_repo / ".git" / "config").read_text() +
+            f'\n[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = /bin/sh -c "touch {marker}"\n'
+        )
+        (git_repo / "new.txt").write_text("content")
+
+        with app.app_context():
+            result = _run(mcp_tools._handle_git_commit("git_commit", {
+                "path": str(git_repo), "message": "msg", "paths": ["new.txt"],
+            }))
+
+        assert not marker.exists(), "gpg.program executed — RCE bypass not neutralized"
+        assert result.startswith("Error")
+
+    def test_safe_repo_config_is_unaffected(self, app, git_repo):
+        """The safety check must not false-positive on an ordinary repo —
+        every existing test in this file already exercises this implicitly,
+        but assert it explicitly against a repo with a harmless custom
+        section too."""
+        (git_repo / ".git" / "config").write_text(
+            (git_repo / ".git" / "config").read_text() +
+            '\n[custom]\n\tsomeharmlesskey = somevalue\n'
+        )
+        with app.app_context():
+            result = _run(mcp_tools._handle_git_status("git_status", {"path": str(git_repo)}))
+        assert "clean working tree" in result
