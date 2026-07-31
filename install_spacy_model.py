@@ -1,7 +1,7 @@
 """
 install_spacy_model.py — SSL-aware spaCy model installer.
 
-Called by setup.bat / setup.sh.  Handles corporate proxy environments where
+Called by install.py.  Handles corporate proxy environments where
 python -m spacy download fails because the compatibility-check HTTP request
 (requests.get → urllib3) cannot be intercepted by pip's --trusted-host flag.
 
