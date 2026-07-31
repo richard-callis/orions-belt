@@ -9,7 +9,7 @@ set -euo pipefail
 # Run from the directory containing this script (works from anywhere).
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-PYTHON="$(command -v python3 || command -v python)"
+PYTHON="$(command -v python3 || command -v python || true)"
 if [ -z "$PYTHON" ]; then
     echo "ERROR: Python 3.11+ not found on PATH. Install it from python.org." >&2
     exit 1

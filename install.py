@@ -100,7 +100,13 @@ def pip_install(args: list[str], quiet: bool = False) -> bool:
     if quiet:
         cmd.append("--quiet")
     if _ssl_bypass:
-        cmd += ["--trusted-host", "pypi.org", "--trusted-host", "files.pythonhosted.org"]
+        # download.pytorch.org is included because the PyTorch CPU-wheel
+        # install below also goes through this same helper — the old
+        # setup.bat's torch-specific retry included it too; omitting it
+        # here would mean a proxy that intercepts pytorch.org specifically
+        # still fails even after the user approves the bypass.
+        cmd += ["--trusted-host", "pypi.org", "--trusted-host", "files.pythonhosted.org",
+                "--trusted-host", "download.pytorch.org"]
     cmd += args
 
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -134,9 +140,17 @@ def find_system_python() -> str:
 
 
 def create_venv() -> None:
-    if VENV_DIR.exists():
+    # Check venv_exists() (the python binary), NOT just VENV_DIR.exists() —
+    # a .venv directory can exist without a working interpreter inside it
+    # (e.g. venv creation was interrupted). Checking the directory alone
+    # would treat that half-built venv as "already done" and skip straight
+    # to pip_install, which then fails with an unhandled FileNotFoundError
+    # the first time it tries to run the (nonexistent) venv python.
+    if venv_exists():
         print("  .venv already exists — reusing it.")
         return
+    if VENV_DIR.exists():
+        print("  .venv exists but looks incomplete — recreating it...")
     print("  Creating virtual environment...")
     system_python = find_system_python()
     subprocess.run([system_python, "-m", "venv", str(VENV_DIR)], check=True)
