@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Orion's Belt — single entry point: installs if needed, then starts.
-# Run this whether it's the first launch or the hundredth — no need to
-# remember to run setup.sh separately.
+# Orion's Belt — Linux/macOS entry point.
+# Installs (first run only) then starts the app, every time. All the actual
+# install/start logic lives in install.py — this just picks a python3 and
+# hands off to it.
 
 set -euo pipefail
 
 # Run from the directory containing this script (works from anywhere).
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-if [ ! -d ".venv" ]; then
-    echo "Virtual environment not found — running first-time setup..."
-    echo ""
-    bash ./setup.sh
+PYTHON="$(command -v python3 || command -v python)"
+if [ -z "$PYTHON" ]; then
+    echo "ERROR: Python 3.11+ not found on PATH. Install it from python.org." >&2
+    exit 1
 fi
 
-source .venv/bin/activate
-exec python launch.py
+exec "$PYTHON" install.py

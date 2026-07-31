@@ -35,18 +35,28 @@ protobuf>=3.20.0        # Required by transformers tokenizers (DeBERTa judge)
 # Memory — sentence embeddings for similarity recall
 sentence-transformers>=2.7.0
 numpy>=1.26.0
-# LanceDB is an OPTIONAL accelerator for vector search. It has native deps and
-# platform/Python-version-specific wheels that can fail to install; when it's
-# absent the memory service falls back to a NumPy cosine search over the same
-# SQLite-stored embeddings, so semantic recall still works. Install it for
-# faster ANN search on large memory stores:
-#   pip install "lancedb>=0.6.0" "pyarrow>=14.0.0"
-lancedb>=0.6.0; platform_system != "Windows"   # optional; NumPy fallback covers absence
-pyarrow>=14.0.0; platform_system != "Windows"  # required by LanceDB only
+# LanceDB is an OPTIONAL accelerator for vector search; when it's absent the
+# memory service falls back to a NumPy cosine search over the same
+# SQLite-stored embeddings, so semantic recall still works either way.
+# Previously excluded on Windows via `platform_system != "Windows"` — that
+# marker predated verifying it: lancedb and pyarrow both publish real
+# win_amd64 wheels for the Python versions this app targets, so there's no
+# reason to withhold the faster ANN backend there. Install unconditionally
+# for faster ANN search on large memory stores on every platform.
+lancedb>=0.6.0   # optional; NumPy fallback covers absence
+pyarrow>=14.0.0  # required by LanceDB only
 
 # Windows connectors
-pywin32>=306            # Outlook COM automation (Windows only)
-pyodbc>=5.0.0           # SQL Server connectivity
+pywin32>=306; platform_system == "Windows"  # Outlook COM automation (Windows only) —
+                                             # has no Linux/macOS distribution at all,
+                                             # so this must stay platform-gated or
+                                             # `pip install -r requirements.txt` fails
+                                             # outright on every non-Windows machine.
+pyodbc>=5.0.0                               # SQL Server connectivity — has real Linux/
+                                             # macOS wheels too (needs a system ODBC
+                                             # driver manager to actually connect, but
+                                             # that's a runtime concern, not an install
+                                             # one), so no platform marker needed.
 
 # HTTP connectors
 requests>=2.31.0
