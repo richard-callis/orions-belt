@@ -85,7 +85,10 @@ class TestSearchDocumentsTool:
 
 
 class TestDirectoryReindexRoute:
-    def test_reindex_route_indexes_supported_files(self, app, client, tmp_path):
+    def test_reindex_route_indexes_supported_files(self, app, client, tmp_path, monkeypatch):
+        import app.services.memory as memory_mod
+        monkeypatch.setattr(memory_mod, "get_memory_service",
+                            lambda: type("M", (), {"embed": staticmethod(lambda t: [1.0, 0.0])})())
         (tmp_path / "a.txt").write_text("alpha content")
         with app.app_context():
             d = AuthorizedDirectory(path=str(tmp_path), alias="x", enabled=True, recursive=True)

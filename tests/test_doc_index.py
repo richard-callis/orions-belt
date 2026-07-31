@@ -110,7 +110,7 @@ class TestChunkText:
 class TestIndexDirectory:
     def test_indexes_supported_files_and_skips_others(self, app, tmp_path, monkeypatch):
         monkeypatch.setattr(memory_mod, "get_memory_service",
-                            lambda: type("M", (), {"embed": staticmethod(lambda t: None)})())
+                            lambda: type("M", (), {"embed": staticmethod(lambda t: [1.0, 0.0])})())
         with app.app_context():
             (tmp_path / "a.txt").write_text("alpha content here")
             (tmp_path / "b.md").write_text("beta content here")
@@ -128,7 +128,9 @@ class TestIndexDirectory:
                 _cleanup_chunks(d.id)
                 _cleanup_dir(d.id)
 
-    def test_non_recursive_skips_subdirectories(self, app, tmp_path):
+    def test_non_recursive_skips_subdirectories(self, app, tmp_path, monkeypatch):
+        monkeypatch.setattr(memory_mod, "get_memory_service",
+                            lambda: type("M", (), {"embed": staticmethod(lambda t: [1.0, 0.0])})())
         with app.app_context():
             (tmp_path / "top.txt").write_text("top level")
             sub = tmp_path / "sub"
@@ -144,7 +146,9 @@ class TestIndexDirectory:
                 _cleanup_chunks(d.id)
                 _cleanup_dir(d.id)
 
-    def test_recursive_includes_subdirectories(self, app, tmp_path):
+    def test_recursive_includes_subdirectories(self, app, tmp_path, monkeypatch):
+        monkeypatch.setattr(memory_mod, "get_memory_service",
+                            lambda: type("M", (), {"embed": staticmethod(lambda t: [1.0, 0.0])})())
         with app.app_context():
             (tmp_path / "top.txt").write_text("top level")
             sub = tmp_path / "sub"
@@ -160,7 +164,9 @@ class TestIndexDirectory:
                 _cleanup_chunks(d.id)
                 _cleanup_dir(d.id)
 
-    def test_reindex_replaces_old_chunks(self, app, tmp_path):
+    def test_reindex_replaces_old_chunks(self, app, tmp_path, monkeypatch):
+        monkeypatch.setattr(memory_mod, "get_memory_service",
+                            lambda: type("M", (), {"embed": staticmethod(lambda t: [1.0, 0.0])})())
         with app.app_context():
             f = tmp_path / "a.txt"
             f.write_text("version one")
@@ -204,6 +210,8 @@ class TestIndexDirectory:
 
     def test_corpus_cap_is_enforced(self, app, tmp_path, monkeypatch):
         monkeypatch.setattr(doc_index_mod, "_MAX_INDEXED_CHUNKS", 3)
+        monkeypatch.setattr(memory_mod, "get_memory_service",
+                            lambda: type("M", (), {"embed": staticmethod(lambda t: [1.0, 0.0])})())
         with app.app_context():
             for i in range(5):
                 # Each file's content is one paragraph -> exactly one chunk.
@@ -220,6 +228,64 @@ class TestIndexDirectory:
             finally:
                 _cleanup_chunks(d.id)
                 _cleanup_dir(d.id)
+
+    def test_returns_error_and_indexes_nothing_when_embedding_model_unavailable(self, app, tmp_path, monkeypatch):
+        """Regression test: previously, when mem.embed() always returned
+        None (e.g. sentence-transformers not installed), index_directory
+        still reported success while writing chunks with embedding=None —
+        a completely unsearchable index that LOOKED like it worked. It must
+        now refuse instead, and touch nothing on disk (no existing index
+        destroyed by a doomed reindex attempt)."""
+        monkeypatch.setattr(memory_mod, "get_memory_service",
+                            lambda: type("M", (), {"embed": staticmethod(lambda t: None)})())
+        with app.app_context():
+            (tmp_path / "a.txt").write_text("alpha content here")
+            d = AuthorizedDirectory(path=str(tmp_path), alias="x", enabled=True, recursive=True)
+            db.session.add(d)
+            db.session.commit()
+            try:
+                result = doc_index_mod.index_directory(d.id)
+                assert "error" in result
+                assert DocumentChunk.query.filter_by(authorized_directory_id=d.id).count() == 0
+            finally:
+                _cleanup_chunks(d.id)
+                _cleanup_dir(d.id)
+
+    def test_does_not_delete_existing_index_when_cap_is_full_from_other_directories(self, app, tmp_path, monkeypatch):
+        """Regression test: previously the delete ran BEFORE the budget was
+        computed, so a reindex attempt that couldn't succeed (cap already
+        full from OTHER directories) would still wipe this directory's own
+        working index first, leaving it empty with no way to rebuild."""
+        monkeypatch.setattr(doc_index_mod, "_MAX_INDEXED_CHUNKS", 1)
+        monkeypatch.setattr(memory_mod, "get_memory_service",
+                            lambda: type("M", (), {"embed": staticmethod(lambda t: [1.0, 0.0])})())
+        with app.app_context():
+            other_path = tmp_path.parent / (tmp_path.name + "-other-full")
+            other_path.mkdir()
+            other_dir = AuthorizedDirectory(path=str(other_path), alias="other", enabled=True)
+            db.session.add(other_dir)
+            db.session.commit()
+            db.session.add(DocumentChunk(authorized_directory_id=other_dir.id, file_path="x.txt",
+                                         chunk_index=0, content="fills the cap"))
+            db.session.commit()
+
+            (tmp_path / "a.txt").write_text("existing content")
+            d = AuthorizedDirectory(path=str(tmp_path), alias="x", enabled=True, recursive=True)
+            db.session.add(d)
+            db.session.commit()
+            db.session.add(DocumentChunk(authorized_directory_id=d.id, file_path=str(tmp_path / "a.txt"),
+                                         chunk_index=0, content="existing content"))
+            db.session.commit()
+            try:
+                result = doc_index_mod.index_directory(d.id)
+                assert "error" in result
+                # The pre-existing chunk must survive — nothing was deleted.
+                assert DocumentChunk.query.filter_by(authorized_directory_id=d.id).count() == 1
+            finally:
+                _cleanup_chunks(d.id)
+                _cleanup_chunks(other_dir.id)
+                _cleanup_dir(d.id)
+                _cleanup_dir(other_dir.id)
 
 
 class TestDeleteDirectoryIndex:

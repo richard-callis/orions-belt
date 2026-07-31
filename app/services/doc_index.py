@@ -113,17 +113,37 @@ def index_directory(directory_id: str) -> dict:
     if not root.is_dir():
         return {"error": f"path does not exist: {directory.path}"}
 
+    mem = get_memory_service()
+    if mem.embed("doc_index availability probe") is None:
+        # Bail before touching anything: every chunk written below would get
+        # embedding=None and be permanently invisible to search_documents
+        # (it only scans chunks with embedding.isnot(None)) — reporting
+        # "success" here would be actively misleading, not just incomplete.
+        return {"error": "embedding model is unavailable — indexing would produce an "
+                          "unsearchable index (no chunk could be embedded); check the "
+                          "embedding/memory service configuration (e.g. sentence-transformers "
+                          "installation)"}
+
+    # Compute the budget from OTHER directories' chunks BEFORE deleting this
+    # directory's own existing chunks. If other directories already fill the
+    # cap, budget is 0 — bail without deleting, so a reindex attempt that
+    # can't succeed doesn't irreversibly destroy this directory's previously-
+    # working index.
+    this_dir_existing = DocumentChunk.query.filter_by(authorized_directory_id=directory_id).count()
+    other_dirs_total = DocumentChunk.query.count() - this_dir_existing
+    budget = max(0, _MAX_INDEXED_CHUNKS - other_dirs_total)
+    if budget <= 0:
+        return {"error": f"cannot reindex: the {_MAX_INDEXED_CHUNKS}-chunk index cap is "
+                          f"already full from other directories — free up capacity (delete "
+                          f"or disable another indexed directory) before reindexing this one"}
+
     DocumentChunk.query.filter_by(authorized_directory_id=directory_id).delete()
     db.session.commit()
 
-    already_indexed = DocumentChunk.query.count()
-    budget = max(0, _MAX_INDEXED_CHUNKS - already_indexed)
-
-    mem = get_memory_service()
     files_indexed = 0
     files_skipped = 0
     chunks_created = 0
-    capped = budget <= 0
+    capped = False
 
     walker = root.rglob("*") if directory.recursive else root.glob("*")
     for path in sorted(walker):
