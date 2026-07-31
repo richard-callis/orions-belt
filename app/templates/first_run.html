@@ -246,6 +246,12 @@
     } catch (_) {}
     window.location.href = '/';
   }
+  // The Skip button uses an inline onclick="skipSetup()" attribute, which
+  // resolves identifiers in the GLOBAL scope — but this whole script is
+  // wrapped in an IIFE, so skipSetup was otherwise invisible outside it and
+  // clicking Skip threw a silent ReferenceError (visible only in the
+  // console), leaving the user stuck on this screen with no feedback.
+  window.skipSetup = skipSetup;
 
   init();
 })();
