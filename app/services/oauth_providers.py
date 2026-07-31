@@ -15,11 +15,43 @@ from __future__ import annotations
 
 OAUTH_CONNECTOR_TYPES = ("google", "microsoft_graph", "salesforce")
 
+# Per-feature Graph delegated permissions a microsoft_graph connector can
+# request, selected via config["scopes"] (a list of these keys) rather than
+# one fixed string that grows narrower-by-default-violating every time a new
+# Graph feature is added to this app. Keeping each connector's OAuth grant
+# scoped to only what it's configured to use matches the existing "narrower
+# than a full Workspace grant on purpose" precedent for Google below.
+GRAPH_SCOPE_FEATURES = {
+    "teams": "ChannelMessage.Send",
+    "planner": "Tasks.ReadWrite",
+    "calendar": "Calendars.ReadWrite",
+    "files": "Files.ReadWrite",
+}
+# Connectors created before config["scopes"] existed had no way to select
+# features — this is exactly the original fixed scope string, so an
+# already-configured connector's behavior doesn't change until the user
+# explicitly picks features in the UI.
+_DEFAULT_GRAPH_FEATURES = ("teams", "planner")
+
+
+def _graph_scope_string(config: dict) -> str:
+    config = config or {}
+    # `"scopes" in config` (not truthiness) distinguishes "never configured"
+    # from "explicitly configured to zero features" — an `or` on the value
+    # would treat a deliberately-empty [] the same as unset and silently
+    # re-grant the teams+planner default the user just chose not to have.
+    features = config["scopes"] if "scopes" in config else list(_DEFAULT_GRAPH_FEATURES)
+    perms = [GRAPH_SCOPE_FEATURES[f] for f in (features or []) if f in GRAPH_SCOPE_FEATURES]
+    # offline_access is required for a refresh_token at all on Graph, and is
+    # always requested regardless of which features are selected.
+    return "offline_access " + " ".join(perms)
+
 
 def get_provider_config(connector_type: str, config: dict) -> dict:
     """Return {authorize_endpoint, token_endpoint, scope, extra_authorize_params}
     for `connector_type`. `config` is the connector's own (unencrypted) config
-    dict — used for the one provider (Salesforce) whose endpoint isn't fixed."""
+    dict — used for the one provider (Salesforce) whose endpoint isn't fixed,
+    and for microsoft_graph's per-connector feature-scoped grant."""
     if connector_type == "google":
         return {
             "authorize_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
@@ -38,8 +70,7 @@ def get_provider_config(connector_type: str, config: dict) -> dict:
         return {
             "authorize_endpoint": f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize",
             "token_endpoint": f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token",
-            # offline_access is required for a refresh_token at all on Graph.
-            "scope": "offline_access ChannelMessage.Send Tasks.ReadWrite",
+            "scope": _graph_scope_string(config),
             "extra_authorize_params": {},
         }
     if connector_type == "salesforce":

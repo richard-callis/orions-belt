@@ -332,6 +332,15 @@ def _store_tokens(connector_id: str, tokens: dict) -> None:
         # login.salesforce.com the user authenticated against, which is not
         # a valid API host for REST calls after login.
         auth["instance_url"] = tokens["instance_url"]
+    if tokens.get("scope"):
+        # Microsoft Graph (and some other providers) return the actually-
+        # granted scope, which can differ from what was requested (e.g. an
+        # admin declined one permission, or the connector was last connected
+        # before a new feature's scope existed). Persisting it lets a tool
+        # pre-check "do I actually have this permission" before calling the
+        # API and return a clear "reconnect to grant X access" message,
+        # instead of pattern-matching an insufficient-scope error afterward.
+        auth["granted_scope"] = tokens["scope"]
     connector.set_auth(auth)
     db.session.commit()
 
@@ -404,6 +413,8 @@ def get_valid_access_token(connector, token_endpoint: str) -> str:
         })
         if tokens.get("instance_url"):
             auth["instance_url"] = tokens["instance_url"]
+        if tokens.get("scope"):
+            auth["granted_scope"] = tokens["scope"]
         connector.set_auth(auth)
         db.session.commit()
         return tokens["access_token"]

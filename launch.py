@@ -72,6 +72,7 @@ def run_flask():
         _ensure_projects_dir(app)
         _migrate_schema(app)
         _seed_builtin_tools(app)
+        _reconcile_nova_tool_schemas(app)
         _seed_agents(app)
 
     # Register on-shutdown backup + periodic scheduled backups
@@ -79,6 +80,7 @@ def run_flask():
     from app.services.retention import start_retention_service, stop_retention_service
     from app.services.dream import start_dream_service, stop_dream_service
     from app.services.triggers import start_trigger_service, stop_trigger_service
+    from app.services.digest import start_digest_service, stop_digest_service
     from app.services.db_crypto import set_db_path, enforce_file_permissions
     from config import Config
 
@@ -100,6 +102,11 @@ def run_flask():
     # list is inherently a no-op, no separate enable flag needed).
     atexit.register(stop_trigger_service)
     start_trigger_service(interval_minutes=15)
+
+    # Scheduled digest emails — same "empty list is an inherent no-op"
+    # reasoning as triggers, always on.
+    atexit.register(stop_digest_service)
+    start_digest_service(interval_minutes=30)
 
     register_shutdown_backup()
     start_periodic_backups(interval_minutes=30)
@@ -229,6 +236,171 @@ def _seed_builtin_tools(app):
             }),
         ),
         dict(
+            name="create_github_pr",
+            tier=1,
+            description="Create a pull request in a GitHub repository via a configured github connector",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "GitHub connector name as configured in Settings"},
+                    "owner": {"type": "string", "description": "Repository owner (user or organization)"},
+                    "repo": {"type": "string", "description": "Repository name"},
+                    "title": {"type": "string", "description": "Pull request title"},
+                    "head": {"type": "string", "description": "The branch containing your changes"},
+                    "base": {"type": "string", "description": "The branch you want to merge into"},
+                    "body": {"type": "string", "description": "Pull request description (optional)"},
+                },
+                "required": ["connector", "owner", "repo", "title", "head", "base"],
+            }),
+        ),
+        dict(
+            name="comment_on_github_pr",
+            tier=2,
+            description="Post a comment on a GitHub pull request via a configured github connector. "
+                        "Tier 2 — same class of effect as post_teams_message/send_email (visible to "
+                        "other people, leaves the machine in the user's name), refused during "
+                        "unattended autonomous goal pursuit.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "GitHub connector name as configured in Settings"},
+                    "owner": {"type": "string", "description": "Repository owner (user or organization)"},
+                    "repo": {"type": "string", "description": "Repository name"},
+                    "pr_number": {"type": "integer", "description": "Pull request number"},
+                    "body": {"type": "string", "description": "Comment text"},
+                },
+                "required": ["connector", "owner", "repo", "pr_number", "body"],
+            }),
+        ),
+        dict(
+            name="get_github_pr_status",
+            tier=0,
+            description="Read a GitHub pull request's state, mergeable status, and review status via a configured github connector",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "GitHub connector name as configured in Settings"},
+                    "owner": {"type": "string", "description": "Repository owner (user or organization)"},
+                    "repo": {"type": "string", "description": "Repository name"},
+                    "pr_number": {"type": "integer", "description": "Pull request number"},
+                },
+                "required": ["connector", "owner", "repo", "pr_number"],
+            }),
+        ),
+        dict(
+            name="git_status",
+            tier=0,
+            description="Show the working tree status of a git repository under an authorized directory",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path to the git repository (must be an authorized directory)"},
+                },
+                "required": ["path"],
+            }),
+        ),
+        dict(
+            name="git_diff",
+            tier=0,
+            description="Show the diff for a git repository under an authorized directory",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path to the git repository (must be an authorized directory)"},
+                    "ref": {"type": "string", "description": "Optional ref/commit to diff against (default: unstaged working tree changes)"},
+                },
+                "required": ["path"],
+            }),
+        ),
+        dict(
+            name="git_log",
+            tier=0,
+            description="Show recent commit history for a git repository under an authorized directory",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path to the git repository (must be an authorized directory)"},
+                    "limit": {"type": "integer", "description": "Maximum number of commits to show (default 20, max 200)"},
+                },
+                "required": ["path"],
+            }),
+        ),
+        dict(
+            name="git_commit",
+            tier=2,
+            description="Stage specific files and create a commit in a git repository under an authorized directory. "
+                        "Takes explicit paths to stage — never stages everything.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path to the git repository (must be an authorized directory)"},
+                    "message": {"type": "string", "description": "Commit message"},
+                    "paths": {"type": "array", "items": {"type": "string"},
+                             "description": "Files to stage and commit, relative to the repository root or absolute"},
+                },
+                "required": ["path", "message", "paths"],
+            }),
+        ),
+        dict(
+            name="create_jira_issue",
+            tier=1,
+            description="Create an issue in a Jira project via a configured jira connector",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Jira connector name as configured in Settings"},
+                    "project_key": {"type": "string", "description": "Jira project key, e.g. 'ENG'"},
+                    "issue_type": {"type": "string", "description": "Issue type, e.g. 'Task', 'Bug', 'Story'"},
+                    "summary": {"type": "string", "description": "Issue summary/title"},
+                    "description": {"type": "string", "description": "Issue description (optional)"},
+                },
+                "required": ["connector", "project_key", "issue_type", "summary"],
+            }),
+        ),
+        dict(
+            name="search_jira_issues",
+            tier=0,
+            description="Search Jira issues by JQL via a configured jira connector (read-only)",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Jira connector name as configured in Settings"},
+                    "jql": {"type": "string", "description": "JQL query, e.g. 'project = ENG AND status = \"In Progress\"'"},
+                    "max_results": {"type": "integer", "description": "Maximum issues to return (default 20, max 50)"},
+                },
+                "required": ["connector", "jql"],
+            }),
+        ),
+        dict(
+            name="create_linear_issue",
+            tier=1,
+            description="Create an issue in Linear via a configured linear connector",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Linear connector name as configured in Settings"},
+                    "team_id": {"type": "string", "description": "Linear team ID"},
+                    "title": {"type": "string", "description": "Issue title"},
+                    "description": {"type": "string", "description": "Issue description (optional)"},
+                },
+                "required": ["connector", "team_id", "title"],
+            }),
+        ),
+        dict(
+            name="search_linear_issues",
+            tier=0,
+            description="Search Linear issues by title via a configured linear connector (read-only)",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Linear connector name as configured in Settings"},
+                    "query": {"type": "string", "description": "Text to search for in issue titles"},
+                    "limit": {"type": "integer", "description": "Maximum issues to return (default 20, max 50)"},
+                },
+                "required": ["connector", "query"],
+            }),
+        ),
+        dict(
             name="create_google_task",
             tier=1,
             description="Create a task in Google Tasks via a configured google connector",
@@ -277,6 +449,70 @@ def _seed_builtin_tools(app):
             }),
         ),
         dict(
+            name="create_calendar_event",
+            tier=2,
+            description="Create a calendar event via a configured microsoft_graph connector (requires the 'calendar' "
+                        "scope to be granted). Tier 2 — sends a real invite to real people, refused during "
+                        "unattended autonomous goal pursuit.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Microsoft Graph connector name as configured in Settings"},
+                    "subject": {"type": "string", "description": "Event subject/title"},
+                    "start": {"type": "string", "description": "Start time, ISO 8601 (e.g. 2026-08-01T14:00:00), UTC"},
+                    "end": {"type": "string", "description": "End time, ISO 8601, UTC"},
+                    "attendees": {"type": "array", "items": {"type": "string"}, "description": "Attendee email addresses"},
+                    "body": {"type": "string", "description": "Event body/description (optional)"},
+                },
+                "required": ["connector", "subject", "start", "end"],
+            }),
+        ),
+        dict(
+            name="check_calendar_availability",
+            tier=0,
+            description="Check free/busy availability for a set of attendees via a configured microsoft_graph "
+                        "connector (requires the 'calendar' scope to be granted)",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Microsoft Graph connector name as configured in Settings"},
+                    "attendees": {"type": "array", "items": {"type": "string"}, "description": "Email addresses to check"},
+                    "start": {"type": "string", "description": "Start time, ISO 8601, UTC"},
+                    "end": {"type": "string", "description": "End time, ISO 8601, UTC"},
+                },
+                "required": ["connector", "attendees", "start", "end"],
+            }),
+        ),
+        dict(
+            name="read_onedrive_file",
+            tier=0,
+            description="Read a file's content from OneDrive via a configured microsoft_graph connector "
+                        "(requires the 'files' scope to be granted)",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Microsoft Graph connector name as configured in Settings"},
+                    "path": {"type": "string", "description": "Path to the file within OneDrive, e.g. 'Documents/notes.txt'"},
+                },
+                "required": ["connector", "path"],
+            }),
+        ),
+        dict(
+            name="create_onedrive_file",
+            tier=1,
+            description="Create a new file in OneDrive via a configured microsoft_graph connector (requires the "
+                        "'files' scope). Fails if a file already exists at that path.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Microsoft Graph connector name as configured in Settings"},
+                    "path": {"type": "string", "description": "Path to create within OneDrive, e.g. 'Documents/notes.txt'"},
+                    "content": {"type": "string", "description": "File content"},
+                },
+                "required": ["connector", "path", "content"],
+            }),
+        ),
+        dict(
             name="create_salesforce_record",
             tier=2,
             description="Create a record (Lead, Case, Account, etc.) via a configured salesforce connector. "
@@ -290,6 +526,35 @@ def _seed_builtin_tools(app):
                     "fields": {"type": "object", "description": "Field name -> value pairs for the new record"},
                 },
                 "required": ["connector", "sobject_type", "fields"],
+            }),
+        ),
+        dict(
+            name="query_salesforce",
+            tier=0,
+            description="Run a read-only SOQL query via a configured salesforce connector. "
+                        "Capped at 50 records; results are scanned for PII before being returned.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "connector": {"type": "string", "description": "Salesforce connector name as configured in Settings"},
+                    "soql": {"type": "string", "description": "SOQL SELECT query, e.g. \"SELECT Id, Name FROM Lead WHERE Status = 'Open'\""},
+                },
+                "required": ["connector", "soql"],
+            }),
+        ),
+        dict(
+            name="search_documents",
+            tier=0,
+            description="Semantic search over locally indexed documents (.txt/.md/.pdf/.docx under authorized "
+                        "directories — index or refresh via the Directories settings page). Read-only; results "
+                        "are explicitly marked as untrusted document content.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Natural-language search query"},
+                    "top_k": {"type": "integer", "description": "Maximum results to return (default 5, max 20)"},
+                },
+                "required": ["query"],
             }),
         ),
         dict(
@@ -328,7 +593,8 @@ def _seed_builtin_tools(app):
                 "properties": {
                     "to": {"type": "string", "description": "Recipient email address(es), semicolon-separated for multiple"},
                     "subject": {"type": "string", "description": "Email subject"},
-                    "body": {"type": "string", "description": "Email body text"},
+                    "body": {"type": "string", "description": "Email body text (plain text)"},
+                    "html": {"type": "string", "description": "Email body as HTML — if given, sent instead of body (optional)"},
                     "cc": {"type": "string", "description": "CC address(es), optional"},
                 },
                 "required": ["to", "subject", "body"],
@@ -467,18 +733,110 @@ def _seed_builtin_tools(app):
         if not existing:
             db.session.add(MCPTool(source="builtin", **tool_def))
             continue
-        if not existing.input_schema or existing.input_schema in ("{}", ""):
-            # Patch tools created by the old schema-less seeder
+        if existing.source == "builtin":
+            # Tier, schema, and description are all code-defined for builtin
+            # tools — there's no route to customize any of them per-install,
+            # so an existing row must keep tracking the current code, not
+            # freeze at whatever it was when the row was first created.
+            # Without this, e.g. adding a new parameter to a tool's schema
+            # (like send_email's `html` field) never actually reaches any DB
+            # that already seeded the row — the same bug already fixed once
+            # for tier alone; generalized here to cover schema/description too.
+            existing.tier = tool_def["tier"]
             existing.input_schema = tool_def["input_schema"]
             existing.description = tool_def["description"]
-        if existing.source == "builtin" and existing.tier != tool_def["tier"]:
-            # Tier is code-defined for builtin tools — there's no route to
-            # customize it per-install, so an existing row must keep
-            # tracking the current code's tier, not freeze at whatever it
-            # was when the row was first created. Without this, correcting
-            # a builtin tool's tier (e.g. Tier 1 -> 2) never actually takes
-            # effect on any DB that already seeded the row.
-            existing.tier = tool_def["tier"]
+        elif not existing.input_schema or existing.input_schema in ("{}", ""):
+            # A non-builtin (e.g. nova-sourced) row with the same name is
+            # left alone except for the one legacy case: patching tools
+            # created by the old schema-less seeder before it recorded a
+            # schema at all.
+            existing.input_schema = tool_def["input_schema"]
+            existing.description = tool_def["description"]
+    db.session.commit()
+
+
+def _reconcile_nova_tool_schemas(app):
+    """Reconcile tier/schema for specific Nova-sourced MCPTool rows whose published
+    contract changed after they first shipped.
+
+    _seed_builtin_tools (above) only reconciles source="builtin" rows. A tool activated
+    via a Nova (source="nova", created once by app/routes/nova.py::_import_mcp_tool) is
+    never touched again once it exists — so a tier or schema correction to one of these
+    would otherwise silently not apply on any install where the Nova was already
+    activated. This is deliberately narrow: it only UPDATES rows that already exist
+    under these specific names, and never creates one. Auto-creating run_shell here
+    (the way _seed_builtin_tools' loop would) would silently advertise shell execution
+    to every agent on every fresh install, defeating the whole point of Novas being an
+    opt-in activation flow.
+    """
+    import json
+    from app.models.mcp_tool import MCPTool
+    from app import db
+
+    reconciled = {
+        "fetch_url": dict(
+            tier=1,
+            description="Fetch the content of an HTTP/HTTPS URL via GET and return the response body as text",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The full HTTP/HTTPS URL to fetch"},
+                    "timeout": {"type": "integer", "description": "Timeout in seconds (default 10)"},
+                },
+                "required": ["url"],
+            }),
+        ),
+        "run_python": dict(
+            tier=3,
+            description="Execute a Python code snippet in a subprocess and return stdout and stderr. "
+                        "Not sandboxed — gated at Tier 3 (requires explicit approval) since it has no "
+                        "filesystem-path authorization boundary the way file tools do.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string", "description": "Python source code to execute"},
+                    "timeout": {"type": "integer", "description": "Execution timeout in seconds (default 30, max 120)"},
+                },
+                "required": ["code"],
+            }),
+        ),
+        "run_shell": dict(
+            tier=3,
+            description="Execute a shell command and return stdout and stderr. Requires explicit approval (Tier 3).",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "The shell command to execute"},
+                    "working_dir": {"type": "string", "description": "Working directory for the command — must be an authorized directory (default: the first configured authorized directory)"},
+                    "timeout": {"type": "integer", "description": "Timeout in seconds (default 60, max 300)"},
+                },
+                "required": ["command"],
+            }),
+        ),
+        "http_request": dict(
+            tier=2,
+            description="Make an HTTP request with full control over method, headers, and body. "
+                        "Tier 2 — refused during unattended autonomous goal pursuit, allowed in attended chat.",
+            input_schema=json.dumps({
+                "type": "object",
+                "properties": {
+                    "url":     {"type": "string",  "description": "Full URL"},
+                    "method":  {"type": "string",  "description": "HTTP method: GET, POST, PUT, PATCH, DELETE"},
+                    "headers": {"type": "object",  "description": "Request headers"},
+                    "body":    {"type": "string",  "description": "Request body (JSON string or plain text)"},
+                    "timeout": {"type": "integer", "description": "Timeout seconds (default 10)"},
+                },
+                "required": ["url", "method"],
+            }),
+        ),
+    }
+    for name, patch in reconciled.items():
+        row = MCPTool.query.filter_by(name=name, source="nova").first()
+        if not row:
+            continue
+        row.tier = patch["tier"]
+        row.description = patch["description"]
+        row.input_schema = patch["input_schema"]
     db.session.commit()
 
 
@@ -715,22 +1073,19 @@ def _seed_novas(app):
             display_name="Web Fetcher",
             nova_type="mcp_tool",
             category="Web",
-            description="Adds a fetch_url tool — agents can retrieve content from any HTTP/HTTPS URL and return the response body.",
+            description="Adds a fetch_url tool — agents can retrieve content from any HTTP/HTTPS URL via GET and return the response body.",
             tags=["web", "http", "scraping", "fetch"],
             config={
                 "tools": [
                     {
                         "name": "fetch_url",
-                        "description": "Fetch the content of an HTTP/HTTPS URL and return the response body as text",
+                        "description": "Fetch the content of an HTTP/HTTPS URL via GET and return the response body as text",
                         "tier": 1,
                         "input_schema": {
                             "type": "object",
                             "properties": {
-                                "url": {"type": "string", "description": "The full URL to fetch (http or https)"},
-                                "method": {"type": "string", "description": "HTTP method: GET (default) or POST"},
-                                "headers": {"type": "object", "description": "Optional HTTP headers as key-value pairs"},
-                                "body": {"type": "string", "description": "Optional request body (for POST)"},
-                                "timeout": {"type": "integer", "description": "Timeout in seconds (default 30)"},
+                                "url": {"type": "string", "description": "The full HTTP/HTTPS URL to fetch"},
+                                "timeout": {"type": "integer", "description": "Timeout in seconds (default 10)"},
                             },
                             "required": ["url"],
                         },
@@ -743,14 +1098,14 @@ def _seed_novas(app):
             display_name="Python Runner",
             nova_type="mcp_tool",
             category="Code Execution",
-            description="Adds a run_python tool — agents can execute Python snippets in a sandboxed subprocess and capture stdout/stderr.",
+            description="Adds a run_python tool — agents can execute Python snippets in a subprocess and capture stdout/stderr. Not sandboxed; gated at Tier 3 (requires explicit approval).",
             tags=["python", "code execution", "scripting", "compute"],
             config={
                 "tools": [
                     {
                         "name": "run_python",
-                        "description": "Execute a Python code snippet in a subprocess and return stdout and stderr",
-                        "tier": 2,
+                        "description": "Execute a Python code snippet in a subprocess and return stdout and stderr. Not sandboxed — gated at Tier 3 (requires explicit approval) since it has no filesystem-path authorization boundary the way file tools do.",
+                        "tier": 3,
                         "input_schema": {
                             "type": "object",
                             "properties": {
@@ -780,7 +1135,7 @@ def _seed_novas(app):
                             "type": "object",
                             "properties": {
                                 "command": {"type": "string", "description": "The shell command to execute"},
-                                "working_dir": {"type": "string", "description": "Working directory for the command (default: project root)"},
+                                "working_dir": {"type": "string", "description": "Working directory for the command — must be an authorized directory (default: the first configured authorized directory)"},
                                 "timeout": {"type": "integer", "description": "Timeout in seconds (default 60, max 300)"},
                             },
                             "required": ["command"],
@@ -794,14 +1149,14 @@ def _seed_novas(app):
             display_name="HTTP Request",
             nova_type="mcp_tool",
             category="Web",
-            description="Adds an http_request tool — full-featured HTTP client with header control, body, and response inspection.",
+            description="Adds an http_request tool — full-featured HTTP client with header control, body, and response inspection. Tier 2: refused during unattended autonomous goal pursuit.",
             tags=["http", "api", "rest", "request"],
             config={
                 "tools": [
                     {
                         "name": "http_request",
-                        "description": "Make an HTTP request with full control over method, headers, and body",
-                        "tier": 1,
+                        "description": "Make an HTTP request with full control over method, headers, and body. Tier 2 — refused during unattended autonomous goal pursuit, allowed in attended chat.",
+                        "tier": 2,
                         "input_schema": {
                             "type": "object",
                             "properties": {
@@ -809,7 +1164,7 @@ def _seed_novas(app):
                                 "method":  {"type": "string",  "description": "HTTP method: GET, POST, PUT, PATCH, DELETE"},
                                 "headers": {"type": "object",  "description": "Request headers"},
                                 "body":    {"type": "string",  "description": "Request body (JSON string or plain text)"},
-                                "timeout": {"type": "integer", "description": "Timeout seconds (default 30)"},
+                                "timeout": {"type": "integer", "description": "Timeout seconds (default 10)"},
                             },
                             "required": ["url", "method"],
                         },
@@ -1112,6 +1467,21 @@ def _seed_novas(app):
                 config=json.dumps(config),
                 **nova_def,
             ))
+        elif existing.source == "bundled":
+            # Bundled Novas are entirely code-defined — nova.py's PATCH/DELETE
+            # routes 403 on source=="bundled", so there's no per-install
+            # customization to preserve here, same argument as
+            # _seed_builtin_tools. Without this, a Nova row created by an
+            # OLDER version of this function keeps its STALE config forever;
+            # activating it (mcp_tool import) later replays the old
+            # tier/schema/description baked into that stale config, not the
+            # corrected current one.
+            existing.display_name = nova_def["display_name"]
+            existing.description = nova_def.get("description")
+            existing.category = nova_def.get("category")
+            existing.nova_type = nova_def["nova_type"]
+            existing.tags = json.dumps(tags)
+            existing.config = json.dumps(config)
     db.session.commit()
 
 

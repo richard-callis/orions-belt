@@ -37,7 +37,7 @@ def create_connector():
     if not name:
         return jsonify({"error": "name is required"}), 400
     _VALID_TYPES = ("rest_api", "sql_server", "outlook", "azure_devops", "github",
-                    "google", "microsoft_graph", "salesforce")
+                    "google", "microsoft_graph", "salesforce", "jira", "linear")
     if connector_type not in _VALID_TYPES:
         return jsonify({"error": f"connector_type must be one of {_VALID_TYPES}"}), 400
     if Connector.query.filter_by(name=name).first():
@@ -148,6 +148,10 @@ def test_connector(connector_id):
             return _test_azure_devops(c)
         elif c.connector_type == "github":
             return _test_github(c)
+        elif c.connector_type == "jira":
+            return _test_jira(c)
+        elif c.connector_type == "linear":
+            return _test_linear(c)
         elif c.connector_type in OAUTH_CONNECTOR_TYPES:
             return _test_oauth_connector(c)
         else:
@@ -237,6 +241,65 @@ def _test_azure_devops(c: Connector):
             resp = client.get(url, headers=headers)
         if resp.status_code == 401:
             return jsonify({"ok": False, "message": "Auth failed (401) — check the personal access token"})
+        return jsonify({"ok": resp.status_code < 500, "message": f"HTTP {resp.status_code}"})
+    except httpx.ConnectError as e:
+        return jsonify({"ok": False, "message": f"Connection refused: {e}"})
+    except httpx.TimeoutException:
+        return jsonify({"ok": False, "message": "Connection timed out (10s)"})
+
+
+def _test_jira(c: Connector):
+    from app.services.connector_auth import build_auth_headers
+
+    cfg = json.loads(c.config or "{}")
+    base_url = (cfg.get("base_url") or "").rstrip("/")
+    if not base_url:
+        return jsonify({"ok": False, "message": "No base_url configured"}), 200
+
+    auth = c.get_auth()
+    if not auth.get("email") or not auth.get("api_token"):
+        return jsonify({"ok": False, "message": "No email/api_token configured"}), 200
+
+    import httpx
+    # Jira Cloud auth: HTTP Basic with email:api_token — not a bearer token.
+    headers = build_auth_headers("basic", {"username": auth["email"], "password": auth["api_token"]})
+    headers["Accept"] = "application/json"
+    url = f"{base_url}/rest/api/3/myself"
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(url, headers=headers)
+        if resp.status_code == 401:
+            return jsonify({"ok": False, "message": "Auth failed (401) — check email/API token"})
+        if resp.status_code == 200:
+            name = resp.json().get("displayName", "?")
+            return jsonify({"ok": True, "message": f"Authenticated as {name}"})
+        return jsonify({"ok": resp.status_code < 500, "message": f"HTTP {resp.status_code}"})
+    except httpx.ConnectError as e:
+        return jsonify({"ok": False, "message": f"Connection refused: {e}"})
+    except httpx.TimeoutException:
+        return jsonify({"ok": False, "message": "Connection timed out (10s)"})
+
+
+def _test_linear(c: Connector):
+    auth = c.get_auth()
+    if not auth.get("api_key"):
+        return jsonify({"ok": False, "message": "No API key configured"}), 200
+
+    import httpx
+    # Linear's API accepts the raw key as Authorization — no "Bearer " prefix.
+    headers = {"Authorization": auth["api_key"], "Content-Type": "application/json"}
+    query = {"query": "{ viewer { name } }"}
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.post("https://api.linear.app/graphql", headers=headers, json=query)
+        if resp.status_code == 401:
+            return jsonify({"ok": False, "message": "Auth failed (401) — check the API key"})
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("errors"):
+                return jsonify({"ok": False, "message": str(data["errors"])[:300]})
+            name = (data.get("data") or {}).get("viewer", {}).get("name", "?")
+            return jsonify({"ok": True, "message": f"Authenticated as {name}"})
         return jsonify({"ok": resp.status_code < 500, "message": f"HTTP {resp.status_code}"})
     except httpx.ConnectError as e:
         return jsonify({"ok": False, "message": f"Connection refused: {e}"})

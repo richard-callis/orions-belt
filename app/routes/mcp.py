@@ -115,6 +115,12 @@ def toggle_directory(dir_id):
     body = request.get_json() or {}
     if "enabled" in body:
         d.enabled = bool(body["enabled"])
+        if not d.enabled:
+            # The document index must never outlive the authorization it was
+            # built from — disabling a directory has to remove its indexed
+            # chunks immediately, not just block future (re)indexing.
+            from app.services.doc_index import delete_directory_index
+            delete_directory_index(dir_id)
     db.session.commit()
     return jsonify({"success": True, "enabled": d.enabled})
 
@@ -125,6 +131,22 @@ def delete_directory(dir_id):
     d = AuthorizedDirectory.query.get(dir_id)
     if not d:
         return jsonify({"error": "not found"}), 404
+    from app.services.doc_index import delete_directory_index
+    delete_directory_index(dir_id)
     db.session.delete(d)
     db.session.commit()
     return "", 204
+
+
+@bp.route("/api/directories/<dir_id>/reindex", methods=["POST"])
+def reindex_directory(dir_id):
+    """(Re)index an authorized directory's supported files for
+    search_documents. Synchronous — returns once indexing completes."""
+    d = AuthorizedDirectory.query.get(dir_id)
+    if not d:
+        return jsonify({"error": "not found"}), 404
+    from app.services.doc_index import index_directory
+    result = index_directory(dir_id)
+    if "error" in result:
+        return jsonify(result), 400
+    return jsonify(result)

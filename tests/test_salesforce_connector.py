@@ -251,3 +251,183 @@ class TestCreateSalesforceRecord:
             finally:
                 Connector.query.filter_by(name="test-sf-noinstance").delete()
                 db.session.commit()
+
+
+class TestQuerySalesforce:
+    def test_queries_and_sends_soql_via_params_not_url(self, app, salesforce_connector, monkeypatch):
+        captured = {}
+
+        class FakeResponse:
+            status_code = 200
+            def json(self):
+                return {"totalSize": 2, "records": [
+                    {"attributes": {"type": "Lead"}, "Id": "00Q1", "Name": "Alice"},
+                    {"attributes": {"type": "Lead"}, "Id": "00Q2", "Name": "Bob"},
+                ]}
+            text = ""
+
+        class FakeAsyncClient:
+            def __init__(self, timeout=None):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url, headers=None, params=None):
+                captured["url"] = url
+                captured["params"] = params
+                return FakeResponse()
+
+        import httpx
+        monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+        with app.app_context():
+            result = _run(mcp_tools._handle_query_salesforce("query_salesforce", {
+                "connector": "test-salesforce", "soql": "SELECT Id, Name FROM Lead",
+            }))
+
+        assert captured["url"] == "https://acme.my.salesforce.com/services/data/v59.0/query"
+        assert captured["params"] == {"q": "SELECT Id, Name FROM Lead"}
+        assert "Id=00Q1" in result
+        assert "Name=Alice" in result
+        assert "attributes" not in result
+
+    def test_rejects_non_select_query(self, app, salesforce_connector):
+        with app.app_context():
+            result = _run(mcp_tools._handle_query_salesforce("query_salesforce", {
+                "connector": "test-salesforce", "soql": "DELETE FROM Lead",
+            }))
+        assert "only SELECT queries are permitted" in result
+
+    def test_requires_soql(self, app, salesforce_connector):
+        with app.app_context():
+            result = _run(mcp_tools._handle_query_salesforce("query_salesforce", {
+                "connector": "test-salesforce",
+            }))
+        assert "soql is required" in result
+
+    def test_caps_result_count_and_notes_remainder(self, app, salesforce_connector, monkeypatch):
+        many_records = [{"attributes": {}, "Id": f"00Q{i}"} for i in range(mcp_tools._MAX_SOQL_RECORDS + 10)]
+
+        class FakeResponse:
+            status_code = 200
+            def json(self):
+                return {"totalSize": len(many_records), "records": many_records}
+            text = ""
+
+        class FakeAsyncClient:
+            def __init__(self, timeout=None):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url, headers=None, params=None):
+                return FakeResponse()
+
+        import httpx
+        monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+        with app.app_context():
+            result = _run(mcp_tools._handle_query_salesforce("query_salesforce", {
+                "connector": "test-salesforce", "soql": "SELECT Id FROM Lead",
+            }))
+
+        lines = [l for l in result.split("\n") if l.startswith("Id=")]
+        assert len(lines) == mcp_tools._MAX_SOQL_RECORDS
+        assert "more record(s) not shown" in result
+
+    def test_no_records_found(self, app, salesforce_connector, monkeypatch):
+        class FakeResponse:
+            status_code = 200
+            def json(self):
+                return {"totalSize": 0, "records": []}
+            text = ""
+
+        class FakeAsyncClient:
+            def __init__(self, timeout=None):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url, headers=None, params=None):
+                return FakeResponse()
+
+        import httpx
+        monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+        with app.app_context():
+            result = _run(mcp_tools._handle_query_salesforce("query_salesforce", {
+                "connector": "test-salesforce", "soql": "SELECT Id FROM Lead WHERE Id = 'nope'",
+            }))
+        assert result == "No records found"
+
+    def test_scans_results_for_pii_before_returning(self, app, salesforce_connector, monkeypatch):
+        class FakeResponse:
+            status_code = 200
+            def json(self):
+                return {"totalSize": 1, "records": [
+                    {"attributes": {}, "Id": "00Q1", "Email": "alice@example.com"},
+                ]}
+            text = ""
+
+        class FakeAsyncClient:
+            def __init__(self, timeout=None):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url, headers=None, params=None):
+                return FakeResponse()
+
+        import httpx
+        monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+        called = {"scan": False}
+        real_get_pii_guard = None
+        import app.services.pii_guard as pii_guard_mod
+
+        class FakeGuard:
+            def scan(self, text, session_id=None, message_id=None, direction="outbound"):
+                called["scan"] = True
+                return text.replace("alice@example.com", "[PII:EMAIL:xyz]"), True, ["EMAIL"]
+
+        monkeypatch.setattr(pii_guard_mod, "get_pii_guard", lambda: FakeGuard())
+
+        with app.app_context():
+            result = _run(mcp_tools._handle_query_salesforce("query_salesforce", {
+                "connector": "test-salesforce", "soql": "SELECT Id, Email FROM Lead",
+            }))
+
+        assert called["scan"] is True
+        assert "alice@example.com" not in result
+        assert "[PII:EMAIL:xyz]" in result
+
+    def test_rejects_wrong_connector_type(self, app):
+        with app.app_context():
+            c = Connector(name="test-rest-not-sf-q", connector_type="rest_api",
+                          config='{"base_url": "https://api.example.com"}')
+            db.session.add(c)
+            db.session.commit()
+            try:
+                result = _run(mcp_tools._handle_query_salesforce("query_salesforce", {
+                    "connector": "test-rest-not-sf-q", "soql": "SELECT Id FROM Lead",
+                }))
+                assert "is not a salesforce connector" in result
+            finally:
+                Connector.query.filter_by(name="test-rest-not-sf-q").delete()
+                db.session.commit()

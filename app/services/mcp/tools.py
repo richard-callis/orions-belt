@@ -7,14 +7,17 @@ Mirrors the harness spec with:
 - Structured error types (for retry logic)
 - Tool availability checks (filtered at prompt-build time)
 """
+import asyncio
 import glob as glob_mod
 import json
 import logging
 import os
 import re
 import shutil
+import sys
 import tempfile
 import time
+import uuid
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -63,7 +66,8 @@ CACHEABLE_TOOLS = {"read_file", "list_directory", "search_files"}
 # are stale and must be invalidated so a follow-up read sees fresh content.
 WRITE_TOOLS = {"create_file", "append_to_file", "modify_file", "create_directory",
                "delete_file", "move_file", "create_word_document", "create_powerpoint",
-               "create_excel", "create_pdf", "create_ado_workitem"}
+               "create_excel", "create_pdf", "create_ado_workitem",
+               "run_python", "run_shell", "git_commit"}
 
 
 # ── Tier system ───────────────────────────────────────────────────────────────
@@ -220,7 +224,7 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
     # Check EVERY path argument — move_file has both source and destination, and
     # writing into a read_only directory must be blocked regardless of which arg
     # it arrives in.
-    path_args = [args.get(k) for k in ("path", "src", "dest", "source", "destination") if args.get(k)]
+    path_args = [args.get(k) for k in ("path", "src", "dest", "source", "destination", "working_dir") if args.get(k)]
     for path_arg in path_args:
         effective_tier = _get_effective_tier(str(path_arg), tool.tier)
         if effective_tier < tool.tier:
@@ -240,6 +244,17 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         "run_sql_query": _handle_run_sql_query,
         "search_emails": _handle_search_emails,
         "call_connector": _handle_call_connector,
+        "fetch_url": _handle_fetch_url,
+        "get_github_pr_status": _handle_get_github_pr_status,
+        "git_status": _handle_git_status,
+        "git_diff": _handle_git_diff,
+        "git_log": _handle_git_log,
+        "search_jira_issues": _handle_search_jira_issues,
+        "search_linear_issues": _handle_search_linear_issues,
+        "check_calendar_availability": _handle_check_calendar_availability,
+        "read_onedrive_file": _handle_read_onedrive_file,
+        "query_salesforce": _handle_query_salesforce,
+        "search_documents": _handle_search_documents,
         # Tier 1: create operations
         "create_file": _handle_create_file,
         "append_to_file": _handle_append_to_file,
@@ -249,7 +264,12 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         "create_pdf": _handle_create_pdf,
         "create_ado_workitem": _handle_create_ado_workitem,
         "create_github_issue": _handle_create_github_issue,
+        "create_github_pr": _handle_create_github_pr,
+        "comment_on_github_pr": _handle_comment_on_github_pr,
+        "create_jira_issue": _handle_create_jira_issue,
+        "create_linear_issue": _handle_create_linear_issue,
         "create_google_task": _handle_create_google_task,
+        "create_onedrive_file": _handle_create_onedrive_file,
         "post_teams_message": _handle_post_teams_message,
         "create_planner_task": _handle_create_planner_task,
         "create_salesforce_record": _handle_create_salesforce_record,
@@ -257,9 +277,14 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
         "modify_file": _handle_modify_file,
         "create_directory": _handle_create_directory,
         "send_email": _handle_send_email,
+        "http_request": _handle_http_request,
+        "git_commit": _handle_git_commit,
+        "create_calendar_event": _handle_create_calendar_event,
         # Tier 3: destructive operations
         "delete_file": _handle_delete_file,
         "move_file": _handle_move_file,
+        "run_python": _handle_run_python,
+        "run_shell": _handle_run_shell,
     }
 
     handler = handlers.get(tool_name)
@@ -477,6 +502,52 @@ def _assert_select_only(query: str) -> str | None:
     return None
 
 
+async def _handle_search_documents(tool_name: str, args: dict) -> str:
+    """Semantic search over locally indexed documents (see
+    app/services/doc_index.py — POST /mcp/api/directories/<id>/reindex to
+    build the index). Tier 0, read-only.
+
+    Deliberately NOT auto-injected into any prompt — called on demand, like
+    any other tool, never spliced into a system prompt the way recalled
+    Memory is. Results are PII-scanned (fails open, same as every other
+    PII-scan call site in this app) and wrapped in explicit delimiters
+    marking them as untrusted document content, not instructions — a
+    returned snippet is attacker-influenceable text arriving through the
+    same untrusted tool-result channel as a file read or a web fetch.
+    """
+    query = (args.get("query") or "").strip()
+    try:
+        top_k = max(1, min(int(args.get("top_k") or 5), 20))
+    except (TypeError, ValueError):
+        top_k = 5
+
+    if not query:
+        return "Error: query is required"
+
+    from app.services.doc_index import search_documents
+
+    try:
+        hits = search_documents(query, top_k=top_k)
+    except Exception as e:
+        return f"Error searching documents: {e}"
+
+    if not hits:
+        return "No matching documents found (or nothing has been indexed yet)"
+
+    nonce = uuid.uuid4().hex[:8]
+    lines = [f"<<<UNTRUSTED-DOCUMENT-CONTENT-{nonce}>>>"]
+    for hit in hits:
+        snippet = hit["content"]
+        try:
+            from app.services.pii_guard import get_pii_guard
+            snippet, _detected, _types = get_pii_guard().scan(snippet, direction="outbound")
+        except Exception as e:
+            log.warning("search_documents: PII scan failed: %s — returning unscanned", e)
+        lines.append(f"\n[{hit['file_path']} — chunk {hit['chunk_index']}, score={hit['score']:.3f}]\n{snippet}")
+    lines.append(f"<<<END-UNTRUSTED-DOCUMENT-CONTENT-{nonce}>>>")
+    return "\n".join(lines)
+
+
 async def _handle_run_sql_query(tool_name: str, args: dict) -> str:
     """Run a SELECT query via a SQL connector."""
     connector_name = args.get("connector", "")
@@ -509,6 +580,82 @@ async def _handle_run_sql_query(tool_name: str, args: dict) -> str:
         return f"{header}\n{separator}\n" + "\n".join(data_rows)
     except Exception as e:
         return f"Error running query: {e}"
+
+
+# Response body cap for fetch_url/http_request — these hit arbitrary,
+# LLM-chosen hosts (not a connector's own configured base_url), so nothing
+# bounds response size upstream; httpx will otherwise buffer the full body
+# regardless of how large it is. Streamed and enforced during download, not
+# after, so a multi-GB response can't be fully pulled first and discarded.
+_MAX_HTTP_RESPONSE_BYTES = 500_000
+
+
+async def _http_fetch_capped(client, method: str, url: str, **kwargs) -> tuple:
+    """GET/POST/etc via a streaming request, capped at _MAX_HTTP_RESPONSE_BYTES.
+    Returns (status_code, headers, text, truncated)."""
+    async with client.stream(method, url, **kwargs) as resp:
+        chunks = []
+        total = 0
+        truncated = False
+        async for chunk in resp.aiter_bytes():
+            total += len(chunk)
+            if total > _MAX_HTTP_RESPONSE_BYTES:
+                chunks.append(chunk[: _MAX_HTTP_RESPONSE_BYTES - (total - len(chunk))])
+                truncated = True
+                break
+            chunks.append(chunk)
+        content = b"".join(chunks)
+        text = content.decode(resp.encoding or "utf-8", errors="replace")
+        return resp.status_code, resp.headers, text, truncated
+
+
+async def _handle_fetch_url(tool_name: str, args: dict) -> str:
+    """Fetch an HTTP/HTTPS URL via GET and return its response body as text."""
+    from app.services.connector_auth import validate_untrusted_url
+
+    url = (args.get("url") or "").strip()
+    if not url:
+        return "Error: url is required"
+    err = validate_untrusted_url(url)
+    if err:
+        return err
+
+    try:
+        timeout = min(float(args.get("timeout") or 10), 30)
+    except (TypeError, ValueError):
+        timeout = 10
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            hops = 0
+            while True:
+                status, headers, text, truncated = await _http_fetch_capped(client, "GET", url)
+                if status not in (301, 302, 303, 307, 308):
+                    break
+                location = headers.get("location")
+                if not location or hops >= 3:
+                    break
+                # Revalidate the redirect TARGET before following it — a URL
+                # that passed the initial check can still redirect to a
+                # private/loopback address, which is exactly what
+                # follow_redirects=False + manual revalidation exists to catch.
+                from urllib.parse import urljoin
+                next_url = urljoin(url, location)
+                redirect_err = validate_untrusted_url(next_url)
+                if redirect_err:
+                    return f"Error: redirect target blocked — {redirect_err}"
+                url = next_url
+                hops += 1
+        if status >= 400:
+            return f"Error: HTTP {status} fetching {url}"
+        if truncated:
+            text += "\n...[truncated]"
+        return text
+    except httpx.TimeoutException:
+        return f"Error: request to {url} timed out after {timeout}s"
+    except Exception as e:
+        return f"Error fetching {url}: {e}"
 
 
 
@@ -895,6 +1042,418 @@ async def _handle_move_file(tool_name: str, args: dict) -> str:
         return f"Error moving: {e}"
 
 
+def _real_python_executable() -> str | None:
+    """Resolve an actual Python interpreter to run code with.
+
+    sys.executable is NOT a Python interpreter in the PyInstaller-frozen
+    build this app ships as (getattr(sys, "frozen", False)) — it's
+    OrionsBelt.exe itself, so subprocess.run([sys.executable, "-c", code])
+    would relaunch the whole app instead of running the snippet. Falls back
+    to whatever "python"/"python3" is on PATH; returns None if neither
+    exists so the caller can fail with a clear error instead of silently
+    doing the wrong thing.
+    """
+    if not getattr(sys, "frozen", False):
+        return sys.executable
+    return shutil.which("python3") or shutil.which("python")
+
+
+_MAX_SUBPROCESS_OUTPUT_CHARS = 20_000
+
+
+async def _handle_run_python(tool_name: str, args: dict) -> str:
+    """Execute a Python code snippet in a subprocess and return stdout/stderr.
+
+    Not sandboxed (no container/seccomp) — this app's threat model gates
+    dangerous operations by tier, not OS-level isolation (run_shell, the
+    equivalent tool for arbitrary commands, is Tier 3 for the same reason).
+    Takes no path argument, so it never goes through _authorize_path — that
+    is exactly why it's Tier 3 rather than Tier 2: it has no filesystem
+    authorization boundary the way file tools do.
+    """
+    code = args.get("code") or ""
+    if not code:
+        return "Error: code is required"
+    try:
+        timeout = min(float(args.get("timeout") or 30), 120)
+    except (TypeError, ValueError):
+        timeout = 30
+
+    python = _real_python_executable()
+    if not python:
+        return "Error: no Python interpreter found to run code with"
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            python, "-c", code,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return f"Error: run_python timed out after {timeout}s"
+        out = stdout.decode("utf-8", errors="replace")[:_MAX_SUBPROCESS_OUTPUT_CHARS]
+        err = stderr.decode("utf-8", errors="replace")[:_MAX_SUBPROCESS_OUTPUT_CHARS]
+        return f"exit_code={proc.returncode}\nstdout:\n{out}\nstderr:\n{err}"
+    except Exception as e:
+        return f"Error running Python code: {e}"
+
+
+async def _handle_run_shell(tool_name: str, args: dict) -> str:
+    """Execute a shell command and return stdout/stderr. Tier 3 — requires
+    explicit approval, same as delete_file/move_file."""
+    command = args.get("command") or ""
+    if not command:
+        return "Error: command is required"
+    try:
+        timeout = min(float(args.get("timeout") or 60), 300)
+    except (TypeError, ValueError):
+        timeout = 60
+
+    working_dir = _sanitize_path_input(args.get("working_dir") or "")
+    if working_dir:
+        real_wd = os.path.realpath(working_dir)
+        if _is_blocked_path(real_wd):
+            return f"Error: access denied — system path blocked: {working_dir}"
+        if not _authorize_path(real_wd):
+            return f"Error: working_dir not authorized: {working_dir}{_authorized_dirs_hint()}"
+    else:
+        authorized = AuthorizedDirectory.query.filter_by(enabled=True).first()
+        if not authorized:
+            return "Error: no authorized directories configured — set working_dir explicitly or configure one in Settings"
+        real_wd = os.path.realpath(authorized.path)
+
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            command, cwd=real_wd,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return f"Error: run_shell timed out after {timeout}s"
+        out = stdout.decode("utf-8", errors="replace")[:_MAX_SUBPROCESS_OUTPUT_CHARS]
+        err = stderr.decode("utf-8", errors="replace")[:_MAX_SUBPROCESS_OUTPUT_CHARS]
+        return f"exit_code={proc.returncode}\nstdout:\n{out}\nstderr:\n{err}"
+    except Exception as e:
+        return f"Error running shell command: {e}"
+
+
+# ── Git operations ───────────────────────────────────────────────────────────
+# Deliberately narrow: status/diff/log/commit only. No git_push (would need
+# ambient credentials — an SSH agent or credential helper — that live outside
+# this app's encrypted Connector auth model, unlike every other outbound-write
+# path in this app; use create_github_pr instead) and no branch/checkout
+# (switching branches invalidates path-based authorization decisions already
+# made this session, and can silently destroy uncommitted work).
+
+def _authorize_git_repo(path: str) -> tuple:
+    """Return (real_path, None) if `path` is both an authorized directory and
+    a git repo (has a .git dir), else (None, error_message)."""
+    sanitized = _sanitize_path_input(path or "")
+    if not sanitized:
+        return None, "Error: path is required (or contains invalid characters)"
+    real_path = os.path.realpath(sanitized)
+    if _is_blocked_path(real_path):
+        return None, f"Error: access denied — system path blocked: {path}"
+    if not _authorize_path(real_path):
+        return None, f"Error: directory not authorized: {path}{_authorized_dirs_hint()}"
+    if not os.path.isdir(os.path.join(real_path, ".git")):
+        return None, f"Error: not a git repository (no .git directory): {path}"
+    return real_path, None
+
+
+def _reject_flag_like(value: str, label: str) -> str | None:
+    """Return an error if `value` looks like a CLI flag rather than a
+    genuine ref/path — list-form subprocess prevents shell injection, but
+    not an LLM-supplied value like "--upload-pack=..." being interpreted as
+    a git option instead of the argument it's meant to be."""
+    if value and value.startswith("-"):
+        return f"Error: {label} must not start with '-'"
+    return None
+
+
+# A deliberately nonexistent hooks directory — passed as core.hooksPath so
+# git looks for pre-commit/commit-msg/post-commit hooks there instead of the
+# repo's real .git/hooks/, finds nothing, and proceeds without running any.
+# Only git_commit actually risks triggering a hook (status/diff/log don't),
+# but applying it to every call is harmless and one less thing to get wrong.
+_GIT_NO_HOOKS_PATH = "/dev/null/orions-belt-no-hooks"
+
+# Repo-local config keys that can make git execute an ARBITRARY,
+# attacker-chosen command — none of these can be neutralized by a per-
+# invocation `-c key=` override the way core.fsmonitor/core.pager can,
+# because the dangerous part is the attacker-chosen VALUE (a filter driver
+# name, a gpg program path, a credential helper), not a fixed key. Must be
+# detected and refused instead. filter.*.(clean|smudge|process) and
+# diff.*.(command|textconv) apply on ordinary `git diff`/`git add`, not just
+# checkout — verified against a real repo before this was added.
+_DANGEROUS_GIT_CONFIG_RE = re.compile(
+    r"^(filter\..*\.(clean|smudge|process)|diff\..*\.(command|textconv)|"
+    r"core\.(fsmonitor|sshcommand|alternaterefscommand|askpass|gitproxy|pager)|"
+    r"credential\.helper|gpg\.program|uploadpack\..*|pager\..*)$",
+    re.IGNORECASE,
+    # commit.gpgsign is deliberately NOT here: on its own (without
+    # gpg.program also pointed at an attacker-chosen path — which IS
+    # matched above) it can't execute anything, it's a completely ordinary
+    # setting on any repo where the operator signs commits, and it's
+    # already neutralized regardless via the `-c commit.gpgSign=false`
+    # override below. Including it here just refused read-only commands
+    # (git_status/git_diff) on totally normal repos for no security benefit.
+)
+
+
+async def _git_config_is_safe(cwd: str, env: dict) -> bool:
+    """True if `cwd`'s repo-local git config contains no key that could
+    result in arbitrary command execution. Listing config (`git config
+    --list`) executes nothing itself — it only parses and prints config
+    files as text — so this is safe to run unconditionally before every
+    git subcommand. Fails CLOSED: any error running the check itself is
+    treated as unsafe.
+
+    Deliberately UNSCOPED (no --local): --local alone (a) does NOT reliably
+    expand include.path/includeIf despite --includes defaulting to on for
+    config lookups — verified against a real repo: a `.git/config` with
+    only `[include] path = evil.inc` plus an `evil.inc` containing a
+    dangerous filter driver passed this check under `--local --list` while
+    the danger was still effective — and (b) excludes the worktree config
+    scope (`.git/config.worktree`, active whenever `extensions.worktreeConfig
+    = true`), which is a second place a dangerous key can hide entirely
+    outside `--local`'s view. An unscoped `git config --list --includes`
+    reads system+global+local+worktree+includes — system and global are
+    already neutralized by GIT_CONFIG_NOSYSTEM/GIT_CONFIG_GLOBAL in `env`
+    (passed to this subprocess exactly as it will be to the real git
+    command), so what's left is exactly local+worktree+includes: the same
+    effective config the actual git command below will see.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "config", "--list", "--includes", "--null",
+            cwd=cwd, env=env,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+        # Exit code 1 with no output means "no config at all" — common and
+        # safe, not an error.
+        if proc.returncode not in (0, 1):
+            return False
+        for entry in stdout.decode("utf-8", errors="replace").split("\x00"):
+            if not entry:
+                continue
+            key = entry.split("\n", 1)[0]
+            if _DANGEROUS_GIT_CONFIG_RE.match(key):
+                log.warning("git tool refused: unsafe config key %r in %s", key, cwd)
+                return False
+        return True
+    except Exception as e:
+        log.warning("git config safety check failed for %s: %s", cwd, e)
+        return False
+
+
+async def _run_git(git_args: list, cwd: str, timeout: float = 30,
+                   identity: tuple | None = None) -> tuple:
+    """Run a git subcommand with the untrusted-repo hardening every git
+    tool needs: a maliciously-configured .git/config can make ordinary
+    read commands (status/diff/log) execute arbitrary commands via
+    core.fsmonitor, diff.external, core.pager, a *.textconv filter, or a
+    content filter driver, and a repo's .git/hooks/ can execute arbitrary
+    commands on commit — and since create_file (Tier 1) can write
+    .git/config or a hook script inside an authorized directory, an
+    unhardened git tool would let Tier-1 file write plus a Tier-0/Tier-2
+    git operation bypass the Tier-3 approval gate run_shell exists to
+    enforce. Some of those (fsmonitor/pager/hooks path) are neutralized by
+    a fixed -c override below; others (filter drivers, gpg.program,
+    credential helpers) have an attacker-chosen value with no fixed key to
+    override, so _git_config_is_safe refuses the whole operation if any of
+    those are set at all, rather than trying to neutralize them individually.
+
+    Blocking system/global git config this way also strips out any identity
+    (user.name/user.email) an operator configured globally — pass `identity`
+    as (name, email) for commit-like operations that need one rather than
+    depending on ambient config that's now deliberately unavailable.
+
+    Returns (exit_code, stdout, stderr)."""
+    env = dict(os.environ)
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_TERMINAL_PROMPT"] = "0"
+
+    if not await _git_config_is_safe(cwd, env):
+        return (1, "", "Error: this repository's local git config contains a setting that "
+                       "could execute an arbitrary command (a content filter driver, external "
+                       "diff/textconv, credential helper, or gpg program) — refusing to run "
+                       "any git command against it.")
+
+    full_args = ["git", "--literal-pathspecs", "--no-pager", "-c", "core.fsmonitor=", "-c", "core.pager=cat",
+                 "-c", f"core.hooksPath={_GIT_NO_HOOKS_PATH}", "-c", "commit.gpgSign=false"]
+    if identity:
+        name, email = identity
+        full_args += ["-c", f"user.name={name}", "-c", f"user.email={email}"]
+    full_args += git_args
+    proc = await asyncio.create_subprocess_exec(
+        *full_args, cwd=cwd, env=env,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise
+    return (proc.returncode,
+            stdout.decode("utf-8", errors="replace")[:_MAX_SUBPROCESS_OUTPUT_CHARS],
+            stderr.decode("utf-8", errors="replace")[:_MAX_SUBPROCESS_OUTPUT_CHARS])
+
+
+async def _handle_git_status(tool_name: str, args: dict) -> str:
+    """Show the working tree status of a git repo under an authorized directory."""
+    real_path, err = _authorize_git_repo(args.get("path", ""))
+    if err:
+        return err
+    try:
+        # --ignore-submodules=all: an initialized submodule has its OWN
+        # .git/modules/<name>/config and info/attributes, entirely outside
+        # what _git_config_is_safe inspects (it only reads the superproject's
+        # config) — without this, a dangerous filter/textconv planted only in
+        # a submodule's own config still executes when git descends into it
+        # to compare content, and none of _run_git's -c overrides propagate
+        # into that child git process. This tool has no way to vet a
+        # submodule's config, so it must never descend into one at all.
+        code, out, stderr = await _run_git(
+            ["status", "--porcelain=v1", "-b", "--ignore-submodules=all"], cwd=real_path)
+        if code != 0:
+            return f"Error: git status failed\n{stderr}"
+        # -b always emits a "## <branch>" header line even on a clean tree —
+        # "clean" means no lines beyond that one, not an empty result.
+        lines = out.splitlines()
+        if len(lines) <= 1:
+            return f"{out.strip()}\n(clean working tree)" if out.strip() else "(clean working tree)"
+        return out
+    except asyncio.TimeoutError:
+        return "Error: git status timed out"
+    except Exception as e:
+        return f"Error running git status: {e}"
+
+
+async def _handle_git_diff(tool_name: str, args: dict) -> str:
+    """Show the diff for a git repo under an authorized directory."""
+    real_path, err = _authorize_git_repo(args.get("path", ""))
+    if err:
+        return err
+    ref = (args.get("ref") or "").strip()
+    if ref:
+        flag_err = _reject_flag_like(ref, "ref")
+        if flag_err:
+            return flag_err
+
+    # --no-ext-diff / --no-textconv: a repo's .git/config can point
+    # diff.external or a *.textconv filter at an arbitrary command — those
+    # apply even to a read-only `git diff`. -- separates the ref from any
+    # path arguments so a crafted ref can't be parsed as a git option.
+    # --ignore-submodules=all: see the identical comment in _handle_git_status
+    # — --no-ext-diff/--no-textconv do NOT propagate into the child git
+    # process git spawns inside a submodule, so a submodule's own config is a
+    # complete bypass of both of those unless git never descends into it.
+    git_args = ["diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all"]
+    if ref:
+        git_args += [ref, "--"]
+    try:
+        code, out, stderr = await _run_git(git_args, cwd=real_path)
+        if code != 0:
+            return f"Error: git diff failed\n{stderr}"
+        return out or "(no differences)"
+    except asyncio.TimeoutError:
+        return "Error: git diff timed out"
+    except Exception as e:
+        return f"Error running git diff: {e}"
+
+
+async def _handle_git_log(tool_name: str, args: dict) -> str:
+    """Show recent commit history for a git repo under an authorized directory."""
+    real_path, err = _authorize_git_repo(args.get("path", ""))
+    if err:
+        return err
+    try:
+        limit = max(1, min(int(args.get("limit") or 20), 200))
+    except (TypeError, ValueError):
+        limit = 20
+
+    try:
+        code, out, stderr = await _run_git(
+            ["log", f"-{limit}", "--pretty=format:%H %ad %an: %s", "--date=short"], cwd=real_path)
+        if code != 0:
+            return f"Error: git log failed\n{stderr}"
+        return out or "(no commits)"
+    except asyncio.TimeoutError:
+        return "Error: git log timed out"
+    except Exception as e:
+        return f"Error running git log: {e}"
+
+
+async def _handle_git_commit(tool_name: str, args: dict) -> str:
+    """Stage explicit paths and create a commit in a git repo under an
+    authorized directory. Tier 2 — mutates repo state, same class of effect
+    as modify_file.
+
+    Takes explicit `paths`, not an "add everything" flag — a blanket
+    `git add -A` is how an agent stages and commits a .env or other file it
+    never meant to, and every path here is itself re-checked through
+    _authorize_path.
+    """
+    real_path, err = _authorize_git_repo(args.get("path", ""))
+    if err:
+        return err
+    message = (args.get("message") or "").strip()
+    if not message:
+        return "Error: message is required"
+    paths = args.get("paths")
+    if not isinstance(paths, list) or not paths:
+        return "Error: paths is required and must be a non-empty list of files to commit"
+
+    real_paths = []
+    for p in paths:
+        sanitized = _sanitize_path_input(str(p))
+        if not sanitized:
+            return f"Error: invalid path: {p!r}"
+        real_p = os.path.realpath(os.path.join(real_path, sanitized) if not os.path.isabs(sanitized) else sanitized)
+        if _is_blocked_path(real_p):
+            return f"Error: access denied — system path blocked: {p}"
+        if not _authorize_path(real_p):
+            return f"Error: path not authorized: {p}{_authorized_dirs_hint()}"
+        if not real_p.startswith(real_path + os.sep):
+            # Also catches real_p == real_path (paths: ["."]) — that's
+            # effectively `git add -A`, exactly what taking explicit `paths`
+            # instead of an "add everything" flag is meant to prevent.
+            return f"Error: path is outside the target repo: {p}"
+        if os.path.isdir(real_p):
+            return f"Error: path is a directory, not a file — commit explicit files: {p}"
+        real_paths.append(os.path.relpath(real_p, real_path))
+
+    # Blocking system/global git config (in _run_git, to stop a malicious
+    # .git/config from executing commands) also strips out any operator
+    # identity normally set there — pass a fixed one explicitly rather than
+    # fail every commit with "unable to auto-detect email address".
+    identity = ("Orion's Belt Agent", "agent@orions-belt.local")
+
+    try:
+        code, out, stderr = await _run_git(["add", "--"] + real_paths, cwd=real_path)
+        if code != 0:
+            return f"Error: git add failed\n{stderr}"
+        code, out, stderr = await _run_git(
+            ["commit", "-m", message, "--"] + real_paths, cwd=real_path, identity=identity)
+        if code != 0:
+            return f"Error: git commit failed\n{stderr}\n{out}"
+        return out
+    except asyncio.TimeoutError:
+        return "Error: git commit timed out"
+    except Exception as e:
+        return f"Error running git commit: {e}"
+
+
 # ── Connector helpers ─────────────────────────────────────────────────────────
 
 def _is_safe_path_segment(value: str) -> bool:
@@ -1137,6 +1696,396 @@ async def _handle_create_github_issue(tool_name: str, args: dict) -> str:
         return f"Error creating GitHub issue: {e}"
 
 
+def _get_github_connector_and_pat(connector_name: str):
+    """Look up a github connector and return (pat, None) or (None, error_message) —
+    shared by the PR workflow tools since all three act on the same connector."""
+    connector = _get_connector(connector_name)
+    if not connector:
+        return None, f"Error: connector '{connector_name}' not found"
+    if connector["type"] != "github":
+        return None, f"Error: connector '{connector_name}' is not a github connector"
+    pat = (connector.get("auth") or {}).get("pat")
+    if not pat:
+        return None, f"Error: connector '{connector_name}' has no personal access token configured"
+    return pat, None
+
+
+async def _handle_create_github_pr(tool_name: str, args: dict) -> str:
+    """Create a pull request in a GitHub repository via a configured github connector."""
+    connector_name = args.get("connector", "")
+    owner = (args.get("owner") or "").strip()
+    repo = (args.get("repo") or "").strip()
+    title = (args.get("title") or "").strip()
+    head = (args.get("head") or "").strip()
+    base = (args.get("base") or "").strip()
+    body = args.get("body") or ""
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not owner:
+        return "Error: owner is required"
+    if not repo:
+        return "Error: repo is required"
+    if not title:
+        return "Error: title is required"
+    if not head:
+        return "Error: head is required (the branch containing your changes)"
+    if not base:
+        return "Error: base is required (the branch you want to merge into)"
+    if not _is_safe_path_segment(owner) or not _is_safe_path_segment(repo):
+        return "Error: owner and repo must not contain '/', '\\', whitespace, '..', '?', '#', or '%'"
+
+    pat, err = _get_github_connector_and_pat(connector_name)
+    if err:
+        return err
+
+    from app.services.connector_auth import build_auth_headers
+    url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
+    headers = build_auth_headers("bearer", {"token": pat})
+    headers["Accept"] = "application/vnd.github+json"
+    payload = {"title": title, "head": head, "base": base}
+    if body:
+        payload["body"] = body
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code == 201:
+            data = resp.json()
+            number = data.get("number")
+            html_url = data.get("html_url", "")
+            return f"Created PR #{number} in {owner}/{repo}: {title}\n{html_url}"
+        return f"Error: GitHub returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error creating GitHub PR: {e}"
+
+
+async def _handle_comment_on_github_pr(tool_name: str, args: dict) -> str:
+    """Comment on a pull request via a configured github connector.
+
+    Uses the issues/comments endpoint — GitHub's API treats every PR as an
+    issue for comment purposes, there is no separate "PR comment" endpoint
+    for a plain top-level comment (as opposed to a line-level review comment).
+    """
+    connector_name = args.get("connector", "")
+    owner = (args.get("owner") or "").strip()
+    repo = (args.get("repo") or "").strip()
+    pr_number = args.get("pr_number")
+    body = (args.get("body") or "").strip()
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not owner:
+        return "Error: owner is required"
+    if not repo:
+        return "Error: repo is required"
+    if not pr_number:
+        return "Error: pr_number is required"
+    if not body:
+        return "Error: body is required"
+    if not _is_safe_path_segment(owner) or not _is_safe_path_segment(repo):
+        return "Error: owner and repo must not contain '/', '\\', whitespace, '..', '?', '#', or '%'"
+    try:
+        pr_number = int(pr_number)
+    except (TypeError, ValueError):
+        return "Error: pr_number must be an integer"
+
+    pat, err = _get_github_connector_and_pat(connector_name)
+    if err:
+        return err
+
+    from app.services.connector_auth import build_auth_headers
+    url = f"https://api.github.com/repos/{owner}/{repo}/issues/{pr_number}/comments"
+    headers = build_auth_headers("bearer", {"token": pat})
+    headers["Accept"] = "application/vnd.github+json"
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, headers=headers, json={"body": body})
+        if resp.status_code == 201:
+            data = resp.json()
+            html_url = data.get("html_url", "")
+            return f"Commented on PR #{pr_number} in {owner}/{repo}\n{html_url}"
+        return f"Error: GitHub returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error commenting on GitHub PR: {e}"
+
+
+async def _handle_get_github_pr_status(tool_name: str, args: dict) -> str:
+    """Read a pull request's state/mergeable/review status via a configured github connector."""
+    connector_name = args.get("connector", "")
+    owner = (args.get("owner") or "").strip()
+    repo = (args.get("repo") or "").strip()
+    pr_number = args.get("pr_number")
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not owner:
+        return "Error: owner is required"
+    if not repo:
+        return "Error: repo is required"
+    if not pr_number:
+        return "Error: pr_number is required"
+    if not _is_safe_path_segment(owner) or not _is_safe_path_segment(repo):
+        return "Error: owner and repo must not contain '/', '\\', whitespace, '..', '?', '#', or '%'"
+    try:
+        pr_number = int(pr_number)
+    except (TypeError, ValueError):
+        return "Error: pr_number must be an integer"
+
+    pat, err = _get_github_connector_and_pat(connector_name)
+    if err:
+        return err
+
+    from app.services.connector_auth import build_auth_headers
+    url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}"
+    headers = build_auth_headers("bearer", {"token": pat})
+    headers["Accept"] = "application/vnd.github+json"
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url, headers=headers)
+        if resp.status_code == 200:
+            data = resp.json()
+            state = data.get("state", "unknown")
+            merged = data.get("merged", False)
+            mergeable = data.get("mergeable")
+            mergeable_state = data.get("mergeable_state", "unknown")
+            return (f"PR #{pr_number} in {owner}/{repo}: state={state} merged={merged} "
+                    f"mergeable={mergeable} mergeable_state={mergeable_state}")
+        return f"Error: GitHub returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error fetching GitHub PR status: {e}"
+
+
+def _get_jira_connector(connector_name: str):
+    """Look up a jira connector and return (base_url, headers, None) or
+    (None, None, error_message)."""
+    from app.services.connector_auth import build_auth_headers, validate_target_url
+
+    connector = _get_connector(connector_name)
+    if not connector:
+        return None, None, f"Error: connector '{connector_name}' not found"
+    if connector["type"] != "jira":
+        return None, None, f"Error: connector '{connector_name}' is not a jira connector"
+    base_url = (connector["config"].get("base_url") or "").rstrip("/")
+    if not base_url:
+        return None, None, f"Error: connector '{connector_name}' has no base_url configured"
+    # Same check call_connector already applies to every operator-configured
+    # connector base_url — jira's own base_url had been going straight
+    # through unchecked, an inconsistency with that existing control even
+    # though the value is operator- not LLM-supplied.
+    url_err = validate_target_url(base_url)
+    if url_err:
+        return None, None, url_err
+    auth = connector.get("auth") or {}
+    if not auth.get("email") or not auth.get("api_token"):
+        return None, None, f"Error: connector '{connector_name}' has no email/api_token configured"
+    headers = build_auth_headers("basic", {"username": auth["email"], "password": auth["api_token"]})
+    headers["Accept"] = "application/json"
+    headers["Content-Type"] = "application/json"
+    return base_url, headers, None
+
+
+async def _handle_create_jira_issue(tool_name: str, args: dict) -> str:
+    """Create an issue in a Jira project via a configured jira connector."""
+    connector_name = args.get("connector", "")
+    project_key = (args.get("project_key") or "").strip()
+    issue_type = (args.get("issue_type") or "").strip()
+    summary = (args.get("summary") or "").strip()
+    description = args.get("description") or ""
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not project_key:
+        return "Error: project_key is required"
+    if not issue_type:
+        return "Error: issue_type is required (e.g. 'Task', 'Bug', 'Story')"
+    if not summary:
+        return "Error: summary is required"
+
+    base_url, headers, err = _get_jira_connector(connector_name)
+    if err:
+        return err
+
+    payload = {
+        "fields": {
+            "project": {"key": project_key},
+            "issuetype": {"name": issue_type},
+            "summary": summary,
+        }
+    }
+    if description:
+        # Jira Cloud's v3 API takes description in Atlassian Document Format,
+        # not plain text — wrap it in the minimal valid ADF document.
+        payload["fields"]["description"] = {
+            "type": "doc", "version": 1,
+            "content": [{"type": "paragraph", "content": [{"type": "text", "text": description}]}],
+        }
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(f"{base_url}/rest/api/3/issue", headers=headers, json=payload)
+        if resp.status_code == 201:
+            data = resp.json()
+            key = data.get("key", "?")
+            return f"Created issue {key}: {summary}\n{base_url}/browse/{key}"
+        return f"Error: Jira returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error creating Jira issue: {e}"
+
+
+_MAX_JIRA_SEARCH_RESULTS = 50
+
+
+async def _handle_search_jira_issues(tool_name: str, args: dict) -> str:
+    """Search Jira issues by JQL via a configured jira connector. Read-only."""
+    connector_name = args.get("connector", "")
+    jql = (args.get("jql") or "").strip()
+    try:
+        max_results = min(int(args.get("max_results") or 20), _MAX_JIRA_SEARCH_RESULTS)
+    except (TypeError, ValueError):
+        max_results = 20
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not jql:
+        return "Error: jql is required"
+
+    base_url, headers, err = _get_jira_connector(connector_name)
+    if err:
+        return err
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(f"{base_url}/rest/api/3/search", headers=headers, params={
+                "jql": jql, "maxResults": max_results, "fields": "summary,status,issuetype",
+            })
+        if resp.status_code == 200:
+            data = resp.json()
+            issues = data.get("issues", [])
+            if not issues:
+                return "No issues found"
+            lines = []
+            for issue in issues:
+                fields = issue.get("fields", {})
+                status = (fields.get("status") or {}).get("name", "?")
+                lines.append(f"{issue.get('key')}: {fields.get('summary', '')} [{status}]")
+            return "\n".join(lines)
+        return f"Error: Jira returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error searching Jira issues: {e}"
+
+
+def _get_linear_connector(connector_name: str):
+    """Look up a linear connector and return (headers, None) or
+    (None, error_message)."""
+    connector = _get_connector(connector_name)
+    if not connector:
+        return None, f"Error: connector '{connector_name}' not found"
+    if connector["type"] != "linear":
+        return None, f"Error: connector '{connector_name}' is not a linear connector"
+    auth = connector.get("auth") or {}
+    if not auth.get("api_key"):
+        return None, f"Error: connector '{connector_name}' has no API key configured"
+    # Linear's API takes the raw key as Authorization — no "Bearer " prefix.
+    return {"Authorization": auth["api_key"], "Content-Type": "application/json"}, None
+
+
+async def _handle_create_linear_issue(tool_name: str, args: dict) -> str:
+    """Create an issue in Linear via a configured linear connector."""
+    connector_name = args.get("connector", "")
+    team_id = (args.get("team_id") or "").strip()
+    title = (args.get("title") or "").strip()
+    description = args.get("description") or ""
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not team_id:
+        return "Error: team_id is required"
+    if not title:
+        return "Error: title is required"
+
+    headers, err = _get_linear_connector(connector_name)
+    if err:
+        return err
+
+    query = {
+        "query": "mutation($input: IssueCreateInput!) { issueCreate(input: $input) "
+                 "{ success issue { identifier url } } }",
+        "variables": {"input": {"teamId": team_id, "title": title, "description": description}},
+    }
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post("https://api.linear.app/graphql", headers=headers, json=query)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("errors"):
+                return f"Error: Linear returned errors: {data['errors']}"
+            result = (data.get("data") or {}).get("issueCreate") or {}
+            if not result.get("success"):
+                return "Error: Linear did not report success creating the issue"
+            issue = result.get("issue") or {}
+            return f"Created issue {issue.get('identifier', '?')}: {title}\n{issue.get('url', '')}"
+        return f"Error: Linear returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error creating Linear issue: {e}"
+
+
+_MAX_LINEAR_SEARCH_RESULTS = 50
+
+
+async def _handle_search_linear_issues(tool_name: str, args: dict) -> str:
+    """Search Linear issues via a configured linear connector. Read-only."""
+    connector_name = args.get("connector", "")
+    search_query = (args.get("query") or "").strip()
+    try:
+        limit = min(int(args.get("limit") or 20), _MAX_LINEAR_SEARCH_RESULTS)
+    except (TypeError, ValueError):
+        limit = 20
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not search_query:
+        return "Error: query is required"
+
+    headers, err = _get_linear_connector(connector_name)
+    if err:
+        return err
+
+    gql = {
+        "query": "query($filter: IssueFilter!, $first: Int!) { issues(filter: $filter, first: $first) "
+                 "{ nodes { identifier title state { name } } } }",
+        "variables": {
+            "filter": {"title": {"containsIgnoreCase": search_query}},
+            "first": limit,
+        },
+    }
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post("https://api.linear.app/graphql", headers=headers, json=gql)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("errors"):
+                return f"Error: Linear returned errors: {data['errors']}"
+            nodes = ((data.get("data") or {}).get("issues") or {}).get("nodes") or []
+            if not nodes:
+                return "No issues found"
+            lines = [f"{n.get('identifier')}: {n.get('title')} [{(n.get('state') or {}).get('name', '?')}]"
+                     for n in nodes]
+            return "\n".join(lines)
+        return f"Error: Linear returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error searching Linear issues: {e}"
+
+
 async def _handle_create_google_task(tool_name: str, args: dict) -> str:
     """Create a task in Google Tasks via a configured google connector."""
     from app.models.connector import Connector
@@ -1191,19 +2140,37 @@ async def _handle_create_google_task(tool_name: str, args: dict) -> str:
         return f"Error creating Google Task: {e}"
 
 
-def _get_graph_connector_and_token(connector_name: str):
-    """Look up a microsoft_graph connector and return (connector, access_token)
-    or (None, error_message) — shared by post_teams_message/create_planner_task
-    since both act on the same Graph OAuth identity."""
+def _get_graph_connector_and_token(connector_name: str, required_feature: str | None = None):
+    """Look up a microsoft_graph connector and return (access_token, None) or
+    (None, error_message) — shared by every Graph tool since they all act on
+    the same OAuth identity.
+
+    If `required_feature` is given (one of oauth_providers.GRAPH_SCOPE_FEATURES,
+    e.g. "calendar"/"files"), checks the connector's last-known granted scope
+    actually includes it before making the call — a connector that
+    authenticated before a feature's scope existed, or was connected without
+    that feature selected, gets a clear "reconnect to grant X access" message
+    instead of an opaque Graph API error after the fact. Best-effort: a
+    connector with no granted_scope on file yet (never refreshed since that
+    started being persisted) skips the check rather than blocking everyone
+    retroactively.
+    """
     from app.models.connector import Connector
     from app.services import oauth
-    from app.services.oauth_providers import get_provider_config
+    from app.services.oauth_providers import GRAPH_SCOPE_FEATURES, get_provider_config
 
     conn = Connector.query.filter_by(name=connector_name, enabled=True).first()
     if not conn:
         return None, f"Error: connector '{connector_name}' not found"
     if conn.connector_type != "microsoft_graph":
         return None, f"Error: connector '{connector_name}' is not a microsoft_graph connector"
+
+    if required_feature:
+        granted = (conn.get_auth() or {}).get("granted_scope")
+        needed_perm = GRAPH_SCOPE_FEATURES.get(required_feature)
+        if granted and needed_perm and needed_perm not in granted:
+            return None, (f"Error: connector '{connector_name}' was not granted {required_feature} access. "
+                          f"Reconnect this connector in Settings with '{required_feature}' selected.")
 
     cfg = json.loads(conn.config or "{}")
     provider_cfg = get_provider_config("microsoft_graph", cfg)
@@ -1294,12 +2261,242 @@ async def _handle_create_planner_task(tool_name: str, args: dict) -> str:
         return f"Error creating Planner task: {e}"
 
 
-async def _handle_create_salesforce_record(tool_name: str, args: dict) -> str:
-    """Create a record (Lead, Case, Account, etc.) via a configured salesforce connector."""
+async def _handle_create_calendar_event(tool_name: str, args: dict) -> str:
+    """Create a calendar event (send a meeting invite) via a configured
+    microsoft_graph connector.
+
+    Tier 2 — sends a real invite to real people, the same class of effect
+    as send_email/post_teams_message, refused during unattended autonomous
+    goal pursuit.
+    """
+    connector_name = args.get("connector", "")
+    subject = (args.get("subject") or "").strip()
+    start = (args.get("start") or "").strip()
+    end = (args.get("end") or "").strip()
+    attendees = args.get("attendees") or []
+    body = args.get("body") or ""
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not subject:
+        return "Error: subject is required"
+    if not start:
+        return "Error: start is required (ISO 8601 datetime, e.g. 2026-08-01T14:00:00)"
+    if not end:
+        return "Error: end is required (ISO 8601 datetime)"
+    if not isinstance(attendees, list):
+        return "Error: attendees must be a list of email addresses"
+
+    access_token, err = _get_graph_connector_and_token(connector_name, required_feature="calendar")
+    if err:
+        return err
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    payload = {
+        "subject": subject,
+        "start": {"dateTime": start, "timeZone": "UTC"},
+        "end": {"dateTime": end, "timeZone": "UTC"},
+        "attendees": [{"emailAddress": {"address": a}, "type": "required"} for a in attendees],
+    }
+    if body:
+        payload["body"] = {"contentType": "text", "content": body}
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post("https://graph.microsoft.com/v1.0/me/events", headers=headers, json=payload)
+        if resp.status_code in (200, 201):
+            data = resp.json()
+            web_link = data.get("webLink", "")
+            return f"Created calendar event: {subject}\n{web_link}"
+        return f"Error: Microsoft Graph returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error creating calendar event: {e}"
+
+
+async def _handle_check_calendar_availability(tool_name: str, args: dict) -> str:
+    """Check free/busy availability for a set of attendees via a configured
+    microsoft_graph connector. Read-only — Tier 0."""
+    connector_name = args.get("connector", "")
+    attendees = args.get("attendees") or []
+    start = (args.get("start") or "").strip()
+    end = (args.get("end") or "").strip()
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not isinstance(attendees, list) or not attendees:
+        return "Error: attendees is required and must be a non-empty list of email addresses"
+    if not start:
+        return "Error: start is required (ISO 8601 datetime)"
+    if not end:
+        return "Error: end is required (ISO 8601 datetime)"
+
+    access_token, err = _get_graph_connector_and_token(connector_name, required_feature="calendar")
+    if err:
+        return err
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    payload = {
+        "schedules": attendees,
+        "startTime": {"dateTime": start, "timeZone": "UTC"},
+        "endTime": {"dateTime": end, "timeZone": "UTC"},
+        "availabilityViewInterval": 30,
+    }
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post("https://graph.microsoft.com/v1.0/me/calendar/getSchedule",
+                                     headers=headers, json=payload)
+        if resp.status_code == 200:
+            data = resp.json()
+            lines = []
+            for entry in data.get("value", []):
+                email = entry.get("scheduleId", "?")
+                view = entry.get("availabilityView", "")
+                lines.append(f"{email}: {view or '(no data)'}")
+            return "\n".join(lines) if lines else "No availability data returned"
+        return f"Error: Microsoft Graph returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error checking calendar availability: {e}"
+
+
+async def _handle_read_onedrive_file(tool_name: str, args: dict) -> str:
+    """Read a file's content from OneDrive via a configured microsoft_graph
+    connector (requires the 'files' scope). Tier 0."""
+    from urllib.parse import quote
+
+    connector_name = args.get("connector", "")
+    path = (args.get("path") or "").strip().lstrip("/")
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not path:
+        return "Error: path is required"
+    if ".." in path.split("/"):
+        # Graph resolves the whole quoted string as one path segment inside
+        # the connected user's own drive, so ".." can't actually escape to a
+        # different drive/tenant — this is defense-in-depth, not a real
+        # bypass, but there's no reason to accept it unrejected.
+        return f"Error: invalid path (must not contain '..'): {path}"
+
+    access_token, err = _get_graph_connector_and_token(connector_name, required_feature="files")
+    if err:
+        return err
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    url = f"https://graph.microsoft.com/v1.0/me/drive/root:/{quote(path)}:/content"
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url, headers=headers)
+        if resp.status_code == 200:
+            text = resp.text
+            if len(text) > MAX_READ_BYTES:
+                text = text[:MAX_READ_BYTES] + "\n[…truncated, file too large]"
+            return text
+        if resp.status_code == 404:
+            return f"Error: file not found: {path}"
+        return f"Error: Microsoft Graph returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error reading OneDrive file: {e}"
+
+
+async def _handle_create_onedrive_file(tool_name: str, args: dict) -> str:
+    """Create a new file in OneDrive via a configured microsoft_graph connector
+    (requires the 'files' scope). Fails if a file already exists at that path
+    — mirrors create_file's semantics. Tier 1."""
+    from urllib.parse import quote
+
+    connector_name = args.get("connector", "")
+    path = (args.get("path") or "").strip().lstrip("/")
+    content = args.get("content") or ""
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not path:
+        return "Error: path is required"
+    if ".." in path.split("/"):
+        # See read_onedrive_file's identical check — defense-in-depth, not a
+        # real bypass, since Graph resolves this within the user's own drive.
+        return f"Error: invalid path (must not contain '..'): {path}"
+
+    access_token, err = _get_graph_connector_and_token(connector_name, required_feature="files")
+    if err:
+        return err
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    encoded_path = quote(path)
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # PUT :/content overwrites unconditionally — check existence
+            # first so this tool's semantics actually match create_file's
+            # "fails if the file already exists", not a silent overwrite.
+            existing = await client.get(
+                f"https://graph.microsoft.com/v1.0/me/drive/root:/{encoded_path}", headers=headers)
+            if existing.status_code == 200:
+                return f"Error: file already exists: {path}"
+            if existing.status_code != 404:
+                # Anything other than a clean 404 (429 rate-limited, 5xx,
+                # auth hiccup, ...) means we genuinely don't know whether the
+                # file exists — falling through to PUT here would silently
+                # overwrite a real file the existence check merely failed to
+                # see. Refuse instead of guessing.
+                return (f"Error: could not determine whether {path} already exists "
+                        f"(Microsoft Graph returned HTTP {existing.status_code} on the "
+                        f"existence check) — refusing to risk an overwrite")
+            resp = await client.put(
+                f"https://graph.microsoft.com/v1.0/me/drive/root:/{encoded_path}:/content",
+                headers=headers, content=content.encode("utf-8"))
+        if resp.status_code in (200, 201):
+            data = resp.json()
+            web_url = data.get("webUrl", "")
+            return f"Created OneDrive file: {path}\n{web_url}"
+        return f"Error: Microsoft Graph returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error creating OneDrive file: {e}"
+
+
+def _get_salesforce_connector(connector_name: str):
+    """Look up a salesforce connector and return (access_token, instance_url, None)
+    or (None, None, error_message) — shared by every Salesforce tool.
+
+    The org's real API host, returned by Salesforce alongside the tokens
+    (persisted by oauth.py's _store_tokens/get_valid_access_token), always
+    wins over the connector's configured instance_url — that config value
+    may be nothing more than the generic login.salesforce.com the user
+    authenticated against, which isn't a valid API host after login.
+    """
     from app.models.connector import Connector
     from app.services import oauth
     from app.services.oauth_providers import get_provider_config
 
+    conn = Connector.query.filter_by(name=connector_name, enabled=True).first()
+    if not conn:
+        return None, None, f"Error: connector '{connector_name}' not found"
+    if conn.connector_type != "salesforce":
+        return None, None, f"Error: connector '{connector_name}' is not a salesforce connector"
+
+    cfg = json.loads(conn.config or "{}")
+    provider_cfg = get_provider_config("salesforce", cfg)
+
+    try:
+        access_token = oauth.get_valid_access_token(conn, provider_cfg["token_endpoint"])
+    except oauth.ReAuthRequired:
+        return None, None, f"Error: connector '{connector_name}' needs to be reconnected (OAuth consent expired or was never completed)"
+    except Exception as e:
+        return None, None, f"Error: could not obtain a valid Salesforce access token: {e}"
+
+    instance_url = (conn.get_auth().get("instance_url") or cfg.get("instance_url")
+                    or "https://login.salesforce.com").rstrip("/")
+    return access_token, instance_url, None
+
+
+async def _handle_create_salesforce_record(tool_name: str, args: dict) -> str:
+    """Create a record (Lead, Case, Account, etc.) via a configured salesforce connector."""
     connector_name = args.get("connector", "")
     sobject_type = (args.get("sobject_type") or "").strip()
     fields = args.get("fields")
@@ -1313,29 +2510,9 @@ async def _handle_create_salesforce_record(tool_name: str, args: dict) -> str:
     if not _is_safe_path_segment(sobject_type):
         return "Error: sobject_type must not contain '/', '\\', whitespace, '..', '?', '#', or '%'"
 
-    conn = Connector.query.filter_by(name=connector_name, enabled=True).first()
-    if not conn:
-        return f"Error: connector '{connector_name}' not found"
-    if conn.connector_type != "salesforce":
-        return f"Error: connector '{connector_name}' is not a salesforce connector"
-
-    cfg = json.loads(conn.config or "{}")
-    provider_cfg = get_provider_config("salesforce", cfg)
-
-    try:
-        access_token = oauth.get_valid_access_token(conn, provider_cfg["token_endpoint"])
-    except oauth.ReAuthRequired:
-        return f"Error: connector '{connector_name}' needs to be reconnected (OAuth consent expired or was never completed)"
-    except Exception as e:
-        return f"Error: could not obtain a valid Salesforce access token: {e}"
-
-    # The org's real API host, returned by Salesforce alongside the tokens
-    # (persisted by oauth.py's _store_tokens/get_valid_access_token), always
-    # wins over the connector's configured instance_url — that config value
-    # may be nothing more than the generic login.salesforce.com the user
-    # authenticated against, which isn't a valid API host after login.
-    instance_url = (conn.get_auth().get("instance_url") or cfg.get("instance_url")
-                    or "https://login.salesforce.com").rstrip("/")
+    access_token, instance_url, err = _get_salesforce_connector(connector_name)
+    if err:
+        return err
 
     url = f"{instance_url}/services/data/v59.0/sobjects/{sobject_type}"
     headers = {"Authorization": f"Bearer {access_token}"}
@@ -1351,6 +2528,76 @@ async def _handle_create_salesforce_record(tool_name: str, args: dict) -> str:
         return f"Error: Salesforce returned HTTP {resp.status_code}\n{resp.text[:1000]}"
     except Exception as e:
         return f"Error creating Salesforce record: {e}"
+
+
+_MAX_SOQL_RECORDS = 50
+
+
+async def _handle_query_salesforce(tool_name: str, args: dict) -> str:
+    """Run a read-only SOQL query via a configured salesforce connector.
+
+    Tier 0 — read-only. Capped at _MAX_SOQL_RECORDS records and never
+    follows nextRecordsUrl: a bulk SELECT over a CRM's full contact/lead
+    table is exactly the kind of thing that shouldn't be a single
+    auto-run, unattended-eligible call with no result-size ceiling.
+
+    The query is sent as a `params=` value, never f-strung into the URL —
+    that's what actually stops it from escaping into a different endpoint
+    via a crafted '&'/'#' (percent-encoding), not a keyword blocklist. SOQL
+    has no DML — /query only ever accepts SELECT — so a simple prefix check
+    is enough defense-in-depth without the SQL-shaped comment-stripping/
+    stacked-query logic _assert_select_only uses for the actual SQL
+    connector.
+
+    Results are PII-scanned (fails open, same as every other PII-scan call
+    site in this app) before being returned — Salesforce records are the
+    highest-PII-density source in this batch (contacts/leads routinely
+    carry names, emails, phone numbers), and tool results otherwise reach
+    the LLM completely unscanned.
+    """
+    connector_name = args.get("connector", "")
+    soql = (args.get("soql") or "").strip()
+
+    if not connector_name:
+        return "Error: connector name is required"
+    if not soql:
+        return "Error: soql is required"
+    if not re.match(r"^\s*SELECT\b", soql, re.IGNORECASE):
+        return "Error: only SELECT queries are permitted"
+
+    access_token, instance_url, err = _get_salesforce_connector(connector_name)
+    if err:
+        return err
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(f"{instance_url}/services/data/v59.0/query",
+                                    headers=headers, params={"q": soql})
+        if resp.status_code == 200:
+            data = resp.json()
+            records = data.get("records", [])[:_MAX_SOQL_RECORDS]
+            if not records:
+                return "No records found"
+            lines = [", ".join(f"{k}={v}" for k, v in rec.items() if k != "attributes")
+                     for rec in records]
+            result = "\n".join(lines)
+            total = data.get("totalSize", len(records))
+            if total > len(records):
+                result += f"\n...[{total - len(records)} more record(s) not shown — refine the query]"
+
+            try:
+                from app.services.pii_guard import get_pii_guard
+                cleaned, _detected, _types = get_pii_guard().scan(result, direction="outbound")
+                result = cleaned
+            except Exception as e:
+                log.warning("Salesforce query PII scan failed: %s — returning unscanned", e)
+            return result
+        return f"Error: Salesforce returned HTTP {resp.status_code}\n{resp.text[:1000]}"
+    except Exception as e:
+        return f"Error querying Salesforce: {e}"
 
 
 async def _handle_search_emails(tool_name: str, args: dict) -> str:
@@ -1408,6 +2655,7 @@ async def _handle_send_email(tool_name: str, args: dict) -> str:
     to = (args.get("to") or "").strip()
     subject = (args.get("subject") or "").strip()
     body = args.get("body") or ""
+    html = args.get("html") or ""
     cc = (args.get("cc") or "").strip()
 
     if not to:
@@ -1420,6 +2668,31 @@ async def _handle_send_email(tool_name: str, args: dict) -> str:
     except ImportError:
         return "Error: pywin32 not installed (Windows-only)"
 
+    # COM requires apartment-threading setup PER OS THREAD. This tool has
+    # only ever run from a request thread or an agent's own background
+    # thread, either of which may have had COM implicitly initialized by
+    # pywin32's first use — but the scheduled-digest caller fires from
+    # triggers.py's dedicated scheduler thread, which has never exercised
+    # this path before. pythoncom itself is Windows-only and optional
+    # everywhere else (ImportError). Calling CoInitialize() on a thread
+    # that's already initialized in the SAME apartment mode is a harmless
+    # no-op (S_FALSE) — but one already initialized in a DIFFERENT mode
+    # raises pythoncom.com_error (RPC_E_CHANGED_MODE), which is just as
+    # benign (the thread already has a COM apartment, which is all
+    # Dispatch() needs) but must be caught broadly, not just ImportError,
+    # or this would be a regression for every existing caller's thread.
+    try:
+        import pythoncom
+    except ImportError:
+        pythoncom = None
+    _com_initialized = False
+    if pythoncom is not None:
+        try:
+            pythoncom.CoInitialize()
+            _com_initialized = True
+        except Exception as e:
+            log.debug("send_email: thread already has a COM apartment: %s", e)
+
     try:
         outlook = win32com.client.Dispatch("Outlook.Application")
         mail = outlook.CreateItem(0)  # 0 = olMailItem
@@ -1427,8 +2700,59 @@ async def _handle_send_email(tool_name: str, args: dict) -> str:
         if cc:
             mail.CC = cc
         mail.Subject = subject
-        mail.Body = body
+        if html:
+            mail.HTMLBody = html
+        else:
+            mail.Body = body
         mail.Send()
         return f"Email sent to {to}: {subject}"
     except Exception as e:
         return f"Error sending email: {e}"
+    finally:
+        if _com_initialized:
+            pythoncom.CoUninitialize()
+
+
+async def _handle_http_request(tool_name: str, args: dict) -> str:
+    """Make an HTTP request with full control over method, headers, and body.
+
+    Tier 2 (not Tier 1 like fetch_url, its GET-only sibling): this tool can
+    send arbitrary POST/PUT/PATCH/DELETE to any allowed host, which is a
+    materially different effect than a read-only GET — Tier 2 is refused
+    under autonomous goal pursuit's Tier-1 ceiling while remaining allowed
+    in attended chat, so an unattended run can't use this to write anywhere.
+    """
+    from app.services.connector_auth import validate_untrusted_url
+
+    url = (args.get("url") or "").strip()
+    method = (args.get("method") or "GET").strip().upper()
+    if not url:
+        return "Error: url is required"
+    if method not in ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"):
+        return f"Error: unsupported method '{method}'"
+    err = validate_untrusted_url(url)
+    if err:
+        return err
+
+    headers = args.get("headers") if isinstance(args.get("headers"), dict) else {}
+    body = args.get("body")
+    try:
+        timeout = min(float(args.get("timeout") or 10), 30)
+    except (TypeError, ValueError):
+        timeout = 10
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            kwargs = {"headers": headers}
+            if body is not None and method not in ("GET", "HEAD"):
+                kwargs["content"] = body if isinstance(body, str) else json.dumps(body)
+            status, resp_headers, text, truncated = await _http_fetch_capped(client, method, url, **kwargs)
+        if truncated:
+            text += "\n...[truncated]"
+        content_type = resp_headers.get("content-type", "")
+        return f"HTTP {status} ({content_type})\n{text}"
+    except httpx.TimeoutException:
+        return f"Error: request to {url} timed out after {timeout}s"
+    except Exception as e:
+        return f"Error making request: {e}"

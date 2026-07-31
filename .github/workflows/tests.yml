@@ -37,6 +37,7 @@ jobs:
             python-pptx \
             openpyxl \
             reportlab \
+            pypdf \
             regex \
             pytest \
             pytest-cov

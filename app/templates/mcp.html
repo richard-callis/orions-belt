@@ -343,6 +343,12 @@ function renderDirectories(dirs) {
         </div>
         <div class="text-[11px] font-mono text-text-muted">${escHtml(d.path)}</div>
       </div>
+      ${d.enabled ? `
+      <button onclick="reindexDirectory('${escHtml(d.id)}', this)"
+              title="Reindex for document search (.txt/.md/.pdf/.docx)"
+              class="p-1.5 rounded text-text-muted hover:text-accent hover:bg-accent/10 transition-colors">
+        <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+      </button>` : ''}
       <button onclick="toggleDirectory('${escHtml(d.id)}', ${!d.enabled})"
               title="${d.enabled ? 'Disable' : 'Enable'}"
               class="p-1.5 rounded transition-colors ${d.enabled ? 'text-status-healthy hover:bg-status-healthy/10' : 'text-text-muted hover:bg-bg-raised'}">
@@ -402,6 +408,31 @@ async function deleteDirectory(id) {
     await loadDirectories();
   } catch (e) {
     console.error('Failed to delete directory:', e);
+  }
+}
+
+async function reindexDirectory(id, btn) {
+  const icon = btn.querySelector('i');
+  btn.disabled = true;
+  if (icon) icon.classList.add('animate-spin');
+  try {
+    const res = await fetch(`/mcp/api/directories/${id}/reindex`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(`Reindex failed: ${data.error || 'unknown error'}`);
+      return;
+    }
+    let msg = `Indexed ${data.files_indexed} file(s), ${data.chunks_created} chunk(s)` +
+              (data.files_partially_indexed ? `, ${data.files_partially_indexed} partially indexed` : '') +
+              (data.files_skipped ? `, skipped ${data.files_skipped}` : '');
+    if (data.capped) msg += ' — hit the indexing limit, some files were not indexed';
+    alert(msg);
+  } catch (e) {
+    console.error('Failed to reindex directory:', e);
+    alert('Reindex failed — see console for details');
+  } finally {
+    btn.disabled = false;
+    if (icon) icon.classList.remove('animate-spin');
   }
 }
 
