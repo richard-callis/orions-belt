@@ -1464,6 +1464,21 @@ def _seed_novas(app):
                 config=json.dumps(config),
                 **nova_def,
             ))
+        elif existing.source == "bundled":
+            # Bundled Novas are entirely code-defined — nova.py's PATCH/DELETE
+            # routes 403 on source=="bundled", so there's no per-install
+            # customization to preserve here, same argument as
+            # _seed_builtin_tools. Without this, a Nova row created by an
+            # OLDER version of this function keeps its STALE config forever;
+            # activating it (mcp_tool import) later replays the old
+            # tier/schema/description baked into that stale config, not the
+            # corrected current one.
+            existing.display_name = nova_def["display_name"]
+            existing.description = nova_def.get("description")
+            existing.category = nova_def.get("category")
+            existing.nova_type = nova_def["nova_type"]
+            existing.tags = json.dumps(tags)
+            existing.config = json.dumps(config)
     db.session.commit()
 
 

@@ -133,6 +133,40 @@ class TestRunDueDigests:
                 MCPTool.query.filter_by(id="mt-send2").delete()
                 db.session.commit()
 
+    def test_dispatch_window_starts_at_previous_last_run_not_now(self, app, monkeypatch):
+        # Regression test: run_due_schedules overwrites row.last_run_at to
+        # `now` (the claim) BEFORE dispatch_fn runs, so a naive read of
+        # schedule.last_run_at inside _dispatch would always see `now` and
+        # collapse the digest window to zero length. The schedule's
+        # PREVIOUS last_run_at must reach _dispatch_digest as period_start.
+        with app.app_context():
+            db.session.add(MCPTool(id="mt-send3", name="send_email", tier=2, enabled=True, source="builtin"))
+            previous_run = datetime.now(timezone.utc) - timedelta(days=3)
+            past_due = datetime.now(timezone.utc) - timedelta(minutes=5)
+            schedule = DigestSchedule(id="ds-4", recipient_email="a@example.com", frequency="daily",
+                                      hour_utc=9, enabled=True, next_run_at=past_due,
+                                      last_run_at=previous_run)
+            db.session.add(schedule)
+            db.session.commit()
+
+            captured = {}
+            def fake_dispatch(schedule_id, email, start, end):
+                captured["start"] = start
+                captured["end"] = end
+            monkeypatch.setattr(digest_mod, "_dispatch_digest", fake_dispatch)
+
+            try:
+                dispatched = digest_mod.run_due_digests()
+                assert dispatched == 1
+                assert captured["start"] is not None
+                # The window must span back to (at least) the previous run,
+                # not collapse to now==now.
+                assert (captured["end"] - captured["start"]) >= timedelta(days=2, hours=23)
+            finally:
+                _cleanup("ds-4")
+                MCPTool.query.filter_by(id="mt-send3").delete()
+                db.session.commit()
+
     def test_disabled_digest_never_fires(self, app, monkeypatch):
         with app.app_context():
             past = datetime.now(timezone.utc) - timedelta(minutes=5)

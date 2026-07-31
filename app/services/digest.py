@@ -120,8 +120,12 @@ def run_due_digests() -> int:
 
     now = datetime.now(timezone.utc)
 
-    def _dispatch(schedule):
-        period_start = schedule.last_run_at or (now - _DEFAULT_LOOKBACK)
+    def _dispatch(schedule, previous_last_run_at):
+        # Must use the PRE-claim last_run_at run_due_schedules hands us, not
+        # schedule.last_run_at — that's already been overwritten to `now` by
+        # the time this runs, which would collapse every digest's window to
+        # zero length (last_run_at == now == period_end).
+        period_start = previous_last_run_at or (now - _DEFAULT_LOOKBACK)
         # last_run_at is naive after a SQLite round-trip (this app's usual
         # datetime-column caveat) — normalize before comparing/subtracting.
         if period_start.tzinfo is None:

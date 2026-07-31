@@ -106,10 +106,14 @@ def run_due_schedules(model, now: datetime, dispatch_fn, skip_fn=None) -> int:
     round that runs past the next tick can't be double-fired — has exactly
     one implementation, not one per schedule type.
 
-    `dispatch_fn(row)` does the actual work for one due row. `skip_fn(row)`,
-    if given, can skip dispatch for a due row (its next_run_at still
-    advances, same as a dispatch failure) without counting as an error —
-    used by triggers for the room-busy check.
+    `dispatch_fn(row, previous_last_run_at)` does the actual work for one due
+    row. `previous_last_run_at` is the row's `last_run_at` value from BEFORE
+    this pass claimed it (None if the row has never fired) — callers that
+    need "since when" (e.g. a digest's activity window) must use this, not
+    `row.last_run_at`, which has already been overwritten to `now` by the
+    time dispatch_fn runs. `skip_fn(row)`, if given, can skip dispatch for a
+    due row (its next_run_at still advances, same as a dispatch failure)
+    without counting as an error — used by triggers for the room-busy check.
 
     Returns the number of rows actually dispatched (skipped/failed ones
     don't count).
@@ -119,6 +123,7 @@ def run_due_schedules(model, now: datetime, dispatch_fn, skip_fn=None) -> int:
     due = model.query.filter(model.enabled.is_(True), model.next_run_at <= now).all()
     dispatched = 0
     for row in due:
+        previous_last_run_at = row.last_run_at
         row.last_run_at = now
         row.next_run_at = _compute_next_run(row.frequency, row.day_of_week, row.hour_utc, after=now)
         db.session.commit()
@@ -127,7 +132,7 @@ def run_due_schedules(model, now: datetime, dispatch_fn, skip_fn=None) -> int:
             continue
 
         try:
-            dispatch_fn(row)
+            dispatch_fn(row, previous_last_run_at)
             dispatched += 1
         except Exception as e:
             log.error("Schedule %s dispatch failed: %s", row.id, e, exc_info=True)
@@ -155,7 +160,7 @@ def run_due_triggers() -> int:
     now = datetime.now(timezone.utc)
     app = current_app._get_current_object()
 
-    def _dispatch(trig):
+    def _dispatch(trig, _previous_last_run_at):
         _dispatch_trigger(app, trig.id, trig.room_id, trig.prompt_text)
 
     def _skip(trig):
