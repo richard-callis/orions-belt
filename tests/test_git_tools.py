@@ -312,3 +312,116 @@ class TestGitConfigHardening:
         with app.app_context():
             result = _run(mcp_tools._handle_git_status("git_status", {"path": str(git_repo)}))
         assert "clean working tree" in result
+
+    def test_commit_gpgsign_alone_is_not_flagged(self, app, git_repo):
+        """commit.gpgsign=true on its own can't execute anything (only
+        gpg.program, checked separately, can) — it's an entirely ordinary
+        setting on any repo where the operator signs commits, and it's
+        already neutralized by the -c commit.gpgSign=false override
+        regardless. Flagging it as 'dangerous' would refuse read-only
+        git_status/git_diff on totally normal repos for no security benefit."""
+        (git_repo / ".git" / "config").write_text(
+            (git_repo / ".git" / "config").read_text() +
+            '\n[commit]\n\tgpgsign = true\n'
+        )
+        with app.app_context():
+            result = _run(mcp_tools._handle_git_status("git_status", {"path": str(git_repo)}))
+        assert "clean working tree" in result
+
+    def test_malicious_filter_via_include_path_is_refused_not_executed(self, app, git_repo):
+        """`git config --local --list` does not reliably expand
+        include.path/includeIf — a dangerous filter driver defined only in
+        an INCLUDED file was invisible to a --local-scoped listing while
+        still being fully effective. The safety check must read the same
+        unscoped, include-expanded config the real git command will."""
+        marker = git_repo / "INCLUDE_FILTER_RAN"
+        (git_repo / ".git" / "evil.inc").write_text(
+            f'[filter "evil"]\n\tclean = touch {marker}\n\tsmudge = cat\n'
+        )
+        (git_repo / ".git" / "config").write_text(
+            (git_repo / ".git" / "config").read_text() +
+            '\n[include]\n\tpath = evil.inc\n'
+        )
+        (git_repo / ".gitattributes").write_text("* filter=evil\n")
+
+        with app.app_context():
+            result_status = _run(mcp_tools._handle_git_status("git_status", {"path": str(git_repo)}))
+            result_diff = _run(mcp_tools._handle_git_diff("git_diff", {"path": str(git_repo)}))
+
+        assert not marker.exists(), "filter.clean reached via include.path executed — bypass not neutralized"
+        assert "unsafe" in result_status.lower() or "Error" in result_status
+        assert "unsafe" in result_diff.lower() or "Error" in result_diff
+
+    def test_malicious_filter_via_worktree_config_is_refused_not_executed(self, app, git_repo):
+        """`git config --local --list` excludes the worktree config scope
+        (.git/config.worktree, active whenever extensions.worktreeConfig is
+        set) entirely — a dangerous filter driver defined only there was
+        invisible to a --local-scoped listing while still being fully
+        effective. The safety check must read the same unscoped config the
+        real git command will, which includes the worktree scope."""
+        marker = git_repo / "WORKTREE_FILTER_RAN"
+        (git_repo / ".git" / "config").write_text(
+            (git_repo / ".git" / "config").read_text() +
+            '\n[extensions]\n\tworktreeConfig = true\n'
+        )
+        (git_repo / ".git" / "config.worktree").write_text(
+            f'[filter "evil"]\n\tclean = touch {marker}\n\tsmudge = cat\n'
+        )
+        (git_repo / ".gitattributes").write_text("* filter=evil\n")
+
+        with app.app_context():
+            result_status = _run(mcp_tools._handle_git_status("git_status", {"path": str(git_repo)}))
+            result_diff = _run(mcp_tools._handle_git_diff("git_diff", {"path": str(git_repo)}))
+
+        assert not marker.exists(), "filter.clean reached via worktree config executed — bypass not neutralized"
+        assert "unsafe" in result_status.lower() or "Error" in result_status
+        assert "unsafe" in result_diff.lower() or "Error" in result_diff
+
+
+class TestGitCommitPathspecMagic:
+    """git_commit's containment/isdir checks operate on the RESOLVED path of
+    each input string — but a pathspec-magic string (a glob, or a `:`-prefixed
+    long/short magic form) never resolves to an existing file or directory in
+    the first place, so those checks silently don't apply to it, and it still
+    reaches `git add -- <pathspec>` where git itself expands the magic. This
+    is exactly the "add everything" behavior that taking explicit `paths`
+    instead of a flag was meant to prevent, reachable through a different
+    door than the "." case already covered above.
+    --literal-pathspecs (set on every git invocation in _run_git) disables
+    all pathspec magic globally, so these should now fail closed."""
+
+    def test_rejects_glob_star_pathspec(self, app, git_repo):
+        (git_repo / "a.txt").write_text("a")
+        (git_repo / "secret.env").write_text("SECRET=1")
+        with app.app_context():
+            result = _run(mcp_tools._handle_git_commit("git_commit", {
+                "path": str(git_repo), "message": "msg", "paths": ["*"],
+            }))
+        assert result.startswith("Error")
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=str(git_repo),
+                                capture_output=True, text=True).stdout
+        assert "secret.env" in status  # still untracked — nothing was staged/committed
+
+    def test_rejects_long_magic_glob_pathspec(self, app, git_repo):
+        (git_repo / "a.txt").write_text("a")
+        (git_repo / "secret.env").write_text("SECRET=1")
+        with app.app_context():
+            result = _run(mcp_tools._handle_git_commit("git_commit", {
+                "path": str(git_repo), "message": "msg", "paths": [":(glob)**"],
+            }))
+        assert result.startswith("Error")
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=str(git_repo),
+                                capture_output=True, text=True).stdout
+        assert "secret.env" in status
+
+    def test_rejects_short_magic_top_pathspec(self, app, git_repo):
+        (git_repo / "a.txt").write_text("a")
+        (git_repo / "secret.env").write_text("SECRET=1")
+        with app.app_context():
+            result = _run(mcp_tools._handle_git_commit("git_commit", {
+                "path": str(git_repo), "message": "msg", "paths": [":/"],
+            }))
+        assert result.startswith("Error")
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=str(git_repo),
+                                capture_output=True, text=True).stdout
+        assert "secret.env" in status

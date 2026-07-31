@@ -1195,8 +1195,15 @@ _GIT_NO_HOOKS_PATH = "/dev/null/orions-belt-no-hooks"
 _DANGEROUS_GIT_CONFIG_RE = re.compile(
     r"^(filter\..*\.(clean|smudge|process)|diff\..*\.(command|textconv)|"
     r"core\.(fsmonitor|sshcommand|alternaterefscommand|askpass|gitproxy|pager)|"
-    r"credential\.helper|gpg\.program|commit\.gpgsign|uploadpack\..*|pager\..*)$",
+    r"credential\.helper|gpg\.program|uploadpack\..*|pager\..*)$",
     re.IGNORECASE,
+    # commit.gpgsign is deliberately NOT here: on its own (without
+    # gpg.program also pointed at an attacker-chosen path — which IS
+    # matched above) it can't execute anything, it's a completely ordinary
+    # setting on any repo where the operator signs commits, and it's
+    # already neutralized regardless via the `-c commit.gpgSign=false`
+    # override below. Including it here just refused read-only commands
+    # (git_status/git_diff) on totally normal repos for no security benefit.
 )
 
 
@@ -1204,21 +1211,34 @@ async def _git_config_is_safe(cwd: str, env: dict) -> bool:
     """True if `cwd`'s repo-local git config contains no key that could
     result in arbitrary command execution. Listing config (`git config
     --list`) executes nothing itself — it only parses and prints config
-    files as text (including anything reached via include.path/includeIf,
-    which is fine: the merged listing still shows the effective key either
-    way) — so this is safe to run unconditionally before every git
-    subcommand. Fails CLOSED: any error running the check itself is treated
-    as unsafe.
+    files as text — so this is safe to run unconditionally before every
+    git subcommand. Fails CLOSED: any error running the check itself is
+    treated as unsafe.
+
+    Deliberately UNSCOPED (no --local): --local alone (a) does NOT reliably
+    expand include.path/includeIf despite --includes defaulting to on for
+    config lookups — verified against a real repo: a `.git/config` with
+    only `[include] path = evil.inc` plus an `evil.inc` containing a
+    dangerous filter driver passed this check under `--local --list` while
+    the danger was still effective — and (b) excludes the worktree config
+    scope (`.git/config.worktree`, active whenever `extensions.worktreeConfig
+    = true`), which is a second place a dangerous key can hide entirely
+    outside `--local`'s view. An unscoped `git config --list --includes`
+    reads system+global+local+worktree+includes — system and global are
+    already neutralized by GIT_CONFIG_NOSYSTEM/GIT_CONFIG_GLOBAL in `env`
+    (passed to this subprocess exactly as it will be to the real git
+    command), so what's left is exactly local+worktree+includes: the same
+    effective config the actual git command below will see.
     """
     try:
         proc = await asyncio.create_subprocess_exec(
-            "git", "config", "--local", "--list", "--null",
+            "git", "config", "--list", "--includes", "--null",
             cwd=cwd, env=env,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
-        # Exit code 1 with no output means "no repo-local config at all" —
-        # common and safe, not an error.
+        # Exit code 1 with no output means "no config at all" — common and
+        # safe, not an error.
         if proc.returncode not in (0, 1):
             return False
         for entry in stdout.decode("utf-8", errors="replace").split("\x00"):
@@ -1226,7 +1246,7 @@ async def _git_config_is_safe(cwd: str, env: dict) -> bool:
                 continue
             key = entry.split("\n", 1)[0]
             if _DANGEROUS_GIT_CONFIG_RE.match(key):
-                log.warning("git tool refused: unsafe repo-local config key %r in %s", key, cwd)
+                log.warning("git tool refused: unsafe config key %r in %s", key, cwd)
                 return False
         return True
     except Exception as e:
@@ -1268,7 +1288,7 @@ async def _run_git(git_args: list, cwd: str, timeout: float = 30,
                        "diff/textconv, credential helper, or gpg program) — refusing to run "
                        "any git command against it.")
 
-    full_args = ["git", "--no-pager", "-c", "core.fsmonitor=", "-c", "core.pager=cat",
+    full_args = ["git", "--literal-pathspecs", "--no-pager", "-c", "core.fsmonitor=", "-c", "core.pager=cat",
                  "-c", f"core.hooksPath={_GIT_NO_HOOKS_PATH}", "-c", "commit.gpgSign=false"]
     if identity:
         name, email = identity
