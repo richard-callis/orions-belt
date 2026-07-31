@@ -35,8 +35,13 @@ _DEFAULT_GRAPH_FEATURES = ("teams", "planner")
 
 
 def _graph_scope_string(config: dict) -> str:
-    features = (config or {}).get("scopes") or list(_DEFAULT_GRAPH_FEATURES)
-    perms = [GRAPH_SCOPE_FEATURES[f] for f in features if f in GRAPH_SCOPE_FEATURES]
+    config = config or {}
+    # `"scopes" in config` (not truthiness) distinguishes "never configured"
+    # from "explicitly configured to zero features" — an `or` on the value
+    # would treat a deliberately-empty [] the same as unset and silently
+    # re-grant the teams+planner default the user just chose not to have.
+    features = config["scopes"] if "scopes" in config else list(_DEFAULT_GRAPH_FEATURES)
+    perms = [GRAPH_SCOPE_FEATURES[f] for f in (features or []) if f in GRAPH_SCOPE_FEATURES]
     # offline_access is required for a refresh_token at all on Graph, and is
     # always requested regardless of which features are selected.
     return "offline_access " + " ".join(perms)

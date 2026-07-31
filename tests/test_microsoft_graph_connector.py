@@ -229,6 +229,18 @@ class TestGraphScopeString:
         cfg = get_provider_config("microsoft_graph", {"scopes": ["calendar", "not-a-real-feature"]})
         assert "Calendars.ReadWrite" in cfg["scope"]
 
+    def test_explicitly_empty_scopes_does_not_fall_back_to_default(self):
+        # Regression test: scopes: [] means the user deliberately selected
+        # no features — an `or` on the value would treat that the same as
+        # "never configured" and silently re-grant teams+planner anyway.
+        from app.services.oauth_providers import get_provider_config
+        cfg = get_provider_config("microsoft_graph", {"scopes": []})
+        assert "ChannelMessage.Send" not in cfg["scope"]
+        assert "Tasks.ReadWrite" not in cfg["scope"]
+        assert "Calendars.ReadWrite" not in cfg["scope"]
+        assert "Files.ReadWrite" not in cfg["scope"]
+        assert cfg["scope"] == "offline_access "
+
 
 class TestGraphRequiredFeatureCheck:
     def test_blocks_call_when_granted_scope_lacks_the_feature(self, app, graph_connector):

@@ -210,10 +210,13 @@ def search_documents(query: str, top_k: int = 5) -> list[dict]:
     """Semantic search over indexed document chunks.
 
     Re-validates authorization on every hit's source file at query time —
-    the index is never trusted as an authorization record. Revoking an
-    AuthorizedDirectory (disabling/deleting it, or its expires_at passing)
-    must be honored immediately for every already-indexed chunk from that
-    directory, not just block future indexing.
+    the index is never trusted as an authorization record. Disabling or
+    deleting an AuthorizedDirectory is honored immediately for every
+    already-indexed chunk from that directory, not just future indexing.
+    (AuthorizedDirectory.expires_at is NOT currently enforced anywhere in
+    this app, including here — _authorize_path only checks `enabled`. If
+    that changes app-wide, this re-check picks it up automatically since it
+    goes through the same _authorize_path.)
     """
     from app.models.connector import AuthorizedDirectory
     from app.models.doc_index import DocumentChunk

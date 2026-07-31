@@ -47,6 +47,26 @@ class TestSeedBuiltinTools:
                     reloaded.tier = 2
                     db.session.commit()
 
+    def test_comment_on_github_pr_is_tier_2(self, app):
+        """comment_on_github_pr posts a visible, attributed comment on a PR
+        other people see — the same class of effect as post_teams_message/
+        send_email (Tier 2 each), not a private Tier-1 create. Simulates an
+        install that seeded it back when it was Tier 1."""
+        with app.app_context():
+            row = MCPTool.query.filter_by(name="comment_on_github_pr").first()
+            assert row is not None, "expected comment_on_github_pr to already be seeded"
+            row.tier = 1  # simulate the stale pre-fix row
+            db.session.commit()
+            try:
+                _seed_builtin_tools(app)
+                reloaded = MCPTool.query.filter_by(name="comment_on_github_pr").first()
+                assert reloaded.tier == 2
+            finally:
+                reloaded = MCPTool.query.filter_by(name="comment_on_github_pr").first()
+                if reloaded and reloaded.tier != 2:
+                    reloaded.tier = 2
+                    db.session.commit()
+
     def test_never_touches_tier_of_a_non_builtin_row_with_the_same_name(self, app):
         """A user-created (non-builtin, e.g. Nova-sourced) tool happening to
         share a name with a builtin one must not have its tier silently

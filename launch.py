@@ -255,8 +255,11 @@ def _seed_builtin_tools(app):
         ),
         dict(
             name="comment_on_github_pr",
-            tier=1,
-            description="Post a comment on a GitHub pull request via a configured github connector",
+            tier=2,
+            description="Post a comment on a GitHub pull request via a configured github connector. "
+                        "Tier 2 — same class of effect as post_teams_message/send_email (visible to "
+                        "other people, leaves the machine in the user's name), refused during "
+                        "unattended autonomous goal pursuit.",
             input_schema=json.dumps({
                 "type": "object",
                 "properties": {
