@@ -96,8 +96,12 @@ def index_directory(directory_id: str) -> dict:
 
     A full reindex (deletes and replaces that directory's existing chunks),
     not incremental — simple, and fine at this module's corpus cap. Returns
-    {"files_indexed", "chunks_created", "files_skipped", "capped"} or
-    {"error": ...} if the directory isn't usable.
+    {"files_indexed", "files_partially_indexed", "chunks_created",
+    "files_skipped", "capped"} or {"error": ...} if the directory isn't
+    usable. files_partially_indexed counts files where the corpus cap was
+    hit partway through that file's own chunks — some of its content is
+    indexed and searchable, but not all of it, so it's kept distinct from
+    files_indexed rather than overstating coverage.
     """
     from app import db
     from app.models.connector import AuthorizedDirectory
@@ -141,6 +145,7 @@ def index_directory(directory_id: str) -> dict:
     db.session.commit()
 
     files_indexed = 0
+    files_partially_indexed = 0
     files_skipped = 0
     chunks_created = 0
     capped = False
@@ -164,9 +169,11 @@ def index_directory(directory_id: str) -> dict:
 
         chunks = _chunk_text(text)
         indexed_any = False
+        file_cut_off = False
         for idx, chunk in enumerate(chunks):
             if chunks_created >= budget:
                 capped = True
+                file_cut_off = True
                 break
             vec = mem.embed(chunk)
             embedding_bytes = np.array(vec, dtype="float32").tobytes() if vec else None
@@ -177,7 +184,12 @@ def index_directory(directory_id: str) -> dict:
             ))
             chunks_created += 1
             indexed_any = True
-        if indexed_any:
+        if file_cut_off and indexed_any:
+            # The cap hit partway through this file's own chunks — some of
+            # its content IS indexed and searchable, but not all of it.
+            # Counting it as fully "files_indexed" would overstate coverage.
+            files_partially_indexed += 1
+        elif indexed_any:
             files_indexed += 1
         else:
             files_skipped += 1
@@ -186,8 +198,8 @@ def index_directory(directory_id: str) -> dict:
     if capped:
         log.warning("doc_index: hit the %d-chunk cap indexing directory %s — some files skipped",
                    _MAX_INDEXED_CHUNKS, directory_id)
-    return {"files_indexed": files_indexed, "chunks_created": chunks_created,
-            "files_skipped": files_skipped, "capped": capped}
+    return {"files_indexed": files_indexed, "files_partially_indexed": files_partially_indexed,
+            "chunks_created": chunks_created, "files_skipped": files_skipped, "capped": capped}
 
 
 def delete_directory_index(directory_id: str) -> int:

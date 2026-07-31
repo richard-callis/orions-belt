@@ -229,6 +229,32 @@ class TestIndexDirectory:
                 _cleanup_chunks(d.id)
                 _cleanup_dir(d.id)
 
+    def test_partially_indexed_file_reported_separately_from_fully_indexed(self, app, tmp_path, monkeypatch):
+        """Regression test: previously, a file whose OWN chunks were cut off
+        mid-way by the corpus cap was still counted under files_indexed,
+        overstating how much of it is actually searchable — some of its
+        content never got a chunk written at all."""
+        monkeypatch.setattr(doc_index_mod, "_MAX_INDEXED_CHUNKS", 1)
+        monkeypatch.setattr(memory_mod, "get_memory_service",
+                            lambda: type("M", (), {"embed": staticmethod(lambda t: [1.0, 0.0])})())
+        with app.app_context():
+            # Two paragraphs -> _chunk_text produces two separate chunks for
+            # this one file (see TestChunkText.test_splits_when_exceeding_chunk_size).
+            big = "x" * (doc_index_mod._CHUNK_CHARS - 10)
+            (tmp_path / "a.txt").write_text(big + "\n\n" + "y" * 500)
+            d = AuthorizedDirectory(path=str(tmp_path), alias="x", enabled=True, recursive=True)
+            db.session.add(d)
+            db.session.commit()
+            try:
+                result = doc_index_mod.index_directory(d.id)
+                assert result["files_indexed"] == 0
+                assert result["files_partially_indexed"] == 1
+                assert result["chunks_created"] == 1
+                assert result["capped"] is True
+            finally:
+                _cleanup_chunks(d.id)
+                _cleanup_dir(d.id)
+
     def test_returns_error_and_indexes_nothing_when_embedding_model_unavailable(self, app, tmp_path, monkeypatch):
         """Regression test: previously, when mem.embed() always returned
         None (e.g. sentence-transformers not installed), index_directory

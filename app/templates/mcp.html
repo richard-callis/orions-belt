@@ -423,6 +423,7 @@ async function reindexDirectory(id, btn) {
       return;
     }
     let msg = `Indexed ${data.files_indexed} file(s), ${data.chunks_created} chunk(s)` +
+              (data.files_partially_indexed ? `, ${data.files_partially_indexed} partially indexed` : '') +
               (data.files_skipped ? `, skipped ${data.files_skipped}` : '');
     if (data.capped) msg += ' — hit the indexing limit, some files were not indexed';
     alert(msg);

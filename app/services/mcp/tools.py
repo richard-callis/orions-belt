@@ -2340,6 +2340,12 @@ async def _handle_read_onedrive_file(tool_name: str, args: dict) -> str:
         return "Error: connector name is required"
     if not path:
         return "Error: path is required"
+    if ".." in path.split("/"):
+        # Graph resolves the whole quoted string as one path segment inside
+        # the connected user's own drive, so ".." can't actually escape to a
+        # different drive/tenant — this is defense-in-depth, not a real
+        # bypass, but there's no reason to accept it unrejected.
+        return f"Error: invalid path (must not contain '..'): {path}"
 
     access_token, err = _get_graph_connector_and_token(connector_name, required_feature="files")
     if err:
@@ -2378,6 +2384,10 @@ async def _handle_create_onedrive_file(tool_name: str, args: dict) -> str:
         return "Error: connector name is required"
     if not path:
         return "Error: path is required"
+    if ".." in path.split("/"):
+        # See read_onedrive_file's identical check — defense-in-depth, not a
+        # real bypass, since Graph resolves this within the user's own drive.
+        return f"Error: invalid path (must not contain '..'): {path}"
 
     access_token, err = _get_graph_connector_and_token(connector_name, required_feature="files")
     if err:

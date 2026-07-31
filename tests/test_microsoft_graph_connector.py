@@ -404,6 +404,13 @@ class TestReadOnedriveFile:
             }))
         assert "path is required" in result
 
+    def test_rejects_dot_dot_path_segment(self, app, graph_connector):
+        with app.app_context():
+            result = _run(mcp_tools._handle_read_onedrive_file("read_onedrive_file", {
+                "connector": "test-graph", "path": "Documents/../secrets.txt",
+            }))
+        assert "invalid path" in result
+
     def test_returns_error_on_404(self, app, graph_connector, monkeypatch):
         class FakeResponse:
             status_code = 404
@@ -471,6 +478,13 @@ class TestCreateOnedriveFile:
                 "connector": "test-graph", "content": "x",
             }))
         assert "path is required" in result
+
+    def test_rejects_dot_dot_path_segment(self, app, graph_connector):
+        with app.app_context():
+            result = _run(mcp_tools._handle_create_onedrive_file("create_onedrive_file", {
+                "connector": "test-graph", "path": "Documents/../secrets.txt", "content": "x",
+            }))
+        assert "invalid path" in result
 
     def test_refuses_to_overwrite_when_existence_check_is_inconclusive(self, app, graph_connector, monkeypatch):
         """A non-200, non-404 response from the existence-check GET (rate
