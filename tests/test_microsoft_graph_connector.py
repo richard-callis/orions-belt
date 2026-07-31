@@ -460,6 +460,28 @@ class TestCreateOnedriveFile:
             }))
         assert "path is required" in result
 
+    def test_refuses_to_overwrite_when_existence_check_is_inconclusive(self, app, graph_connector, monkeypatch):
+        """A non-200, non-404 response from the existence-check GET (rate
+        limited, transient 5xx, ...) means we genuinely don't know if the
+        file exists — must refuse rather than fall through to an
+        unconditional PUT that could silently overwrite a real file."""
+        captured = {}
+
+        class FakeGetResponse:
+            status_code = 429
+            text = "Too Many Requests"
+
+        import httpx
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeMultiCallAsyncClient(captured, [FakeGetResponse()]))
+
+        with app.app_context():
+            result = _run(mcp_tools._handle_create_onedrive_file("create_onedrive_file", {
+                "connector": "test-graph", "path": "Documents/maybe-exists.txt", "content": "x",
+            }))
+
+        assert result.startswith("Error")
+        assert len(captured["calls"]) == 1  # never reached the PUT
+
     def test_requires_files_scope(self, app, graph_connector):
         with app.app_context():
             c = Connector.query.filter_by(name="test-graph").first()

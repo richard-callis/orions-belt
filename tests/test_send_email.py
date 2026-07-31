@@ -174,6 +174,44 @@ class TestSendEmail:
             sys.modules.pop("win32com", None)
             sys.modules.pop("pythoncom", None)
 
+    def test_com_already_initialized_in_different_mode_is_benign(self, app):
+        # CoInitialize() raises pythoncom.com_error (RPC_E_CHANGED_MODE) if
+        # the calling thread already has a COM apartment in a DIFFERENT
+        # threading mode — a real possibility for existing callers (request
+        # threads, agent background threads) that ran other COM code first.
+        # This must not propagate as a tool failure; the thread already has
+        # SOME apartment, which is all Dispatch() needs.
+        _install_fake_win32com()
+
+        class _RaisingPythoncom:
+            calls = []
+
+            @staticmethod
+            def CoInitialize():
+                _RaisingPythoncom.calls.append("init-attempted")
+                raise OSError("simulated RPC_E_CHANGED_MODE: thread already initialized")
+
+            @staticmethod
+            def CoUninitialize():
+                _RaisingPythoncom.calls.append("uninit")
+
+        _RaisingPythoncom.calls = []
+        sys.modules["pythoncom"] = _RaisingPythoncom
+        try:
+            with app.app_context():
+                result = _run(mcp_tools._handle_send_email("send_email", {
+                    "to": "a@example.com", "subject": "s", "body": "b",
+                }))
+            assert "Email sent" in result
+            # CoInitialize was attempted (and failed) but since we never
+            # successfully initialized, we must not call CoUninitialize —
+            # that would tear down an apartment we didn't set up.
+            assert _RaisingPythoncom.calls == ["init-attempted"]
+        finally:
+            sys.modules.pop("win32com.client", None)
+            sys.modules.pop("win32com", None)
+            sys.modules.pop("pythoncom", None)
+
     def test_works_without_pythoncom_installed(self, app):
         # pythoncom must be a fully optional import — the tool still works
         # (just without the explicit COM init) when it isn't present, e.g.

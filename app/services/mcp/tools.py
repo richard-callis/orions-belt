@@ -1391,8 +1391,13 @@ async def _handle_git_commit(tool_name: str, args: dict) -> str:
             return f"Error: access denied — system path blocked: {p}"
         if not _authorize_path(real_p):
             return f"Error: path not authorized: {p}{_authorized_dirs_hint()}"
-        if not real_p.startswith(real_path + os.sep) and real_p != real_path:
+        if not real_p.startswith(real_path + os.sep):
+            # Also catches real_p == real_path (paths: ["."]) — that's
+            # effectively `git add -A`, exactly what taking explicit `paths`
+            # instead of an "add everything" flag is meant to prevent.
             return f"Error: path is outside the target repo: {p}"
+        if os.path.isdir(real_p):
+            return f"Error: path is a directory, not a file — commit explicit files: {p}"
         real_paths.append(os.path.relpath(real_p, real_path))
 
     # Blocking system/global git config (in _run_git, to stop a malicious
@@ -2384,6 +2389,15 @@ async def _handle_create_onedrive_file(tool_name: str, args: dict) -> str:
                 f"https://graph.microsoft.com/v1.0/me/drive/root:/{encoded_path}", headers=headers)
             if existing.status_code == 200:
                 return f"Error: file already exists: {path}"
+            if existing.status_code != 404:
+                # Anything other than a clean 404 (429 rate-limited, 5xx,
+                # auth hiccup, ...) means we genuinely don't know whether the
+                # file exists — falling through to PUT here would silently
+                # overwrite a real file the existence check merely failed to
+                # see. Refuse instead of guessing.
+                return (f"Error: could not determine whether {path} already exists "
+                        f"(Microsoft Graph returned HTTP {existing.status_code} on the "
+                        f"existence check) — refusing to risk an overwrite")
             resp = await client.put(
                 f"https://graph.microsoft.com/v1.0/me/drive/root:/{encoded_path}:/content",
                 headers=headers, content=content.encode("utf-8"))
@@ -2609,15 +2623,25 @@ async def _handle_send_email(tool_name: str, args: dict) -> str:
     # thread, either of which may have had COM implicitly initialized by
     # pywin32's first use — but the scheduled-digest caller fires from
     # triggers.py's dedicated scheduler thread, which has never exercised
-    # this path before. CoInitialize is safe to call even if the thread is
-    # already initialized (returns S_FALSE, not an error); pythoncom itself
-    # is Windows-only and optional everywhere else.
+    # this path before. pythoncom itself is Windows-only and optional
+    # everywhere else (ImportError). Calling CoInitialize() on a thread
+    # that's already initialized in the SAME apartment mode is a harmless
+    # no-op (S_FALSE) — but one already initialized in a DIFFERENT mode
+    # raises pythoncom.com_error (RPC_E_CHANGED_MODE), which is just as
+    # benign (the thread already has a COM apartment, which is all
+    # Dispatch() needs) but must be caught broadly, not just ImportError,
+    # or this would be a regression for every existing caller's thread.
     try:
         import pythoncom
-        pythoncom.CoInitialize()
-        _com_initialized = True
     except ImportError:
-        _com_initialized = False
+        pythoncom = None
+    _com_initialized = False
+    if pythoncom is not None:
+        try:
+            pythoncom.CoInitialize()
+            _com_initialized = True
+        except Exception as e:
+            log.debug("send_email: thread already has a COM apartment: %s", e)
 
     try:
         outlook = win32com.client.Dispatch("Outlook.Application")

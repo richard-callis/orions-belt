@@ -177,6 +177,36 @@ class TestGitCommit:
             }))
         assert "not authorized" in result or "outside the target repo" in result
 
+    def test_rejects_dot_as_a_path_add_all_loophole(self, app, git_repo):
+        """paths: ["."] resolves to the repo root itself — staging it is
+        equivalent to `git add -A`, exactly what taking explicit `paths`
+        instead of an "add everything" flag is meant to prevent (an agent
+        could stage and commit a .env or other file it never meant to)."""
+        (git_repo / "a.txt").write_text("a")
+        (git_repo / "secret.env").write_text("SECRET=1")
+        with app.app_context():
+            result = _run(mcp_tools._handle_git_commit("git_commit", {
+                "path": str(git_repo), "message": "msg", "paths": ["."],
+            }))
+        assert result.startswith("Error")
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=str(git_repo),
+                                capture_output=True, text=True).stdout
+        assert "a.txt" in status  # still untracked — nothing was staged/committed
+
+    def test_rejects_a_directory_path(self, app, git_repo):
+        """Only explicit files are accepted — a subdirectory would stage
+        everything under it, the same "add everything" loophole as "."."""
+        (git_repo / "subdir").mkdir()
+        (git_repo / "subdir" / "a.txt").write_text("a")
+        with app.app_context():
+            result = _run(mcp_tools._handle_git_commit("git_commit", {
+                "path": str(git_repo), "message": "msg", "paths": ["subdir"],
+            }))
+        assert result.startswith("Error")
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=str(git_repo),
+                                capture_output=True, text=True).stdout
+        assert "subdir/a.txt" in status or "subdir/" in status  # still untracked
+
 
 class TestGitConfigHardening:
     def test_malicious_diff_textconv_is_not_executed(self, app, git_repo):
