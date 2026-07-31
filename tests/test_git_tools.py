@@ -425,3 +425,53 @@ class TestGitCommitPathspecMagic:
         status = subprocess.run(["git", "status", "--porcelain"], cwd=str(git_repo),
                                 capture_output=True, text=True).stdout
         assert "secret.env" in status
+
+
+class TestGitSubmoduleConfigNotExecuted:
+    """An initialized submodule has its OWN .git/modules/<name>/config and
+    info/attributes, entirely outside what _git_config_is_safe inspects (it
+    only reads the SUPERPROJECT's config) — and --no-ext-diff/--no-textconv
+    on the outer git process do NOT propagate into the child git process git
+    spawns inside the submodule to compare content. A dangerous filter/
+    textconv planted only in a submodule's own config was therefore a
+    complete bypass of every check this file otherwise covers, reachable
+    through git_status/git_diff on the superproject alone.
+    --ignore-submodules=all (on both commands) is what actually closes this:
+    it stops git from ever comparing submodule content at all, so the
+    submodule's config is never consulted in the first place."""
+
+    @pytest.fixture
+    def repo_with_submodule(self, app, git_repo, tmp_path):
+        sub_source = tmp_path / "sub-source"
+        sub_source.mkdir()
+        _git("init", "-q", cwd=str(sub_source))
+        (sub_source / "s.txt").write_text("sub\n")
+        _git("add", "s.txt", cwd=str(sub_source))
+        _git("commit", "-q", "-m", "sub initial", cwd=str(sub_source))
+
+        _git("-c", "protocol.file.allow=always", "submodule", "add", "-q",
+            str(sub_source), "sub", cwd=str(git_repo))
+        _git("commit", "-q", "-m", "add submodule", cwd=str(git_repo))
+        return git_repo
+
+    def test_malicious_filter_in_submodule_config_is_not_executed(self, app, repo_with_submodule):
+        marker = repo_with_submodule / "SUBMODULE_FILTER_RAN"
+        sub_git_dir = repo_with_submodule / ".git" / "modules" / "sub"
+        (sub_git_dir / "info").mkdir(parents=True, exist_ok=True)
+        (sub_git_dir / "info" / "attributes").write_text("* filter=evil diff=evil\n")
+        (sub_git_dir / "config").write_text(
+            (sub_git_dir / "config").read_text() +
+            f'\n[filter "evil"]\n\tclean = touch {marker}\n\tsmudge = cat\n'
+            f'\n[diff "evil"]\n\ttextconv = touch {marker}\n'
+        )
+        # Same-length replacement so git can't short-circuit on stat size
+        # and must actually compare content to notice the change.
+        (repo_with_submodule / "sub" / "s.txt").write_text("bus\n")
+
+        with app.app_context():
+            result_status = _run(mcp_tools._handle_git_status("git_status", {"path": str(repo_with_submodule)}))
+            result_diff = _run(mcp_tools._handle_git_diff("git_diff", {"path": str(repo_with_submodule)}))
+
+        assert not marker.exists(), "submodule filter/textconv executed — bypass not neutralized"
+        assert result_status is not None
+        assert result_diff is not None

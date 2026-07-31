@@ -1315,7 +1315,16 @@ async def _handle_git_status(tool_name: str, args: dict) -> str:
     if err:
         return err
     try:
-        code, out, stderr = await _run_git(["status", "--porcelain=v1", "-b"], cwd=real_path)
+        # --ignore-submodules=all: an initialized submodule has its OWN
+        # .git/modules/<name>/config and info/attributes, entirely outside
+        # what _git_config_is_safe inspects (it only reads the superproject's
+        # config) — without this, a dangerous filter/textconv planted only in
+        # a submodule's own config still executes when git descends into it
+        # to compare content, and none of _run_git's -c overrides propagate
+        # into that child git process. This tool has no way to vet a
+        # submodule's config, so it must never descend into one at all.
+        code, out, stderr = await _run_git(
+            ["status", "--porcelain=v1", "-b", "--ignore-submodules=all"], cwd=real_path)
         if code != 0:
             return f"Error: git status failed\n{stderr}"
         # -b always emits a "## <branch>" header line even on a clean tree —
@@ -1345,7 +1354,11 @@ async def _handle_git_diff(tool_name: str, args: dict) -> str:
     # diff.external or a *.textconv filter at an arbitrary command — those
     # apply even to a read-only `git diff`. -- separates the ref from any
     # path arguments so a crafted ref can't be parsed as a git option.
-    git_args = ["diff", "--no-ext-diff", "--no-textconv"]
+    # --ignore-submodules=all: see the identical comment in _handle_git_status
+    # — --no-ext-diff/--no-textconv do NOT propagate into the child git
+    # process git spawns inside a submodule, so a submodule's own config is a
+    # complete bypass of both of those unless git never descends into it.
+    git_args = ["diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all"]
     if ref:
         git_args += [ref, "--"]
     try:
