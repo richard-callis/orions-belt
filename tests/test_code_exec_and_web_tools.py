@@ -263,6 +263,40 @@ class TestRunShell:
                 AuthorizedDirectory.query.filter_by(id="d-shell2").delete()
                 db.session.commit()
 
+    def test_omitting_working_dir_does_not_bypass_read_only_cap(self, app, tmp_path):
+        """Regression test: execute_tool's directory tier-cap check only
+        inspects args the CALLER supplied — an omitted working_dir
+        contributes nothing to it. _handle_run_shell's own fallback-
+        directory resolution used to skip the read_only/max_tier check
+        entirely, so a read-only directory being the only configured one
+        could be bypassed simply by not passing working_dir at all."""
+        with app.app_context():
+            d = AuthorizedDirectory(id="d-shell-ro", path=str(tmp_path), alias="d-shell-ro",
+                                    enabled=True, read_only=True)
+            db.session.add(d)
+            db.session.commit()
+            try:
+                omitted = _run(mcp_tools._handle_run_shell("run_shell", {"command": "echo x"}))
+                assert omitted.startswith("Error")
+                assert "only allows" in omitted
+            finally:
+                AuthorizedDirectory.query.filter_by(id="d-shell-ro").delete()
+                db.session.commit()
+
+    def test_omitting_working_dir_does_not_bypass_max_tier_cap(self, app, tmp_path):
+        with app.app_context():
+            d = AuthorizedDirectory(id="d-shell-cap", path=str(tmp_path), alias="d-shell-cap",
+                                    enabled=True, max_tier=1)
+            db.session.add(d)
+            db.session.commit()
+            try:
+                result = _run(mcp_tools._handle_run_shell("run_shell", {"command": "echo x"}))
+                assert result.startswith("Error")
+                assert "only allows" in result
+            finally:
+                AuthorizedDirectory.query.filter_by(id="d-shell-cap").delete()
+                db.session.commit()
+
     def test_errors_when_no_authorized_directories_and_none_given(self, app):
         with app.app_context():
             # Temporarily disable any existing enabled directories rather than

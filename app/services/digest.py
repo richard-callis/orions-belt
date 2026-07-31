@@ -53,6 +53,7 @@ def _compose_digest(period_start: datetime, period_end: datetime) -> tuple[str, 
     except Exception as e:
         log.warning("Digest: LLM usage section failed: %s", e)
         lines.append("LLM usage: (unavailable)")
+        html_rows.append("<li>LLM usage: (unavailable)</li>")
 
     try:
         tool_rows = AuditLog.query.filter(
@@ -68,6 +69,7 @@ def _compose_digest(period_start: datetime, period_end: datetime) -> tuple[str, 
     except Exception as e:
         log.warning("Digest: tool activity section failed: %s", e)
         lines.append("Tool calls: (unavailable)")
+        html_rows.append("<li>Tool calls: (unavailable)</li>")
 
     try:
         pending_lessons = DreamLesson.query.filter_by(status="pending").count()
@@ -76,6 +78,7 @@ def _compose_digest(period_start: datetime, period_end: datetime) -> tuple[str, 
     except Exception as e:
         log.warning("Digest: Dream section failed: %s", e)
         lines.append("Dream lessons awaiting review: (unavailable)")
+        html_rows.append("<li>Dream lessons awaiting review: (unavailable)</li>")
 
     plain = "\n".join(lines)
     html = (f"<h3>Activity summary: {period_start.date().isoformat()} to "

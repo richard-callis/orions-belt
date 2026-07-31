@@ -60,6 +60,13 @@ class TestComposeDigest:
         assert "LLM usage: (unavailable)" in plain
         # Other sections still populated normally.
         assert "Tool calls: " in plain
+        # Regression: a failed section must degrade in the HTML body too,
+        # not just plain text — send_email prefers HTML when both are
+        # given, so an HTML-only "(unavailable)" omission would make the
+        # section silently vanish for anyone reading the actual rendered
+        # email rather than a plain-text fallback.
+        assert "LLM usage: (unavailable)" in html
+        assert "Tool calls: " in html
 
 
 class TestDispatchDigest:

@@ -177,6 +177,42 @@ class TestSearchLinearIssues:
         assert "ENG-2: Second [Done]" in result
         assert captured["json"]["variables"]["filter"] == {"title": {"containsIgnoreCase": "bug"}}
 
+    def test_floors_negative_limit(self, app, linear_connector, monkeypatch):
+        """Regression test: min(negative, cap) still returns the negative
+        value unchanged — a negative limit was passed straight through as
+        Linear's GraphQL `first` variable rather than being floored at 1
+        like search_documents' top_k already is."""
+        captured = {}
+
+        class FakeResponse:
+            status_code = 200
+            def json(self):
+                return {"data": {"issues": {"nodes": []}}}
+            text = ""
+
+        class FakeAsyncClient:
+            def __init__(self, timeout=None):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, url, headers=None, json=None):
+                captured["json"] = json
+                return FakeResponse()
+
+        import httpx
+        monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+        with app.app_context():
+            _run(mcp_tools._handle_search_linear_issues("search_linear_issues", {
+                "connector": "test-linear", "query": "bug", "limit": -3,
+            }))
+        assert captured["json"]["variables"]["first"] == 1
+
     def test_requires_query(self, app, linear_connector):
         with app.app_context():
             result = _run(mcp_tools._handle_search_linear_issues("search_linear_issues", {

@@ -191,6 +191,11 @@ class TestSearchJiraIssues:
         assert "ENG-1: First [Open]" in result
         assert "ENG-2: Second [Done]" in result
         assert captured["params"]["jql"] == "project = ENG"
+        # Regression test: GET /rest/api/3/search was removed by Atlassian
+        # on 2025-05-01 (developer.atlassian.com/changelog/#CHANGE-2046) in
+        # favor of /rest/api/3/search/jql — calling the old path now 404s/
+        # errors against any real Jira Cloud tenant.
+        assert captured["url"] == "https://acme.atlassian.net/rest/api/3/search/jql"
 
     def test_requires_jql(self, app, jira_connector):
         with app.app_context():
@@ -230,3 +235,39 @@ class TestSearchJiraIssues:
                 "connector": "test-jira", "jql": "project = ENG", "max_results": 9999,
             }))
         assert captured["params"]["maxResults"] == mcp_tools._MAX_JIRA_SEARCH_RESULTS
+
+    def test_floors_negative_max_results(self, app, jira_connector, monkeypatch):
+        """Regression test: min(negative, cap) still returns the negative
+        value unchanged — a negative maxResults was passed straight through
+        to Jira's API rather than being floored at 1 like search_documents'
+        top_k already is."""
+        captured = {}
+
+        class FakeResponse:
+            status_code = 200
+            def json(self):
+                return {"issues": []}
+            text = ""
+
+        class FakeAsyncClient:
+            def __init__(self, timeout=None):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url, headers=None, params=None):
+                captured["params"] = params
+                return FakeResponse()
+
+        import httpx
+        monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+        with app.app_context():
+            _run(mcp_tools._handle_search_jira_issues("search_jira_issues", {
+                "connector": "test-jira", "jql": "project = ENG", "max_results": -5,
+            }))
+        assert captured["params"]["maxResults"] == 1

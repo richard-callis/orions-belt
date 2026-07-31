@@ -1124,6 +1124,19 @@ async def _handle_run_shell(tool_name: str, args: dict) -> str:
         if not authorized:
             return "Error: no authorized directories configured — set working_dir explicitly or configure one in Settings"
         real_wd = os.path.realpath(authorized.path)
+        # execute_tool's path_args tier-cap check only inspects args the
+        # caller actually supplied — an omitted working_dir contributes
+        # nothing to that check, so this fallback directory's own
+        # read_only/max_tier cap must be enforced here explicitly. Without
+        # this, a directory capped below Tier 3 (e.g. read-only) could be
+        # bypassed simply by not passing working_dir at all.
+        tool_row = MCPTool.query.filter_by(name="run_shell", enabled=True).first()
+        tool_tier = tool_row.tier if tool_row else TIER_DELETE
+        effective_tier = _get_effective_tier(real_wd, tool_tier)
+        if effective_tier < tool_tier:
+            return (f"Error: the default directory ({authorized.path}) only allows "
+                    f"tier {effective_tier} operations — set working_dir explicitly to "
+                    f"an authorized directory that permits this")
 
     try:
         proc = await asyncio.create_subprocess_shell(
@@ -1947,7 +1960,7 @@ async def _handle_search_jira_issues(tool_name: str, args: dict) -> str:
     connector_name = args.get("connector", "")
     jql = (args.get("jql") or "").strip()
     try:
-        max_results = min(int(args.get("max_results") or 20), _MAX_JIRA_SEARCH_RESULTS)
+        max_results = max(1, min(int(args.get("max_results") or 20), _MAX_JIRA_SEARCH_RESULTS))
     except (TypeError, ValueError):
         max_results = 20
 
@@ -1963,7 +1976,12 @@ async def _handle_search_jira_issues(tool_name: str, args: dict) -> str:
     try:
         import httpx
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(f"{base_url}/rest/api/3/search", headers=headers, params={
+            # Atlassian removed GET /rest/api/3/search on 2025-05-01
+            # (announced 2024-10-31, developer.atlassian.com/changelog/#CHANGE-2046)
+            # in favor of /rest/api/3/search/jql. Same jql/maxResults/fields
+            # params; the only response-shape change is startAt/total being
+            # replaced by nextPageToken/isLast, which this handler never read.
+            resp = await client.get(f"{base_url}/rest/api/3/search/jql", headers=headers, params={
                 "jql": jql, "maxResults": max_results, "fields": "summary,status,issuetype",
             })
         if resp.status_code == 200:
@@ -2046,7 +2064,7 @@ async def _handle_search_linear_issues(tool_name: str, args: dict) -> str:
     connector_name = args.get("connector", "")
     search_query = (args.get("query") or "").strip()
     try:
-        limit = min(int(args.get("limit") or 20), _MAX_LINEAR_SEARCH_RESULTS)
+        limit = max(1, min(int(args.get("limit") or 20), _MAX_LINEAR_SEARCH_RESULTS))
     except (TypeError, ValueError):
         limit = 20
 
