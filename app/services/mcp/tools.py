@@ -1831,7 +1831,7 @@ async def _handle_get_github_pr_status(tool_name: str, args: dict) -> str:
 def _get_jira_connector(connector_name: str):
     """Look up a jira connector and return (base_url, headers, None) or
     (None, None, error_message)."""
-    from app.services.connector_auth import build_auth_headers
+    from app.services.connector_auth import build_auth_headers, validate_target_url
 
     connector = _get_connector(connector_name)
     if not connector:
@@ -1841,6 +1841,13 @@ def _get_jira_connector(connector_name: str):
     base_url = (connector["config"].get("base_url") or "").rstrip("/")
     if not base_url:
         return None, None, f"Error: connector '{connector_name}' has no base_url configured"
+    # Same check call_connector already applies to every operator-configured
+    # connector base_url — jira's own base_url had been going straight
+    # through unchecked, an inconsistency with that existing control even
+    # though the value is operator- not LLM-supplied.
+    url_err = validate_target_url(base_url)
+    if url_err:
+        return None, None, url_err
     auth = connector.get("auth") or {}
     if not auth.get("email") or not auth.get("api_token"):
         return None, None, f"Error: connector '{connector_name}' has no email/api_token configured"

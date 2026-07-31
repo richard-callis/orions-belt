@@ -43,6 +43,28 @@ class TestJiraConnectorType:
             db.session.commit()
 
 
+class TestJiraBaseUrlValidation:
+    def test_rejects_loopback_base_url(self, app):
+        """jira's base_url is operator-configured, same as call_connector's
+        connector base_urls — which are already validated. This one wasn't,
+        an inconsistency with that existing control."""
+        with app.app_context():
+            c = Connector(name="test-jira-loopback", connector_type="jira",
+                          config='{"base_url": "http://127.0.0.1:5000"}')
+            c.set_auth({"email": "bot@acme.com", "api_token": "sekrit-token"})
+            db.session.add(c)
+            db.session.commit()
+            try:
+                result = _run(mcp_tools._handle_create_jira_issue("create_jira_issue", {
+                    "connector": "test-jira-loopback", "project_key": "OPS",
+                    "issue_type": "Bug", "summary": "x",
+                }))
+                assert "not allowed" in result
+            finally:
+                Connector.query.filter_by(name="test-jira-loopback").delete()
+                db.session.commit()
+
+
 class TestCreateJiraIssue:
     def test_creates_issue_with_correct_request_shape(self, app, jira_connector, monkeypatch):
         captured = {}
