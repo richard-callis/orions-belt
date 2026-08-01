@@ -164,7 +164,12 @@
   }
 
   function showLoading() {
-    document.getElementById('log-loading').style.display = '';
+    // #log-loading is the initial placeholder <tr> inside #log-table-body.
+    // It gets replaced (destroyed) the first time a fetch populates real
+    // rows via tbody.innerHTML, so it won't exist on later calls — guard
+    // against that instead of throwing and aborting the fetch.
+    const loadingEl = document.getElementById('log-loading');
+    if (loadingEl) loadingEl.style.display = '';
     document.getElementById('log-empty').classList.add('hidden');
   }
 
@@ -176,7 +181,8 @@
       .then(r => r.json())
       .then(data => {
         const tbody = document.getElementById('log-table-body');
-        document.getElementById('log-loading').style.display = 'none';
+        const loadingEl = document.getElementById('log-loading');
+        if (loadingEl) loadingEl.style.display = 'none';
         if (!data.entries || data.entries.length === 0) {
           tbody.innerHTML = '';
           document.getElementById('log-empty').classList.remove('hidden');
@@ -190,7 +196,8 @@
         if (typeof lucide !== 'undefined') lucide.createIcons();
       })
       .catch(() => {
-        document.getElementById('log-loading').style.display = 'none';
+        const loadingEl = document.getElementById('log-loading');
+        if (loadingEl) loadingEl.style.display = 'none';
       });
   }
 

@@ -51,6 +51,9 @@ desktop.ini
 *.swp
 *.swo
 
+# Claude Code session-local state (agent worktrees, etc.) — never repo content
+.claude/
+
 # sentence-transformers cache
 .cache/
 
