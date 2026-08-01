@@ -198,3 +198,12 @@ def api_logs_export():
     resp.headers["Content-Type"] = "text/csv"
     resp.headers["Content-Disposition"] = f"attachment; filename={filename}"
     return resp
+
+
+@bp.route("/api/logs/audit/verify")
+def api_audit_verify():
+    """Verify the audit log's hash chain — detects tampering with or
+    deletion of AuditLog rows after they were written. See
+    app/services/audit_chain.py for how the chain itself works."""
+    from app.services.audit_chain import verify_chain
+    return jsonify(verify_chain())

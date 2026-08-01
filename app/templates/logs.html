@@ -26,11 +26,18 @@
         <option value="7d">Last 7d</option>
         <option value="all">All time</option>
       </select>
+      <button id="verify-chain-btn"
+              class="flex items-center gap-1.5 px-2.5 py-1.5 rounded border border-border-subtle text-text-muted hover:text-accent hover:border-accent/40 transition-colors text-xs"
+              title="Verify the audit log hasn't been tampered with">
+        <i data-lucide="shield-check" class="w-3.5 h-3.5"></i>
+        Verify Integrity
+      </button>
       <button id="export-btn" class="p-1.5 rounded border border-border-subtle text-text-muted hover:text-accent hover:border-accent/40 transition-colors" title="Export">
         <i data-lucide="download" class="w-3.5 h-3.5"></i>
       </button>
     </div>
   </div>
+  <div id="verify-chain-result" class="hidden px-5 py-2 text-xs border-b border-border-subtle flex-shrink-0"></div>
 
   <!-- Log table -->
   <div class="flex-1 overflow-auto">
@@ -211,6 +218,12 @@
     btn.classList.remove('border-transparent', 'text-text-muted');
     renderHeaders(tab);
     fetchLogs();
+
+    // The hash chain only exists on AuditLog — only show the button there.
+    const verifyBtn = document.getElementById('verify-chain-btn');
+    verifyBtn.classList.toggle('hidden', tab !== 'audit');
+    verifyBtn.classList.toggle('flex', tab === 'audit');
+    document.getElementById('verify-chain-result').classList.add('hidden');
   };
 
   document.getElementById('log-filter').addEventListener('input', function () {
@@ -230,6 +243,26 @@
     const params = new URLSearchParams({ stream: currentTab, range: currentRange });
     if (currentFilter) params.set('q', currentFilter);
     window.location.href = '/logs/api/logs/export?' + params;
+  });
+
+  document.getElementById('verify-chain-btn').addEventListener('click', async function () {
+    const resultEl = document.getElementById('verify-chain-result');
+    resultEl.textContent = 'Verifying…';
+    resultEl.className = 'px-5 py-2 text-xs border-b border-border-subtle flex-shrink-0 text-text-muted';
+    try {
+      const data = await fetch('/logs/api/logs/audit/verify').then(r => r.json());
+      if (data.valid) {
+        resultEl.textContent = `✓ Audit log integrity verified — ${data.chained_rows} of ${data.total_rows} row(s) chained, no tampering detected.`;
+        resultEl.className = 'px-5 py-2 text-xs border-b border-border-subtle flex-shrink-0 text-green-400';
+      } else {
+        resultEl.textContent = `✗ Audit log integrity check FAILED — ${data.reason}`;
+        resultEl.className = 'px-5 py-2 text-xs border-b border-border-subtle flex-shrink-0 text-red-400';
+      }
+    } catch (e) {
+      resultEl.textContent = 'Verification failed — see console for details.';
+      resultEl.className = 'px-5 py-2 text-xs border-b border-border-subtle flex-shrink-0 text-red-400';
+      console.error('Audit chain verification failed:', e);
+    }
   });
 
   const tailBtn = document.getElementById('tail-btn');
