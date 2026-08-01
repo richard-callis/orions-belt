@@ -515,7 +515,16 @@ async def _handle_search_files(tool_name: str, args: dict) -> str:
         return f"Error: directory not authorized: {path}{_authorized_dirs_hint()}"
 
     try:
-        matches = list(Path(real_path).glob(f"**/{pattern}"))
+        # _authorize_path above only validates the root `path` — a crafted
+        # pattern with ../ components (e.g. "../sibling-dir/secret.txt")
+        # makes glob() return matches OUTSIDE real_path entirely (verified:
+        # Path(real_path).glob(f"**/../sibling/secret.txt") resolves and
+        # returns a match past the authorized boundary). Every match must
+        # be independently re-authorized before being returned, the same
+        # way search_documents re-checks each hit rather than trusting the
+        # root path alone.
+        all_matches = list(Path(real_path).glob(f"**/{pattern}"))
+        matches = [m for m in all_matches if _authorize_path(os.path.realpath(str(m)))]
         if not matches:
             return f"No files matching '{pattern}' in {path}"
         lines = [str(m) for m in matches[:50]]  # Cap results
@@ -1611,8 +1620,7 @@ async def _handle_call_connector(tool_name: str, args: dict) -> str:
                 # Treat as table name — only allow simple identifiers
                 if not re.match(r"^[A-Za-z_][A-Za-z0-9_\.]*$", action):
                     return "Error: invalid table name (use simple identifier or SELECT query)"
-                safe_table = action.replace("]", "")
-                cursor.execute(f"SELECT * FROM [{safe_table}]")
+                cursor.execute(f"SELECT * FROM [{action}]")
             columns = [desc[0] for desc in cursor.description]
             rows = cursor.fetchmany(50)
             conn.close()

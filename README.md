@@ -125,6 +125,8 @@ orions-belt/
 - [`docs/architecture.md`](docs/architecture.md) — system diagram, service internals, tool tiers, database schema
 - [`docs/api-reference.md`](docs/api-reference.md) — core REST endpoints
 - [`docs/development.md`](docs/development.md) — local dev workflow, configuration, extending the app, troubleshooting
+- [`docs/soc2-audit-report.md`](docs/soc2-audit-report.md) — SOC II compliance posture audit
+- [`docs/efficiency-and-security-review.md`](docs/efficiency-and-security-review.md) — point-in-time performance/security findings
 
 ## Relationship to ORION
 

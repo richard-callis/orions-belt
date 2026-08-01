@@ -1,5 +1,10 @@
 # Orion's Belt — Efficiency & Security Review
 
+*Point-in-time snapshot from 2026-04-18. Findings have not been re-verified against
+current code as a whole — some have since been fixed (e.g. the search_files glob
+traversal issue) while others may be stale. Treat as historical input, not a live
+backlog.*
+
 ## Performance Bottlenecks
 
 ### P0 — High Impact
