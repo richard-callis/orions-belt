@@ -110,7 +110,11 @@ class Config:
 
     # ── UI ────────────────────────────────────────────────────
     APP_NAME = "Orion's Belt"
-    APP_VERSION = "0.1.0"
+    # Fallback only — app.services.self_update.get_current_version() prefers
+    # `git describe --tags` for source installs, which stays accurate
+    # automatically. This constant is what frozen exe builds report, since
+    # they ship without a .git directory; bump it alongside each release tag.
+    APP_VERSION = "1.2.0"
     WINDOW_WIDTH = 1400
     WINDOW_HEIGHT = 900
     WINDOW_MIN_WIDTH = 1024

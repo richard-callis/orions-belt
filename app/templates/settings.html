@@ -227,7 +227,7 @@
           </div>
           <div>
             <div class="text-sm font-semibold text-text-primary">Orion's Belt</div>
-            <div class="text-xs text-text-muted font-mono">v0.1.0 · Local AI Workbench</div>
+            <div class="text-xs text-text-muted font-mono">v<span id="about-version">…</span> · Local AI Workbench</div>
           </div>
         </div>
         <div class="space-y-2 text-xs text-text-muted border-t border-border-subtle pt-4">
@@ -240,6 +240,39 @@
           "Three stars. One workbench. Every tool you need."<br>
           Alnitak · Alnilam · Mintaka
         </p>
+      </div>
+
+      <!-- Software update -->
+      <div class="rounded-lg border border-border-subtle bg-bg-card p-5 space-y-3">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <i data-lucide="download-cloud" class="w-3.5 h-3.5 text-accent"></i>
+            <h3 class="text-sm font-semibold text-text-primary">Software Update</h3>
+          </div>
+          <button id="update-check-btn" onclick="checkForUpdate()"
+                  class="px-3 py-1.5 rounded-lg text-xs border border-border-subtle text-text-secondary hover:text-text-primary hover:border-border-visible transition-colors">
+            Check for updates
+          </button>
+        </div>
+        <div id="update-status" class="text-xs text-text-muted"></div>
+        <div id="update-available-box" class="hidden rounded-lg border border-accent/30 bg-accent/5 p-3 space-y-2">
+          <div class="flex items-center gap-1.5 text-xs text-text-primary">
+            <i data-lucide="sparkles" class="w-3.5 h-3.5 text-accent"></i>
+            <span><span id="update-latest-version" class="font-mono"></span> is available</span>
+            <a id="update-release-link" href="#" target="_blank" rel="noopener"
+               class="ml-auto text-accent hover:underline">Release notes</a>
+          </div>
+          <div id="update-source-actions" class="hidden items-center gap-2">
+            <button id="update-apply-btn" onclick="applyUpdate()"
+                    class="px-3 py-1.5 rounded-lg text-xs bg-accent text-bg-primary font-medium hover:opacity-90 transition-opacity">
+              Update now
+            </button>
+            <span class="text-[10px] text-text-muted">Pulls the latest code, reinstalls changed dependencies if needed, and restarts the app.</span>
+          </div>
+          <p id="update-non-source-note" class="hidden text-[10px] text-text-muted">
+            This install can't update itself in place — download the latest release from the link above.
+          </p>
+        </div>
       </div>
     </div>
 
@@ -829,7 +862,99 @@ window.showSection = function(id) {
   if (id === 'prompts') { loadPrompts(); loadMaxAgentTurns(); loadMaxGoalRounds(); }
   if (id === 'pii')     { loadPiiToggle(); loadPiiHashes(); loadPiiExceptions(); }
   if (id === 'llm')     loadDebugToggle();
+  if (id === 'about')   loadAboutVersion();
 };
+
+// ── Software update ──────────────────────────────────────────────────────────
+
+async function loadAboutVersion() {
+  try {
+    const r = await fetch('/api/system/health');
+    const d = await r.json();
+    document.getElementById('about-version').textContent = (d.version || '?').replace(/^v/i, '');
+  } catch (_) {}
+}
+
+function _setUpdateStatus(message, isError = false) {
+  const el = document.getElementById('update-status');
+  el.textContent = message;
+  el.classList.toggle('text-status-error', isError);
+  el.classList.toggle('text-text-muted', !isError);
+}
+
+async function checkForUpdate() {
+  const btn = document.getElementById('update-check-btn');
+  const box = document.getElementById('update-available-box');
+  btn.disabled = true;
+  btn.textContent = 'Checking…';
+  box.classList.add('hidden');
+
+  try {
+    const r = await fetch('/api/system/update/check');
+    const d = await r.json();
+
+    if (!d.ok) {
+      _setUpdateStatus(d.error || 'Could not check for updates.', true);
+      return;
+    }
+
+    if (!d.update_available) {
+      _setUpdateStatus(`Up to date (${d.current_version}).`);
+      return;
+    }
+
+    _setUpdateStatus(`Currently on ${d.current_version}.`);
+    document.getElementById('update-latest-version').textContent = d.latest_version;
+    const link = document.getElementById('update-release-link');
+    if (d.release_url) { link.href = d.release_url; link.classList.remove('hidden'); }
+    else { link.classList.add('hidden'); }
+
+    const sourceActions = document.getElementById('update-source-actions');
+    const nonSourceNote = document.getElementById('update-non-source-note');
+    if (d.source_install) {
+      sourceActions.classList.remove('hidden');
+      sourceActions.classList.add('flex');
+      nonSourceNote.classList.add('hidden');
+    } else {
+      sourceActions.classList.add('hidden');
+      sourceActions.classList.remove('flex');
+      nonSourceNote.classList.remove('hidden');
+    }
+
+    box.classList.remove('hidden');
+  } catch (e) {
+    _setUpdateStatus(`Could not check for updates: ${e.message}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Check for updates';
+  }
+}
+
+async function applyUpdate() {
+  if (!confirm('This pulls the latest code, reinstalls dependencies if needed, and restarts Orion\'s Belt. Continue?')) {
+    return;
+  }
+  const btn = document.getElementById('update-apply-btn');
+  btn.disabled = true;
+  btn.textContent = 'Updating…';
+
+  try {
+    const r = await fetch('/api/system/update/apply', { method: 'POST' });
+    const d = await r.json();
+    if (!d.ok) {
+      _setUpdateStatus(d.error || 'Update failed.', true);
+      btn.disabled = false;
+      btn.textContent = 'Update now';
+      return;
+    }
+    _setUpdateStatus('Updated — restarting Orion\'s Belt…');
+    btn.textContent = 'Restarting…';
+  } catch (e) {
+    _setUpdateStatus(`Update failed: ${e.message}`, true);
+    btn.disabled = false;
+    btn.textContent = 'Update now';
+  }
+}
 
 // ── Debug LLM toggle ─────────────────────────────────────────────────────────
 
