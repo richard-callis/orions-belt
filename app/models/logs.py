@@ -37,6 +37,15 @@ class AuditLog(db.Model):
     result_summary = db.Column(db.Text, nullable=True)
     error = db.Column(db.Text, nullable=True)
 
+    # Integrity chain — see app/services/audit_chain.py. previous_hash links
+    # to the row_hash of the immediately-preceding row (NULL for the first
+    # row ever written), so tampering with or deleting a row breaks every
+    # row_hash after it — detectable via verify_chain() without needing any
+    # external storage. Nullable so existing installs upgrading to this
+    # column don't retroactively fail on old rows that predate the chain.
+    previous_hash = db.Column(db.String(64), nullable=True)
+    row_hash = db.Column(db.String(64), nullable=True)
+
 
 class PIILog(db.Model):
     """Every PII/PHI detection event."""

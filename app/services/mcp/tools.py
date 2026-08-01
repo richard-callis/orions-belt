@@ -18,6 +18,7 @@ import sys
 import tempfile
 import time
 import uuid
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,8 @@ from app.models.connector import AuthorizedDirectory
 from app.models.logs import AuditLog
 from app.models.mcp_tool import MCPTool
 from app.models.pii import PIIHashEntry
+from app.services.audit_chain import compute_row_hash, get_last_row_hash
+from app.services.redact import redact_args, redact_text
 
 log = logging.getLogger("orions-belt")
 
@@ -302,10 +305,13 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
             log.warning("mcp.execute: unknown or disabled tool=%r", tool_name)
             return f"Error: unknown tool '{tool_name}'"
 
-    # Sanitise args for logging — truncate large values, never log PII
+    # Sanitise args for logging — redact known secret shapes/field names,
+    # then truncate large values. Redaction runs first: truncating before
+    # redacting could leave a partial-but-still-recognizable secret prefix
+    # in the log instead of removing it.
     input_params = json.dumps(
         {k: (v[:200] + "…" if isinstance(v, str) and len(v) > 200 else v)
-         for k, v in args.items()},
+         for k, v in redact_args(args).items()},
         default=str,
     )
     log.info("mcp.call  tool=%s tier=%d args=%s", tool_name, tool.tier, input_params)
@@ -329,9 +335,15 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
 
         is_error = isinstance(result, str) and result.startswith("Error:")
         if is_error:
-            log.warning("mcp.result tool=%s elapsed=%dms result=%s", tool_name, elapsed_ms, result[:300])
+            log.warning("mcp.result tool=%s elapsed=%dms result=%s",
+                        tool_name, elapsed_ms, redact_text(result)[:300])
         else:
-            preview = result[:200].replace("\n", "\\n") if isinstance(result, str) else str(result)[:200]
+            # Tool results (read_file, fetch_url, search_documents, run_shell, ...)
+            # can contain the literal contents of whatever was read/fetched —
+            # redact known secret shapes before truncating, same ordering
+            # reasoning as the args log above.
+            result_text = result if isinstance(result, str) else str(result)
+            preview = redact_text(result_text)[:200].replace("\n", "\\n")
             log.info("mcp.result tool=%s elapsed=%dms preview=%s", tool_name, elapsed_ms, preview)
         _log_audit(
             tool_name,
@@ -346,7 +358,7 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
     except ToolError as e:
         elapsed_ms = int((time.time() - t0) * 1000)
         log.warning("mcp.error  tool=%s elapsed=%dms category=%s %s",
-                     tool_name, elapsed_ms, e.category, e.message)
+                     tool_name, elapsed_ms, e.category, redact_text(e.message))
         _log_audit(
             tool_name, tool.tier, getattr(g, "current_user", None) or "",
             getattr(g, "orions_belt_session_id", None),
@@ -358,7 +370,8 @@ async def execute_tool(tool_name: str, args: dict, *, session_id: str | None = N
     except Exception as e:
         elapsed_ms = int((time.time() - t0) * 1000)
         err_msg = str(e)
-        log.error("mcp.error  tool=%s elapsed=%dms error=%s", tool_name, elapsed_ms, err_msg, exc_info=True)
+        log.error("mcp.error  tool=%s elapsed=%dms error=%s", tool_name, elapsed_ms,
+                   redact_text(err_msg), exc_info=True)
         _log_audit(
             tool_name, tool.tier, getattr(g, "current_user", None) or "",
             getattr(g, "orions_belt_session_id", None),
@@ -382,7 +395,19 @@ def _log_audit(tool_name: str, tier: int, caller: str, session_id: str | None,
         input_params: Sanitised tool input parameters (truncated, no PII).
         result: Tool output/result string.
         error: Optional error message.
+
+    input_params/result/error are redacted here (not just at the call
+    sites) because AuditLog rows are persisted indefinitely and queryable
+    via the in-app Logs viewer — a more exposed, longer-lived sink than a
+    rotating log file. Redacting here covers all three call sites (success,
+    ToolError, and the catch-all Exception handler) uniformly; re-redacting
+    an already-redacted input_params (the success path pre-redacts it for
+    its own log.info call) is a harmless no-op since "[REDACTED:...]"
+    never matches a secret pattern.
     """
+    input_params = redact_text(input_params)
+    result = redact_text(result)
+    error = redact_text(error)
     # Outcome reflects what actually happened (this runs AFTER execution):
     #   error     → the tool raised/returned an error (not a policy rejection)
     #   approved  → a Tier-3 tool ran, which only happens after explicit approval
@@ -393,16 +418,32 @@ def _log_audit(tool_name: str, tier: int, caller: str, session_id: str | None,
         outcome = "approved"
     else:
         outcome = "auto"
+
+    created_at = datetime.now(timezone.utc)
+    input_summary = input_params[:500]
+    result_summary = result[:1000]
+    # Hash over exactly what's persisted below (post-truncation) — verify_chain()
+    # recomputes from the stored row, so hashing the pre-truncation values here
+    # would make every row fail verification against its own content.
+    previous_hash = get_last_row_hash()
+    row_hash = compute_row_hash(
+        previous_hash, created_at, tool_name, tier, caller, session_id, run_id,
+        input_summary, outcome, result_summary, error,
+    )
+
     log = AuditLog(
+        created_at=created_at,
         tool_name=tool_name,
         tier=tier,
         caller=caller,
         session_id=session_id,
         run_id=run_id,
-        input_summary=input_params[:500],
+        input_summary=input_summary,
         outcome=outcome,
-        result_summary=result[:1000],
+        result_summary=result_summary,
         error=error,
+        previous_hash=previous_hash,
+        row_hash=row_hash,
     )
     db.session.add(log)
     db.session.commit()
