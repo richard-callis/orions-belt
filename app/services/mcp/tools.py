@@ -1620,8 +1620,7 @@ async def _handle_call_connector(tool_name: str, args: dict) -> str:
                 # Treat as table name — only allow simple identifiers
                 if not re.match(r"^[A-Za-z_][A-Za-z0-9_\.]*$", action):
                     return "Error: invalid table name (use simple identifier or SELECT query)"
-                safe_table = action.replace("]", "")
-                cursor.execute(f"SELECT * FROM [{safe_table}]")
+                cursor.execute(f"SELECT * FROM [{action}]")
             columns = [desc[0] for desc in cursor.description]
             rows = cursor.fetchmany(50)
             conn.close()
