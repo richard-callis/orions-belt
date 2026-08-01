@@ -18,6 +18,7 @@ from app.services.backup import (
     recover_if_needed,
     restore_database,
 )
+from app.services.self_update import apply_update, check_for_update, get_current_version
 
 bp = Blueprint("system", __name__)
 
@@ -138,15 +139,38 @@ def _verify_db(path: Path) -> bool:
 @bp.route("/api/system/health", methods=["GET"])
 def health():
     """Health check with backup status."""
-    from config import Config
-
     db_path = get_db_path()
     db_size = db_path.stat().st_size if db_path.exists() else 0
 
     return jsonify({
         "status": "ok",
-        "version": Config.APP_VERSION,
+        "version": get_current_version(),
         "db_path": str(db_path),
         "db_size_bytes": db_size,
         "has_valid_backup": has_valid_backup(),
     })
+
+
+@bp.route("/api/system/update/check", methods=["GET"])
+def update_check():
+    """Compare the running version against GitHub's latest release.
+
+    Returns (ok=False only on a network/API failure, not "no update"):
+        {"ok": true, "current_version": "v1.2.0", "latest_version": "v1.3.0",
+         "update_available": true, "release_url": "...", "release_notes": "...",
+         "published_at": "...", "source_install": true}
+    """
+    return jsonify(check_for_update())
+
+
+@bp.route("/api/system/update/apply", methods=["POST"])
+def update_apply():
+    """Update a from-source install: git pull, reinstall deps if
+    requirements.txt changed, then restart the app process.
+
+    Returns:
+        {"ok": true, "deps_reinstalled": false, "restarting": true}
+        {"ok": false, "error": "..."}
+    """
+    result = apply_update()
+    return jsonify(result), (200 if result.get("ok") else 400)
