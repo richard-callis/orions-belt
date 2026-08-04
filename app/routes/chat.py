@@ -994,12 +994,20 @@ def _stream_openai_impl(base_url, api_key, model, system_prompt, history,
                     log.info("llm.fallback status=%d", fb_resp.status_code)
                     if fb_resp.status_code == 200:
                         fb_data = fb_resp.json()
-                        fallback_content = (
-                            fb_data.get("choices", [{}])[0]
-                            .get("message", {})
-                            .get("content", "")
-                        ) or ""
-                        log.info("llm.fallback content_len=%d", len(fallback_content))
+                        fb_msg = fb_data.get("choices", [{}])[0].get("message", {})
+                        fallback_content = fb_msg.get("content") or ""
+                        # The provider may just not support *streaming* tool calls —
+                        # a non-streaming retry can return a real tool_calls list
+                        # with empty content. Don't discard that as "still empty".
+                        for i, tc in enumerate(fb_msg.get("tool_calls") or []):
+                            fn = tc.get("function", {})
+                            pending_tool_calls[i] = {
+                                "id": tc.get("id", f"call_{i}"),
+                                "name": fn.get("name", ""),
+                                "args": fn.get("arguments", ""),
+                            }
+                        log.info("llm.fallback content_len=%d tool_calls=%d",
+                                 len(fallback_content), len(pending_tool_calls))
                         if _debug_llm:
                             log.info("llm.debug.fallback  body=%s", json.dumps(fb_data, indent=2, default=str))
                     else:
@@ -1011,7 +1019,7 @@ def _stream_openai_impl(base_url, api_key, model, system_prompt, history,
                     log.error("llm.fallback exception: %s", fb_e)
 
                 # Fallback 2: provider rejected tool definitions — drop them and retry
-                if not fallback_content and fallback_body.get("tools"):
+                if not fallback_content and not pending_tool_calls and fallback_body.get("tools"):
                     log.info("llm.fallback2: still empty with tools present, retrying without tools")
                     no_tools_body = {k: v for k, v in fallback_body.items() if k != "tools"}
                     try:

@@ -616,7 +616,7 @@ async def _handle_run_sql_query(tool_name: str, args: dict) -> str:
 
     try:
         import pyodbc
-        conn = pyodbc.connect(connector["connection_string"])
+        conn = pyodbc.connect(_build_sql_connection_string(connector["config"], connector["auth"]))
         cursor = conn.cursor()
         cursor.execute(query)
         columns = [desc[0] for desc in cursor.description]
@@ -1519,6 +1519,38 @@ async def _handle_git_commit(tool_name: str, args: dict) -> str:
 
 # ── Connector helpers ─────────────────────────────────────────────────────────
 
+def _build_sql_connection_string(config: dict, auth: dict) -> str:
+    """Build a pyodbc connection string for a sql_server connector.
+
+    Matches the schema the Connectors UI actually writes (config.server,
+    config.database, config.auth_type "windows"|"sql", auth.username/
+    password) — mirrors _test_sql_server in app/routes/connectors.py.
+    Auto-detects an installed ODBC driver via pyodbc.drivers() instead of
+    assuming a fixed version (e.g. "ODBC Driver 17") is present, since that
+    mismatch is what previously surfaced as "can't find the driver".
+    """
+    if config.get("connection_string"):
+        return config["connection_string"]
+
+    import pyodbc
+    sql_drivers = sorted(
+        (d for d in pyodbc.drivers() if "SQL Server" in d), reverse=True
+    )
+    driver = sql_drivers[0] if sql_drivers else "SQL Server"
+
+    server = config.get("server", "")
+    database = config.get("database", "")
+    auth_type = config.get("auth_type", "windows")
+
+    parts = [f"DRIVER={{{driver}}}", f"SERVER={server}", f"DATABASE={database}"]
+    if auth_type == "windows":
+        parts.append("Trusted_Connection=yes")
+    else:
+        parts.append(f"UID={auth.get('username', '')}")
+        parts.append(f"PWD={auth.get('password', '')}")
+    return ";".join(parts)
+
+
 def _is_safe_path_segment(value: str) -> bool:
     """True if `value` is safe to interpolate directly into a REST API path.
 
@@ -1604,7 +1636,7 @@ async def _handle_call_connector(tool_name: str, args: dict) -> str:
                 return f"HTTP {resp.status_code}\n{resp.text[:2000]}"
         elif ctype == "sql_server":
             import pyodbc
-            conn = pyodbc.connect(config.get("connection_string", ""))
+            conn = pyodbc.connect(_build_sql_connection_string(config, connector["auth"]))
             cursor = conn.cursor()
             # SECURITY: action is either a SELECT query or a table name.
             # If it looks like a query, enforce SELECT-only. If it's a table
