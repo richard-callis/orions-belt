@@ -1519,6 +1519,27 @@ async def _handle_git_commit(tool_name: str, args: dict) -> str:
 
 # ── Connector helpers ─────────────────────────────────────────────────────────
 
+def _pick_sql_driver(available: list[str]) -> str:
+    """Pick the best installed SQL Server ODBC driver.
+
+    A plain reverse-alphabetical sort of driver names is NOT version order —
+    "SQL Server Native Client 11.0" and the bare legacy "SQL Server" driver
+    both sort ahead of "ODBC Driver 17/18 for SQL Server" ('S' > 'O'), which
+    would prefer the legacy driver over the modern one. Extract the numeric
+    version from "ODBC Driver N for SQL Server" and pick the highest; only
+    fall back to whatever else is installed if no versioned driver exists.
+    """
+    versioned = []
+    for d in available:
+        m = re.match(r"ODBC Driver (\d+) for SQL Server", d)
+        if m:
+            versioned.append((int(m.group(1)), d))
+    if versioned:
+        return max(versioned)[1]
+    others = [d for d in available if "SQL Server" in d]
+    return others[0] if others else "SQL Server"
+
+
 def _build_sql_connection_string(config: dict, auth: dict) -> str:
     """Build a pyodbc connection string for a sql_server connector.
 
@@ -1533,10 +1554,7 @@ def _build_sql_connection_string(config: dict, auth: dict) -> str:
         return config["connection_string"]
 
     import pyodbc
-    sql_drivers = sorted(
-        (d for d in pyodbc.drivers() if "SQL Server" in d), reverse=True
-    )
-    driver = sql_drivers[0] if sql_drivers else "SQL Server"
+    driver = _pick_sql_driver(pyodbc.drivers())
 
     server = config.get("server", "")
     database = config.get("database", "")
