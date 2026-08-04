@@ -1058,11 +1058,17 @@ def _stream_openai_impl(base_url, api_key, model, system_prompt, history,
 
             # Token counts for this turn are final at this point (streaming
             # usage chunk + both fallback paths have all had their chance to
-            # accumulate into llm_log.tokens_in/out above).
-            from app.services.llm import _estimate_llm_cost_and_savings
-            llm_log.estimated_cost_usd, llm_log.estimated_savings_usd = (
-                _estimate_llm_cost_and_savings(model, llm_log.tokens_in, llm_log.tokens_out)
-            )
+            # accumulate into llm_log.tokens_in/out above). Skip cost/savings
+            # entirely if no usage was ever reported — otherwise a provider
+            # that omits `usage` on every response (not just the fallback
+            # path) would compute a cost of exactly $0.00 for a priced
+            # model, indistinguishable on the dashboard from "genuinely
+            # free", instead of leaving it null ("unknown").
+            if llm_log.tokens_in or llm_log.tokens_out:
+                from app.services.llm import _estimate_llm_cost_and_savings
+                llm_log.estimated_cost_usd, llm_log.estimated_savings_usd = (
+                    _estimate_llm_cost_and_savings(model, llm_log.tokens_in, llm_log.tokens_out)
+                )
 
             # ── Text-based tool call fallback ─────────────────────────────────
             # If the provider doesn't support native function calling (e.g.
@@ -1313,10 +1319,13 @@ def _stream_ollama_impl(base_url, model, system_prompt, history,
                             llm_log.tokens_out += chunk.get("eval_count", 0) or 0
                             break
 
-            from app.services.llm import _estimate_llm_cost_and_savings
-            llm_log.estimated_cost_usd, llm_log.estimated_savings_usd = (
-                _estimate_llm_cost_and_savings(model, llm_log.tokens_in, llm_log.tokens_out)
-            )
+            # Skip if the stream ended without a `done` chunk (tokens stay
+            # 0) — see the identical guard/comment in _stream_openai_impl.
+            if llm_log.tokens_in or llm_log.tokens_out:
+                from app.services.llm import _estimate_llm_cost_and_savings
+                llm_log.estimated_cost_usd, llm_log.estimated_savings_usd = (
+                    _estimate_llm_cost_and_savings(model, llm_log.tokens_in, llm_log.tokens_out)
+                )
 
             # After stream — append assistant message and execute any tool calls
             messages.append({"role": "assistant", "content": turn_text})

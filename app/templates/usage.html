@@ -96,6 +96,16 @@ function esc(s) {
   return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+// For a value embedded inside an inline onclick="fn('...')" handler: it sits
+// in two nested contexts at once (an HTML attribute, and inside that, a JS
+// string literal), and esc() alone only covers the HTML side — a model name
+// containing a single quote would otherwise close the JS string early and
+// let the rest of the name execute as script. Escape the JS-string context
+// first, then esc() escapes the HTML-attribute context around that result.
+function escJsAttr(s) {
+  return esc(String(s || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
+}
+
 function fmtCost(usd) {
   if (!usd) return '$0';
   if (usd < 0.01) return '<$0.01';
@@ -188,8 +198,8 @@ async function loadUsage() {
           <span class="text-text-secondary truncate">${esc(a.agent_name)}</span>
           <span class="text-text-muted font-mono flex-shrink-0 flex items-center gap-2">
             ${(a.tokens_in + a.tokens_out).toLocaleString()}
-            ${hasCost ? `<span class="text-status-error">${fmtCost(a.cost_usd)}</span>` : ''}
-            ${hasSavings ? `<span class="text-status-healthy">${fmtCost(a.savings_usd)}</span>` : ''}
+            ${hasCost ? `<span class="text-status-error">${esc(fmtCost(a.cost_usd))}</span>` : ''}
+            ${hasSavings ? `<span class="text-status-healthy">${esc(fmtCost(a.savings_usd))}</span>` : ''}
             ${sparkline(a.last7)}
           </span>
         </div>`).join('')
@@ -205,8 +215,8 @@ async function loadUsage() {
           </span>
           <span class="text-text-muted font-mono flex-shrink-0 flex items-center gap-2">
             ${(m.tokens_in + m.tokens_out).toLocaleString()}
-            ${hasCost ? `<span class="text-status-error">${fmtCost(m.cost_usd)}</span>` : ''}
-            ${hasSavings ? `<span class="text-status-healthy">${fmtCost(m.savings_usd)}</span>` : ''}
+            ${hasCost ? `<span class="text-status-error">${esc(fmtCost(m.cost_usd))}</span>` : ''}
+            ${hasSavings ? `<span class="text-status-healthy">${esc(fmtCost(m.savings_usd))}</span>` : ''}
           </span>
         </div>`).join('')
       : '<div class="text-text-muted p-2">No usage yet.</div>';
@@ -227,7 +237,7 @@ async function loadPricing() {
           ${pricing[m].self_hosted ? '<span class="px-1.5 py-0.5 rounded text-[10px] bg-accent/10 text-accent">self-hosted</span>' : ''}
           <span class="text-text-muted font-mono">$${pricing[m].input_per_1m ?? 0}/1M in</span>
           <span class="text-text-muted font-mono">$${pricing[m].output_per_1m ?? 0}/1M out</span>
-          <button onclick="removePricing('${esc(m)}')" class="text-status-error hover:underline">Remove</button>
+          <button onclick="removePricing('${escJsAttr(m)}')" class="text-status-error hover:underline">Remove</button>
         </div>`).join('')
       : '<div class="text-text-muted p-2">No models priced yet — self-hosted/local models show no cost by default.</div>';
   } catch (e) {

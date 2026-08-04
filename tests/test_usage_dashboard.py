@@ -59,6 +59,37 @@ class TestUsageSummary:
                 LLMLog.query.filter(LLMLog.id.in_(["l3", "l4"])).delete(synchronize_session=False)
                 db.session.commit()
 
+    def test_self_hosted_badge_derives_from_recorded_savings_not_live_pricing(self, app, client):
+        """Regression: self_hosted used to be a live lookup against current
+        pricing config, independent of the cost/savings actually frozen on
+        each row at write time. Flipping a model's pricing after historical
+        rows were written would then show a "self-hosted" badge next to a
+        model whose recorded $ is all real spend (or vice versa) — visibly
+        contradictory data in the same response. Derive it from the
+        aggregated cost_usd/savings_usd instead so the badge can never
+        disagree with the numbers next to it."""
+        with app.app_context():
+            db.session.add(self._make_log(
+                id="l-savings", model="local-llama", estimated_cost_usd=None, estimated_savings_usd=0.5,
+            ))
+            db.session.commit()
+            # Pricing now says this model is NOT self-hosted — contradicts
+            # the historical row, which should still win since it reflects
+            # what was actually recorded.
+            Setting.set("llm.model_pricing", '{"local-llama": {"input_per_1m": 3.0, "output_per_1m": 15.0, "self_hosted": false}}', value_type="string")
+            db.session.commit()
+        try:
+            resp = client.get("/api/usage/summary?days=30")
+            model = next(m for m in resp.get_json()["by_model"] if m["model"] == "local-llama")
+            assert model["self_hosted"] is True
+            assert model["cost_usd"] == 0.0
+            assert model["savings_usd"] == pytest.approx(0.5)
+        finally:
+            with app.app_context():
+                LLMLog.query.filter_by(id="l-savings").delete()
+                Setting.set("llm.model_pricing", "", value_type="string")
+                db.session.commit()
+
     def test_by_agent_resolves_agent_name(self, app, client):
         with app.app_context():
             db.session.add(Agent(id="agent-usage-1", name="Project Planner", status="idle"))

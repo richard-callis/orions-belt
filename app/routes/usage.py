@@ -63,7 +63,6 @@ def usage_summary():
     today_midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     since = today_midnight - timedelta(days=days - 1)
     rows = LLMLog.query.filter(LLMLog.created_at >= since).all()
-    pricing = _load_pricing()
 
     totals = {"tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0, "savings_usd": 0.0, "calls": 0, "errors": 0}
     by_day: dict[str, dict] = {}
@@ -106,9 +105,8 @@ def usage_summary():
         d["calls"] += 1
 
         model = r.model or "(unknown)"
-        self_hosted = bool((pricing.get(model) or {}).get("self_hosted"))
         m = by_model.setdefault(model, {
-            "model": model, "self_hosted": self_hosted,
+            "model": model,
             "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0, "savings_usd": 0.0, "calls": 0,
         })
         m["tokens_in"] += r.tokens_in or 0
@@ -136,6 +134,15 @@ def usage_summary():
     for agent_id, a in by_agent.items():
         agent_days = agent_day_tokens.get(agent_id, {})
         a["last7"] = [agent_days.get(k, 0) for k in last7_keys]
+
+    # Derive the self-hosted badge from the $ actually recorded per-row
+    # (frozen at write time via estimated_cost_usd/savings_usd), not a
+    # live lookup against current pricing config — a model whose
+    # self_hosted flag changed after some rows were written would
+    # otherwise show a badge that contradicts its own cost/savings split
+    # in the same response (e.g. "self-hosted" next to real $ spend).
+    for m in by_model.values():
+        m["self_hosted"] = m["savings_usd"] > 0 and m["cost_usd"] == 0
 
     return jsonify({
         "days": days,
