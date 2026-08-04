@@ -1056,6 +1056,14 @@ def _stream_openai_impl(base_url, api_key, model, system_prompt, history,
                     sink["text"] = total_text
                     yield _sse_format("text", {"content": fallback_content})
 
+            # Token counts for this turn are final at this point (streaming
+            # usage chunk + both fallback paths have all had their chance to
+            # accumulate into llm_log.tokens_in/out above).
+            from app.services.llm import _estimate_llm_cost_and_savings
+            llm_log.estimated_cost_usd, llm_log.estimated_savings_usd = (
+                _estimate_llm_cost_and_savings(model, llm_log.tokens_in, llm_log.tokens_out)
+            )
+
             # ── Text-based tool call fallback ─────────────────────────────────
             # If the provider doesn't support native function calling (e.g.
             # Gemini Enterprise drops the tools field silently), the model
@@ -1304,6 +1312,11 @@ def _stream_ollama_impl(base_url, model, system_prompt, history,
                             llm_log.tokens_in += chunk.get("prompt_eval_count", 0) or 0
                             llm_log.tokens_out += chunk.get("eval_count", 0) or 0
                             break
+
+            from app.services.llm import _estimate_llm_cost_and_savings
+            llm_log.estimated_cost_usd, llm_log.estimated_savings_usd = (
+                _estimate_llm_cost_and_savings(model, llm_log.tokens_in, llm_log.tokens_out)
+            )
 
             # After stream — append assistant message and execute any tool calls
             messages.append({"role": "assistant", "content": turn_text})

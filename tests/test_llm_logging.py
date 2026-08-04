@@ -19,14 +19,14 @@ import app.services.llm as llm_mod
 class TestEstimateLlmCost:
     def test_no_pricing_configured_returns_none(self, app):
         with app.app_context():
-            assert llm_mod._estimate_llm_cost("gpt-4o", 1000, 500) is None
+            assert llm_mod._estimate_llm_cost_and_savings("gpt-4o", 1000, 500) == (None, None)
 
     def test_unknown_model_returns_none(self, app):
         with app.app_context():
             Setting.set("llm.model_pricing", '{"claude-sonnet-5": {"input_per_1m": 3, "output_per_1m": 15}}')
             db.session.commit()
             try:
-                assert llm_mod._estimate_llm_cost("some-other-model", 1000, 500) is None
+                assert llm_mod._estimate_llm_cost_and_savings("some-other-model", 1000, 500) == (None, None)
             finally:
                 Setting.set("llm.model_pricing", "")
                 db.session.commit()
@@ -36,8 +36,21 @@ class TestEstimateLlmCost:
             Setting.set("llm.model_pricing", '{"claude-sonnet-5": {"input_per_1m": 3.0, "output_per_1m": 15.0}}')
             db.session.commit()
             try:
-                cost = llm_mod._estimate_llm_cost("claude-sonnet-5", 1_000_000, 1_000_000)
+                cost, savings = llm_mod._estimate_llm_cost_and_savings("claude-sonnet-5", 1_000_000, 1_000_000)
                 assert cost == pytest.approx(18.0)
+                assert savings is None
+            finally:
+                Setting.set("llm.model_pricing", "")
+                db.session.commit()
+
+    def test_self_hosted_model_reports_savings_not_cost(self, app):
+        with app.app_context():
+            Setting.set("llm.model_pricing", '{"llama3": {"input_per_1m": 1.0, "output_per_1m": 2.0, "self_hosted": true}}')
+            db.session.commit()
+            try:
+                cost, savings = llm_mod._estimate_llm_cost_and_savings("llama3", 1_000_000, 1_000_000)
+                assert cost is None
+                assert savings == pytest.approx(3.0)
             finally:
                 Setting.set("llm.model_pricing", "")
                 db.session.commit()
@@ -47,7 +60,7 @@ class TestEstimateLlmCost:
             Setting.set("llm.model_pricing", "not json")
             db.session.commit()
             try:
-                assert llm_mod._estimate_llm_cost("gpt-4o", 1000, 500) is None
+                assert llm_mod._estimate_llm_cost_and_savings("gpt-4o", 1000, 500) == (None, None)
             finally:
                 Setting.set("llm.model_pricing", "")
                 db.session.commit()

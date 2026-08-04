@@ -8,7 +8,7 @@
   <div class="flex items-center justify-between">
     <div>
       <h2 class="text-base font-semibold text-text-primary">LLM Usage &amp; Cost</h2>
-      <p class="text-xs text-text-muted mt-0.5">Every LLM call this app makes is logged here — tokens, latency, and estimated cost.</p>
+      <p class="text-xs text-text-muted mt-0.5">Every LLM call this app makes is logged here — tokens, latency, and estimated cost/savings.</p>
     </div>
     <select id="days-select" onchange="loadUsage()"
             class="px-2.5 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary focus:outline-none focus:border-accent">
@@ -19,18 +19,27 @@
   </div>
 
   <!-- Summary cards -->
-  <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+  <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
     <div class="rounded-lg border border-border-subtle bg-bg-card p-4">
       <div class="text-[10px] text-text-muted uppercase tracking-wider mb-1">Total tokens</div>
       <div class="text-xl font-semibold text-text-primary" id="stat-tokens">—</div>
-    </div>
-    <div class="rounded-lg border border-border-subtle bg-bg-card p-4">
-      <div class="text-[10px] text-text-muted uppercase tracking-wider mb-1">Estimated cost</div>
-      <div class="text-xl font-semibold text-text-primary" id="stat-cost">—</div>
+      <div class="text-[10px] text-text-muted mt-0.5" id="stat-tokens-sub"></div>
     </div>
     <div class="rounded-lg border border-border-subtle bg-bg-card p-4">
       <div class="text-[10px] text-text-muted uppercase tracking-wider mb-1">LLM calls</div>
       <div class="text-xl font-semibold text-text-primary" id="stat-calls">—</div>
+    </div>
+    <!-- Card 3: API spend if any cost recorded, else top spender -->
+    <div class="rounded-lg border p-4" id="card-cost">
+      <div class="text-[10px] uppercase tracking-wider mb-1" id="card-cost-label">API spend</div>
+      <div class="text-xl font-semibold" id="card-cost-value">—</div>
+      <div class="text-[10px] text-text-muted mt-0.5" id="card-cost-sub"></div>
+    </div>
+    <!-- Card 4: savings if any recorded, else busiest day -->
+    <div class="rounded-lg border p-4" id="card-savings">
+      <div class="text-[10px] uppercase tracking-wider mb-1" id="card-savings-label">Estimated savings</div>
+      <div class="text-xl font-semibold" id="card-savings-value">—</div>
+      <div class="text-[10px] text-text-muted mt-0.5" id="card-savings-sub"></div>
     </div>
     <div class="rounded-lg border border-border-subtle bg-bg-card p-4">
       <div class="text-[10px] text-text-muted uppercase tracking-wider mb-1">Errors</div>
@@ -61,15 +70,19 @@
   <!-- Pricing config -->
   <div class="rounded-lg border border-border-subtle bg-bg-card p-4">
     <div class="text-xs font-semibold text-text-muted uppercase tracking-wider mb-1">Model pricing</div>
-    <p class="text-[11px] text-text-muted mb-3">$ per 1M tokens, used to estimate cost. A model with no pricing configured shows no cost (not zero) — this includes local/self-hosted models by default.</p>
+    <p class="text-[11px] text-text-muted mb-3">$ per 1M tokens, used to estimate cost. A model with no pricing configured shows no cost (not zero). Mark a model "self-hosted" (e.g. Ollama/local) to track its $ value as savings avoided instead of spend.</p>
     <div id="pricing-list" class="space-y-1.5 text-xs mb-3"></div>
-    <div class="flex items-center gap-2">
+    <div class="flex items-center gap-2 flex-wrap">
       <input id="pricing-model" type="text" placeholder="model name (e.g. claude-sonnet-5)"
-             class="flex-1 px-2.5 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent" />
+             class="flex-1 min-w-[160px] px-2.5 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent" />
       <input id="pricing-input" type="number" step="0.01" placeholder="$/1M in"
              class="w-24 px-2.5 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent" />
       <input id="pricing-output" type="number" step="0.01" placeholder="$/1M out"
              class="w-24 px-2.5 py-1.5 text-xs rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent" />
+      <label class="flex items-center gap-1.5 text-[11px] text-text-muted">
+        <input id="pricing-self-hosted" type="checkbox" class="rounded border-border-visible" />
+        Self-hosted
+      </label>
       <button onclick="addPricing()" class="px-3 py-1.5 rounded text-xs bg-accent/15 text-accent hover:bg-accent/30 transition-colors">Add</button>
     </div>
   </div>
@@ -84,41 +97,117 @@ function esc(s) {
 }
 
 function fmtCost(usd) {
-  return usd > 0 ? `$${usd.toFixed(usd < 1 ? 4 : 2)}` : '$0';
+  if (!usd) return '$0';
+  if (usd < 0.01) return '<$0.01';
+  return `$${usd.toFixed(usd < 1 ? 4 : 2)}`;
+}
+
+function fmtTokens(n) {
+  n = n || 0;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
+
+function sparkline(data) {
+  if (!data || !data.length) return '';
+  const max = Math.max(...data, 1);
+  return `<div class="flex items-end gap-px h-5 w-16">${
+    data.map(v => `<div class="flex-1 bg-accent/50 rounded-sm" style="height:${Math.max(10, (v / max) * 100)}%" title="${v}"></div>`).join('')
+  }</div>`;
 }
 
 async function loadUsage() {
   const days = document.getElementById('days-select').value;
   try {
     const data = await fetch(`/api/usage/summary?days=${days}`).then(r => r.json());
-    document.getElementById('stat-tokens').textContent = (data.totals.tokens_in + data.totals.tokens_out).toLocaleString();
-    document.getElementById('stat-cost').textContent = fmtCost(data.totals.cost_usd);
-    document.getElementById('stat-calls').textContent = data.totals.calls.toLocaleString();
-    document.getElementById('stat-errors').textContent = data.totals.errors.toLocaleString();
+    const totals = data.totals;
+    const totalTokens = totals.tokens_in + totals.tokens_out;
+    const hasCost = totals.cost_usd > 0;
+    const hasSavings = totals.savings_usd > 0;
+    const topSpender = data.by_agent[0];
+    const busiestDay = data.by_day.reduce((best, d) =>
+      (!best || (d.tokens_in + d.tokens_out) > (best.tokens_in + best.tokens_out)) ? d : best, null);
+
+    document.getElementById('stat-tokens').textContent = totalTokens.toLocaleString();
+    document.getElementById('stat-tokens-sub').textContent = `${fmtTokens(totals.tokens_in)} in · ${fmtTokens(totals.tokens_out)} out`;
+    document.getElementById('stat-calls').textContent = totals.calls.toLocaleString();
+    document.getElementById('stat-errors').textContent = totals.errors.toLocaleString();
+
+    // Card 3: cost vs top spender
+    const costCard = document.getElementById('card-cost');
+    if (hasCost) {
+      costCard.className = 'rounded-lg border border-status-error/30 bg-status-error/5 p-4';
+      document.getElementById('card-cost-label').className = 'text-[10px] uppercase tracking-wider mb-1 text-text-muted';
+      document.getElementById('card-cost-label').textContent = 'API spend';
+      document.getElementById('card-cost-value').className = 'text-xl font-semibold text-status-error';
+      document.getElementById('card-cost-value').textContent = fmtCost(totals.cost_usd);
+      document.getElementById('card-cost-sub').textContent = `last ${days} days`;
+    } else {
+      costCard.className = 'rounded-lg border border-border-subtle bg-bg-card p-4';
+      document.getElementById('card-cost-label').className = 'text-[10px] uppercase tracking-wider mb-1 text-text-muted';
+      document.getElementById('card-cost-label').textContent = 'Top spender';
+      document.getElementById('card-cost-value').className = 'text-base font-semibold text-text-primary truncate';
+      document.getElementById('card-cost-value').textContent = topSpender ? topSpender.agent_name : '—';
+      document.getElementById('card-cost-sub').textContent = topSpender ? `${fmtTokens(topSpender.tokens_in + topSpender.tokens_out)} tokens` : '';
+    }
+
+    // Card 4: savings vs busiest day
+    const savingsCard = document.getElementById('card-savings');
+    if (hasSavings) {
+      savingsCard.className = 'rounded-lg border border-status-healthy/30 bg-status-healthy/5 p-4';
+      document.getElementById('card-savings-label').className = 'text-[10px] uppercase tracking-wider mb-1 text-text-muted';
+      document.getElementById('card-savings-label').textContent = 'Estimated savings';
+      document.getElementById('card-savings-value').className = 'text-xl font-semibold text-status-healthy';
+      document.getElementById('card-savings-value').textContent = fmtCost(totals.savings_usd);
+      document.getElementById('card-savings-sub').textContent = 'vs. cloud equivalent';
+    } else {
+      savingsCard.className = 'rounded-lg border border-border-subtle bg-bg-card p-4';
+      document.getElementById('card-savings-label').className = 'text-[10px] uppercase tracking-wider mb-1 text-text-muted';
+      document.getElementById('card-savings-label').textContent = 'Busiest day';
+      document.getElementById('card-savings-value').className = 'text-base font-semibold text-text-primary';
+      document.getElementById('card-savings-value').textContent = busiestDay ? busiestDay.day : '—';
+      document.getElementById('card-savings-sub').textContent = busiestDay ? `${fmtTokens(busiestDay.tokens_in + busiestDay.tokens_out)} tokens` : '';
+    }
 
     const chart = document.getElementById('day-chart');
     const max = Math.max(1, ...data.by_day.map(d => d.tokens_in + d.tokens_out));
     chart.innerHTML = data.by_day.map(d => {
       const total = d.tokens_in + d.tokens_out;
       const h = Math.max(2, Math.round((total / max) * 100));
-      return `<div class="flex-1 bg-accent/40 hover:bg-accent/70 transition-colors rounded-t" style="height:${h}%" title="${d.day}: ${total.toLocaleString()} tokens"></div>`;
+      const tip = `${d.day}: ${total.toLocaleString()} tokens`
+        + (d.cost_usd > 0 ? ` · ${fmtCost(d.cost_usd)}` : '')
+        + (d.savings_usd > 0 ? ` · ${fmtCost(d.savings_usd)} saved` : '');
+      return `<div class="flex-1 bg-accent/40 hover:bg-accent/70 transition-colors rounded-t" style="height:${h}%" title="${esc(tip)}"></div>`;
     }).join('');
 
     const agentTable = document.getElementById('agent-table');
     agentTable.innerHTML = data.by_agent.length
       ? data.by_agent.map(a => `
-        <div class="flex items-center justify-between px-2 py-1.5 rounded bg-bg-raised">
+        <div class="flex items-center justify-between px-2 py-1.5 rounded bg-bg-raised gap-2">
           <span class="text-text-secondary truncate">${esc(a.agent_name)}</span>
-          <span class="text-text-muted font-mono flex-shrink-0 ml-2">${(a.tokens_in + a.tokens_out).toLocaleString()} · ${fmtCost(a.cost_usd)}</span>
+          <span class="text-text-muted font-mono flex-shrink-0 flex items-center gap-2">
+            ${(a.tokens_in + a.tokens_out).toLocaleString()}
+            ${hasCost ? `<span class="text-status-error">${fmtCost(a.cost_usd)}</span>` : ''}
+            ${hasSavings ? `<span class="text-status-healthy">${fmtCost(a.savings_usd)}</span>` : ''}
+            ${sparkline(a.last7)}
+          </span>
         </div>`).join('')
       : '<div class="text-text-muted p-2">No usage yet.</div>';
 
     const modelTable = document.getElementById('model-table');
     modelTable.innerHTML = data.by_model.length
       ? data.by_model.map(m => `
-        <div class="flex items-center justify-between px-2 py-1.5 rounded bg-bg-raised">
-          <span class="text-text-secondary font-mono truncate">${esc(m.model)}</span>
-          <span class="text-text-muted font-mono flex-shrink-0 ml-2">${(m.tokens_in + m.tokens_out).toLocaleString()} · ${fmtCost(m.cost_usd)}</span>
+        <div class="flex items-center justify-between px-2 py-1.5 rounded bg-bg-raised gap-2">
+          <span class="text-text-secondary font-mono truncate flex items-center gap-1.5">
+            ${esc(m.model)}
+            ${m.self_hosted ? '<span class="px-1.5 py-0.5 rounded text-[10px] bg-accent/10 text-accent flex-shrink-0">self-hosted</span>' : ''}
+          </span>
+          <span class="text-text-muted font-mono flex-shrink-0 flex items-center gap-2">
+            ${(m.tokens_in + m.tokens_out).toLocaleString()}
+            ${hasCost ? `<span class="text-status-error">${fmtCost(m.cost_usd)}</span>` : ''}
+            ${hasSavings ? `<span class="text-status-healthy">${fmtCost(m.savings_usd)}</span>` : ''}
+          </span>
         </div>`).join('')
       : '<div class="text-text-muted p-2">No usage yet.</div>';
   } catch (e) {
@@ -135,6 +224,7 @@ async function loadPricing() {
       ? models.map(m => `
         <div class="flex items-center gap-2 px-2 py-1.5 rounded bg-bg-raised">
           <span class="font-mono text-text-secondary flex-1 truncate">${esc(m)}</span>
+          ${pricing[m].self_hosted ? '<span class="px-1.5 py-0.5 rounded text-[10px] bg-accent/10 text-accent">self-hosted</span>' : ''}
           <span class="text-text-muted font-mono">$${pricing[m].input_per_1m ?? 0}/1M in</span>
           <span class="text-text-muted font-mono">$${pricing[m].output_per_1m ?? 0}/1M out</span>
           <button onclick="removePricing('${esc(m)}')" class="text-status-error hover:underline">Remove</button>
@@ -149,12 +239,14 @@ async function addPricing() {
   const model = document.getElementById('pricing-model').value.trim();
   const inputPrice = parseFloat(document.getElementById('pricing-input').value);
   const outputPrice = parseFloat(document.getElementById('pricing-output').value);
+  const selfHosted = document.getElementById('pricing-self-hosted').checked;
   if (!model) return;
   try {
     const pricing = await fetch('/api/usage/pricing').then(r => r.json());
     pricing[model] = {
       input_per_1m: isNaN(inputPrice) ? null : inputPrice,
       output_per_1m: isNaN(outputPrice) ? null : outputPrice,
+      self_hosted: selfHosted,
     };
     await fetch('/api/usage/pricing', {
       method: 'PUT',
@@ -164,6 +256,7 @@ async function addPricing() {
     document.getElementById('pricing-model').value = '';
     document.getElementById('pricing-input').value = '';
     document.getElementById('pricing-output').value = '';
+    document.getElementById('pricing-self-hosted').checked = false;
     loadPricing();
   } catch (e) { console.error('Failed to add pricing:', e); }
 }
