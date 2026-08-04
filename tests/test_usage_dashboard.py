@@ -59,6 +59,37 @@ class TestUsageSummary:
                 LLMLog.query.filter(LLMLog.id.in_(["l3", "l4"])).delete(synchronize_session=False)
                 db.session.commit()
 
+    def test_self_hosted_badge_derives_from_recorded_savings_not_live_pricing(self, app, client):
+        """Regression: self_hosted used to be a live lookup against current
+        pricing config, independent of the cost/savings actually frozen on
+        each row at write time. Flipping a model's pricing after historical
+        rows were written would then show a "self-hosted" badge next to a
+        model whose recorded $ is all real spend (or vice versa) — visibly
+        contradictory data in the same response. Derive it from the
+        aggregated cost_usd/savings_usd instead so the badge can never
+        disagree with the numbers next to it."""
+        with app.app_context():
+            db.session.add(self._make_log(
+                id="l-savings", model="local-llama", estimated_cost_usd=None, estimated_savings_usd=0.5,
+            ))
+            db.session.commit()
+            # Pricing now says this model is NOT self-hosted — contradicts
+            # the historical row, which should still win since it reflects
+            # what was actually recorded.
+            Setting.set("llm.model_pricing", '{"local-llama": {"input_per_1m": 3.0, "output_per_1m": 15.0, "self_hosted": false}}', value_type="string")
+            db.session.commit()
+        try:
+            resp = client.get("/api/usage/summary?days=30")
+            model = next(m for m in resp.get_json()["by_model"] if m["model"] == "local-llama")
+            assert model["self_hosted"] is True
+            assert model["cost_usd"] == 0.0
+            assert model["savings_usd"] == pytest.approx(0.5)
+        finally:
+            with app.app_context():
+                LLMLog.query.filter_by(id="l-savings").delete()
+                Setting.set("llm.model_pricing", "", value_type="string")
+                db.session.commit()
+
     def test_by_agent_resolves_agent_name(self, app, client):
         with app.app_context():
             db.session.add(Agent(id="agent-usage-1", name="Project Planner", status="idle"))
@@ -108,6 +139,27 @@ class TestUsageSummary:
         assert resp.status_code == 200
         assert resp.get_json()["days"] == 365
 
+    def test_todays_call_lands_in_last_day_bucket(self, app, client):
+        """Regression: since = datetime.now() - timedelta(days=days) (not
+        midnight-anchored) put the last zero-filled day-key at "now minus
+        ~1 day" instead of today, so a call made right now fell outside
+        every pre-filled bucket — most visibly, an agent's `last7`
+        sparkline (built only from those pre-filled keys) showed all
+        zeros even with fresh activity."""
+        with app.app_context():
+            db.session.add(self._make_log(id="l8", run_id="agent-today"))
+            db.session.commit()
+        try:
+            resp = client.get("/api/usage/summary?days=30")
+            data = resp.get_json()
+            assert data["by_day"][-1]["tokens_in"] == 100
+            agent = next(a for a in data["by_agent"] if a["agent_id"] == "agent-today")
+            assert agent["last7"][-1] == 150  # tokens_in + tokens_out from _make_log
+        finally:
+            with app.app_context():
+                LLMLog.query.filter_by(id="l8").delete()
+                db.session.commit()
+
 
 
 class TestUsagePricing:
@@ -145,8 +197,23 @@ class TestUsagePricing:
         client.put("/api/usage/pricing", json=payload)
         try:
             with app.app_context():
-                cost = llm_mod._estimate_llm_cost("test-model-xyz", 1_000_000, 1_000_000)
+                cost, savings = llm_mod._estimate_llm_cost_and_savings("test-model-xyz", 1_000_000, 1_000_000)
                 assert cost == 12.0
+                assert savings is None
+        finally:
+            with app.app_context():
+                Setting.set("llm.model_pricing", "", value_type="string")
+                db.session.commit()
+
+    def test_self_hosted_pricing_reports_savings_not_cost(self, app, client):
+        import app.services.llm as llm_mod
+        payload = {"local-llama": {"input_per_1m": 0.5, "output_per_1m": 1.0, "self_hosted": True}}
+        client.put("/api/usage/pricing", json=payload)
+        try:
+            with app.app_context():
+                cost, savings = llm_mod._estimate_llm_cost_and_savings("local-llama", 1_000_000, 1_000_000)
+                assert cost is None
+                assert savings == 1.5
         finally:
             with app.app_context():
                 Setting.set("llm.model_pricing", "", value_type="string")

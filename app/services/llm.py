@@ -352,25 +352,36 @@ class ContextTooLargeError(RecoveryError):
         super().__init__(message, strategy="compact_and_retry")
 
 
-def _estimate_llm_cost(model: str, input_tokens: int, output_tokens: int) -> float | None:
-    """Estimated USD cost for one LLM call, or None if the model has no
-    configured pricing (e.g. a local/self-hosted model — cost is genuinely
-    unknown/zero, not "failed to compute")."""
+def _estimate_llm_cost_and_savings(
+    model: str, input_tokens: int, output_tokens: int
+) -> tuple[float | None, float | None]:
+    """Estimated USD (cost, savings) for one LLM call — exactly one of the
+    pair is non-None, mirroring orion-web's split: a self-hosted model's
+    $ value is money *avoided*, not money spent, so it's tracked separately
+    rather than folded into "cost" (which would misrepresent actual spend)
+    or discarded (which would hide the value self-hosting provides).
+
+    Returns (None, None) if the model has no configured pricing at all —
+    genuinely unknown, not zero.
+    """
     import json
     from app.models.settings import Setting
     try:
         raw = Setting.get("llm.model_pricing")
         pricing = json.loads(raw) if raw else {}
     except Exception:
-        return None
+        return None, None
     entry = pricing.get(model) if isinstance(pricing, dict) else None
     if not entry:
-        return None
+        return None, None
     input_price = entry.get("input_per_1m")
     output_price = entry.get("output_per_1m")
     if input_price is None and output_price is None:
-        return None
-    return (input_tokens * (input_price or 0) + output_tokens * (output_price or 0)) / 1_000_000
+        return None, None
+    usd = (input_tokens * (input_price or 0) + output_tokens * (output_price or 0)) / 1_000_000
+    if entry.get("self_hosted"):
+        return None, usd
+    return usd, None
 
 
 def _log_llm_call(adapter, model: str, session_id: str | None, run_id: str | None,
@@ -383,12 +394,12 @@ def _log_llm_call(adapter, model: str, session_id: str | None, run_id: str | Non
         usage = getattr(adapter, "last_usage", None) or {}
         input_tokens = usage.get("input", 0)
         output_tokens = usage.get("output", 0)
-        cost = _estimate_llm_cost(model, input_tokens, output_tokens) if success else None
+        cost, savings = _estimate_llm_cost_and_savings(model, input_tokens, output_tokens) if success else (None, None)
         db.session.add(LLMLog(
             provider=type(adapter).__name__.replace("Adapter", "").lower(),
             model=model, session_id=session_id, run_id=run_id,
             tokens_in=input_tokens, tokens_out=output_tokens,
-            latency_ms=latency_ms, estimated_cost_usd=cost,
+            latency_ms=latency_ms, estimated_cost_usd=cost, estimated_savings_usd=savings,
             success=success, error=(error[:2000] if error else None),
         ))
         db.session.commit()

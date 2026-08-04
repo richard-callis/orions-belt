@@ -99,8 +99,11 @@ class LLMLog(db.Model):
     tokens_out = db.Column(db.Integer, default=0)
     latency_ms = db.Column(db.Integer, default=0)
 
-    # Estimated cost in USD (null if unknown/local)
+    # Estimated cost in USD (null if unknown; also null — not 0 — for
+    # self-hosted models, whose $ value is tracked as estimated_savings_usd
+    # instead, mirroring orion-web's cost/savings split)
     estimated_cost_usd = db.Column(db.Float, nullable=True)
+    estimated_savings_usd = db.Column(db.Float, nullable=True)
 
     success = db.Column(db.Boolean, default=True)
     error = db.Column(db.Text, nullable=True)

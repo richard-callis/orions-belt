@@ -994,17 +994,20 @@ def _stream_openai_impl(base_url, api_key, model, system_prompt, history,
                     log.info("llm.fallback status=%d", fb_resp.status_code)
                     if fb_resp.status_code == 200:
                         fb_data = fb_resp.json()
+                        fb_usage = fb_data.get("usage") or {}
+                        llm_log.tokens_in += fb_usage.get("prompt_tokens", 0) or 0
+                        llm_log.tokens_out += fb_usage.get("completion_tokens", 0) or 0
                         fb_msg = fb_data.get("choices", [{}])[0].get("message", {})
                         fallback_content = fb_msg.get("content") or ""
                         # The provider may just not support *streaming* tool calls —
                         # a non-streaming retry can return a real tool_calls list
                         # with empty content. Don't discard that as "still empty".
                         for i, tc in enumerate(fb_msg.get("tool_calls") or []):
-                            fn = tc.get("function", {})
+                            fn = tc.get("function") or {}
                             pending_tool_calls[i] = {
-                                "id": tc.get("id", f"call_{i}"),
-                                "name": fn.get("name", ""),
-                                "args": fn.get("arguments", ""),
+                                "id": tc.get("id") or f"call_{i}",
+                                "name": fn.get("name") or "",
+                                "args": fn.get("arguments") or "",
                             }
                         log.info("llm.fallback content_len=%d tool_calls=%d",
                                  len(fallback_content), len(pending_tool_calls))
@@ -1028,6 +1031,9 @@ def _stream_openai_impl(base_url, api_key, model, system_prompt, history,
                         log.info("llm.fallback2 status=%d", fb2_resp.status_code)
                         if fb2_resp.status_code == 200:
                             fb2_data = fb2_resp.json()
+                            fb2_usage = fb2_data.get("usage") or {}
+                            llm_log.tokens_in += fb2_usage.get("prompt_tokens", 0) or 0
+                            llm_log.tokens_out += fb2_usage.get("completion_tokens", 0) or 0
                             fallback_content = (
                                 fb2_data.get("choices", [{}])[0]
                                 .get("message", {})
@@ -1050,6 +1056,20 @@ def _stream_openai_impl(base_url, api_key, model, system_prompt, history,
                     sink["text"] = total_text
                     yield _sse_format("text", {"content": fallback_content})
 
+            # Token counts for this turn are final at this point (streaming
+            # usage chunk + both fallback paths have all had their chance to
+            # accumulate into llm_log.tokens_in/out above). Skip cost/savings
+            # entirely if no usage was ever reported — otherwise a provider
+            # that omits `usage` on every response (not just the fallback
+            # path) would compute a cost of exactly $0.00 for a priced
+            # model, indistinguishable on the dashboard from "genuinely
+            # free", instead of leaving it null ("unknown").
+            if llm_log.tokens_in or llm_log.tokens_out:
+                from app.services.llm import _estimate_llm_cost_and_savings
+                llm_log.estimated_cost_usd, llm_log.estimated_savings_usd = (
+                    _estimate_llm_cost_and_savings(model, llm_log.tokens_in, llm_log.tokens_out)
+                )
+
             # ── Text-based tool call fallback ─────────────────────────────────
             # If the provider doesn't support native function calling (e.g.
             # Gemini Enterprise drops the tools field silently), the model
@@ -1062,10 +1082,17 @@ def _stream_openai_impl(base_url, api_key, model, system_prompt, history,
                     log.info("llm.text_tool_calls found=%d", len(text_calls))
                     pending_tool_calls = text_calls
 
+            # For native tool calls, content rides along in the assistant+
+            # tool_calls message appended below — appending it here too would
+            # send the same content to the provider twice.
+            is_native = bool(pending_tool_calls) and any(
+                not tc["id"].startswith("txt_") for tc in pending_tool_calls.values()
+            )
+
             # Store the assistant turn; strip <tool_call> blocks from context
             # (the blocks are execution directives, not conversational content —
             # tool results arrive as separate tool-role messages).
-            if turn_text:
+            if turn_text and not is_native:
                 clean_turn = _strip_tool_call_blocks(turn_text) if pending_tool_calls else turn_text
                 messages.append({"role": "assistant", "content": clean_turn})
 
@@ -1077,7 +1104,6 @@ def _stream_openai_impl(base_url, api_key, model, system_prompt, history,
             # message so the provider tracks the call/result pair correctly.
             # For text-based calls: the assistant message was already appended
             # above (with blocks stripped); no extra tool_calls entry needed.
-            is_native = any(not tc["id"].startswith("txt_") for tc in pending_tool_calls.values())
             if is_native:
                 messages.append({
                     "role": "assistant",
@@ -1292,6 +1318,14 @@ def _stream_ollama_impl(base_url, model, system_prompt, history,
                             llm_log.tokens_in += chunk.get("prompt_eval_count", 0) or 0
                             llm_log.tokens_out += chunk.get("eval_count", 0) or 0
                             break
+
+            # Skip if the stream ended without a `done` chunk (tokens stay
+            # 0) — see the identical guard/comment in _stream_openai_impl.
+            if llm_log.tokens_in or llm_log.tokens_out:
+                from app.services.llm import _estimate_llm_cost_and_savings
+                llm_log.estimated_cost_usd, llm_log.estimated_savings_usd = (
+                    _estimate_llm_cost_and_savings(model, llm_log.tokens_in, llm_log.tokens_out)
+                )
 
             # After stream — append assistant message and execute any tool calls
             messages.append({"role": "assistant", "content": turn_text})
