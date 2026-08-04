@@ -194,15 +194,10 @@ def _test_sql_server(c: Connector):
     except ImportError:
         return jsonify({"ok": False, "message": "pyodbc not installed — run: pip install pyodbc"}), 200
 
+    from app.services.mcp.tools import _build_sql_connection_string
+
     auth = c.get_auth()
-    auth_type = cfg.get("auth_type", "windows")
-    if auth_type == "windows":
-        conn_str = f"DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={server};DATABASE={database};Trusted_Connection=yes"
-    else:
-        conn_str = (
-            f"DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={server};"
-            f"DATABASE={database};UID={auth.get('username', '')};PWD={auth.get('password', '')}"
-        )
+    conn_str = _build_sql_connection_string(cfg, auth)
 
     try:
         conn = pyodbc.connect(conn_str, timeout=5)
