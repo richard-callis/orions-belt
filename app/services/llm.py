@@ -384,6 +384,61 @@ def _estimate_llm_cost_and_savings(
     return usd, None
 
 
+def _to_jsonable(obj):
+    """Best-effort conversion of an SDK request/response object to a plain
+    JSON-serializable structure, for LLM traffic capture. SDK response
+    objects are typically pydantic models (openai/anthropic/ollama all use
+    pydantic) but this doesn't assume that specifically — falls back
+    gracefully so a capture failure never breaks the actual LLM call it's
+    observing (see _log_llm_call, which also wraps all of this in a
+    broad try/except for the same reason)."""
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
+    if isinstance(obj, dict):
+        return {k: _to_jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_jsonable(v) for v in obj]
+    if hasattr(obj, "model_dump"):
+        try:
+            return obj.model_dump(mode="json")
+        except Exception:
+            pass
+    if hasattr(obj, "dict"):
+        try:
+            return obj.dict()
+        except Exception:
+            pass
+    try:
+        return json.loads(json.dumps(obj, default=str))
+    except Exception:
+        return str(obj)
+
+
+# Cap on persisted request/response JSON — generous enough for real
+# debugging (a full tool-heavy conversation turn) while bounding storage on
+# a table with no retention policy of its own.
+_MAX_TRAFFIC_CAPTURE_CHARS = 200_000
+
+
+def _capture_traffic_json(adapter) -> tuple[str | None, str | None]:
+    """Redacted, size-capped JSON strings for adapter.last_request/
+    last_response, or (None, None) if either is absent. Only called when
+    debug.llm is enabled — see _log_llm_call."""
+    from app.services.redact import redact_text
+
+    def _dump(attr):
+        raw = getattr(adapter, attr, None)
+        if raw is None:
+            return None
+        try:
+            text = json.dumps(_to_jsonable(raw), indent=2, default=str)
+        except Exception:
+            return None
+        return redact_text(text)[:_MAX_TRAFFIC_CAPTURE_CHARS]
+
+    return _dump("last_request"), _dump("last_response")
+
+
 def _log_llm_call(adapter, model: str, session_id: str | None, run_id: str | None,
                    latency_ms: int, success: bool, error: str | None = None) -> None:
     """Best-effort LLMLog write — logging must never break the actual LLM call
@@ -391,16 +446,23 @@ def _log_llm_call(adapter, model: str, session_id: str | None, run_id: str | Non
     try:
         from app import db
         from app.models.logs import LLMLog
+        from app.models.settings import Setting
         usage = getattr(adapter, "last_usage", None) or {}
         input_tokens = usage.get("input", 0)
         output_tokens = usage.get("output", 0)
         cost, savings = _estimate_llm_cost_and_savings(model, input_tokens, output_tokens) if success else (None, None)
+
+        request_json = response_json = None
+        if Setting.get("debug.llm", False):
+            request_json, response_json = _capture_traffic_json(adapter)
+
         db.session.add(LLMLog(
             provider=type(adapter).__name__.replace("Adapter", "").lower(),
             model=model, session_id=session_id, run_id=run_id,
             tokens_in=input_tokens, tokens_out=output_tokens,
             latency_ms=latency_ms, estimated_cost_usd=cost, estimated_savings_usd=savings,
             success=success, error=(error[:2000] if error else None),
+            request_json=request_json, response_json=response_json,
         ))
         db.session.commit()
     except Exception as e:

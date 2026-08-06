@@ -14,9 +14,17 @@ class LLMAdapter(ABC):
     split that `tokens` (their sum) doesn't carry. `_call_llm_sync` reads this
     after the call to log per-call usage/cost without changing complete()'s
     return signature.
+
+    Implementations should also set `self.last_request`/`self.last_response`
+    to the raw (pre-redaction) request kwargs and response object, as early/
+    late as possible so even a failed call has the request captured — used
+    for LLM traffic capture (see llm.py's _log_llm_call), gated behind the
+    "LLM Debug Logging" setting and never required for complete() to work.
     """
 
     last_usage: dict | None = None
+    last_request: dict | None = None
+    last_response: dict | None = None
 
     @abstractmethod
     def complete(

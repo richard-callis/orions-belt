@@ -96,6 +96,8 @@ def _to_anthropic_tools(tool_defs: list[dict]) -> list[dict]:
 
 class AnthropicAdapter(LLMAdapter):
     last_usage: dict | None = None
+    last_request: dict | None = None
+    last_response: dict | None = None
 
     def __init__(self, base_url: str, api_key: str, model: str):
         self.base_url = base_url.rstrip("/")
@@ -127,6 +129,9 @@ class AnthropicAdapter(LLMAdapter):
             kwargs["system"] = system_prompt
         if anthropic_tools:
             kwargs["tools"] = anthropic_tools
+        # api_key is never part of kwargs (the Anthropic() client takes it
+        # separately from the request body), so this is safe to capture as-is.
+        self.last_request = kwargs
 
         try:
             resp = client.messages.create(**kwargs)
@@ -144,6 +149,8 @@ class AnthropicAdapter(LLMAdapter):
             if status == 400 and ("context" in str(e).lower() or "too long" in str(e).lower()):
                 raise ContextTooLargeError(f"Context too large: {e}")
             raise RuntimeError(f"Anthropic API error {status}: {e}")
+
+        self.last_response = resp
 
         # Extract text and tool use blocks
         response_text = ""

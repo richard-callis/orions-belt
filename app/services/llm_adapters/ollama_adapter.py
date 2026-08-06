@@ -28,6 +28,8 @@ class OllamaAdapter(LLMAdapter):
         self.model = model
 
     last_usage: dict | None = None
+    last_request: dict | None = None
+    last_response: dict | None = None
 
     def complete(
         self,
@@ -51,6 +53,7 @@ class OllamaAdapter(LLMAdapter):
         kwargs: dict = {"model": self.model, "messages": ollama_messages}
         if tool_defs:
             kwargs["tools"] = _to_ollama_tools(tool_defs)
+        self.last_request = kwargs
 
         try:
             resp = client.chat(**kwargs)
@@ -62,6 +65,8 @@ class OllamaAdapter(LLMAdapter):
             if "connect" in str(e).lower() or "timeout" in str(e).lower():
                 raise TransientError(f"Ollama connection error: {e}")
             raise RuntimeError(f"Ollama call failed: {e}")
+
+        self.last_response = resp
 
         msg = resp.message
         response_text = msg.content or ""

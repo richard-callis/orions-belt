@@ -18,6 +18,8 @@ log = logging.getLogger("orions-belt.adapters.openai")
 
 class OpenAIAdapter(LLMAdapter):
     last_usage: dict | None = None
+    last_request: dict | None = None
+    last_response: dict | None = None
 
     def __init__(self, base_url: str, api_key: str, model: str):
         self.base_url = base_url.rstrip("/")
@@ -41,6 +43,9 @@ class OpenAIAdapter(LLMAdapter):
         kwargs: dict = {"model": self.model, "messages": messages}
         if tool_defs:
             kwargs["tools"] = tool_defs
+        # api_key is never part of kwargs (the OpenAI() client takes it
+        # separately from the request body), so this is safe to capture as-is.
+        self.last_request = kwargs
 
         try:
             resp = client.chat.completions.create(**kwargs)
@@ -50,6 +55,8 @@ class OpenAIAdapter(LLMAdapter):
             raise RuntimeError(f"OpenAI API error {e.status_code}: {e.message}")
         except (APIConnectionError, APITimeoutError) as e:
             raise TransientError(f"Connection error: {e}")
+
+        self.last_response = resp
 
         choice = resp.choices[0]
         msg = choice.message
