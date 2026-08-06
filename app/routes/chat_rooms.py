@@ -500,7 +500,7 @@ def _judge_goal_completion(agent, prov: dict, goal, latest_reply: str) -> tuple[
     approval and a short explanation on rejection, fed back into the next
     round via _build_goal_history's `feedback` param.
     """
-    from app.services.llm import retry_with_recovery
+    from app.services.llm import provider_extra, retry_with_recovery
 
     criteria = goal.success_criteria or goal.goal_text
     prompt = (
@@ -518,7 +518,7 @@ def _judge_goal_completion(agent, prov: dict, goal, latest_reply: str) -> tuple[
                 {"role": "user", "content": prompt},
             ],
             [],
-            max_retries=2,
+            max_retries=2, extra=provider_extra(prov),
         )
         up = (resp_text or "").strip()
         up_check = up.upper()
