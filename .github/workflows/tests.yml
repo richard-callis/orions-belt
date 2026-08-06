@@ -39,6 +39,7 @@ jobs:
             reportlab \
             pypdf \
             regex \
+            google-genai \
             pytest \
             pytest-cov
 
