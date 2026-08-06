@@ -518,7 +518,7 @@ def _judge_goal_completion(agent, prov: dict, goal, latest_reply: str) -> tuple[
                 {"role": "user", "content": prompt},
             ],
             [],
-            max_retries=2,
+            max_retries=2, extra=prov,
         )
         up = (resp_text or "").strip()
         up_check = up.upper()

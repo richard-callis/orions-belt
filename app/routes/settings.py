@@ -116,8 +116,16 @@ def _get_providers():
 
 def _looks_plaintext(key: str) -> bool:
     """Quick heuristic: real plaintext keys look like 'sk-...', 'ghp_...', etc.
-    Fernet tokens are long base64 strings — those are encrypted."""
+    Fernet tokens are long base64 strings — those are encrypted.
+
+    Also treats a Gemini/Vertex service-account JSON blob (pasted whole into
+    the api_key field) as plaintext needing encryption: a Fernet token is
+    never valid JSON, so a leading '{' is an unambiguous plaintext signal
+    with no risk of misclassifying a real encrypted key.
+    """
     if not key:
+        return True
+    if key.strip().startswith("{"):
         return True
     # Common plaintext key prefixes
     for prefix in ("sk-", "sk-proj-", "ghp_", "glpat-", "xoxb-", "xoxp-", "AIza", "EA"):
@@ -151,7 +159,13 @@ def _reencrypt_plaintext_keys(providers: list) -> list:
             continue
         # Re-encrypt if it looks like plaintext or decryption produced something plaintext-looking
         needs_reencrypt = False
-        if any(raw_key.startswith(pfx) for pfx in plaintext_prefixes):
+        if raw_key.strip().startswith("{"):
+            # A Gemini/Vertex service-account JSON blob — never valid Fernet
+            # output, so this is unambiguous even though it may also
+            # incidentally satisfy _looks_encrypted()'s length/"=" heuristic
+            # (e.g. base64 padding inside an embedded PEM private key).
+            needs_reencrypt = True
+        elif any(raw_key.startswith(pfx) for pfx in plaintext_prefixes):
             needs_reencrypt = True
         elif not _looks_encrypted(raw_key):
             # Try decrypting; if result is plaintext-looking, re-encrypt original
@@ -412,6 +426,11 @@ def add_llm_provider():
     base_url = body.get("base_url", "").strip()
     api_key = body.get("api_key", "")
     model = body.get("model", "").strip()
+    # Gemini/Vertex-only — project/region aren't derivable from base_url or
+    # the service-account credentials, so they're separate fields. Harmless
+    # no-ops for every other provider type.
+    project_id = body.get("project_id", "").strip()
+    location = body.get("location", "").strip()
 
     if not name or not base_url or not model:
         return jsonify({"error": "Name, Base URL, and Model are required"}), 400
@@ -429,6 +448,8 @@ def add_llm_provider():
         "base_url": base_url,
         "api_key": encrypted_key,
         "model": model,
+        "project_id": project_id,
+        "location": location,
     }
     providers.append(new_provider)
     Setting.set("llm.providers", providers, value_type="json")
@@ -452,7 +473,7 @@ def update_llm_provider(provider_id):
     if idx is None:
         return jsonify({"error": "Provider not found"}), 404
 
-    for field in ("name", "type", "base_url", "model"):
+    for field in ("name", "type", "base_url", "model", "project_id", "location"):
         if field in body:
             providers[idx][field] = body[field]
 
@@ -553,6 +574,30 @@ def test_llm_connection():
 
     masked_key = ("*" * (len(raw_key) - 4) + raw_key[-4:]) if len(raw_key) > 4 else ("*" * len(raw_key)) if raw_key else "(none)"
     log.info("LLM test: url=%s model=%s key_set=%s", base_url, model, bool(raw_key))
+
+    # Gemini doesn't speak /chat/completions at all — the generic probe
+    # below would always fail for it, so it goes through the real adapter
+    # (the exact same call path production traffic uses) instead. Every
+    # other provider type keeps the cheaper, direct httpx probe.
+    url_lower = base_url.lower()
+    if "aiplatform.googleapis.com" in url_lower or "generativelanguage.googleapis.com" in url_lower:
+        from app.services.llm import TransientError
+        from app.services.llm_adapters import get_adapter
+
+        extra = {"project_id": body.get("project_id", "").strip(),
+                 "location": body.get("location", "").strip()}
+        start = time.time()
+        try:
+            adapter = get_adapter(base_url, raw_key, model, extra=extra)
+            adapter.complete([{"role": "user", "content": "Hello"}], [])
+            return jsonify({"success": True, "model": model,
+                             "latency_ms": int((time.time() - start) * 1000)})
+        except TransientError as e:
+            return jsonify({"error": f"Transient error: {e}"}), 503
+        except Exception as e:
+            msg = str(e)
+            status = 401 if any(w in msg.lower() for w in ("auth", "401", "403", "unauthorized", "permission")) else 500
+            return jsonify({"error": msg[:300]}), status
 
     start = time.time()
 

@@ -227,7 +227,8 @@ def _filter_tools_by_role(tools: list, role: str | None) -> list:
 
 # ── Reviewer agent ────────────────────────────────────────────────────────────
 
-def _run_reviewer(run, result_summary: str, base_url: str, api_key: str, model: str) -> None:
+def _run_reviewer(run, result_summary: str, base_url: str, api_key: str, model: str,
+                   extra: dict | None = None) -> None:
     """One-shot reviewer LLM call to verdict the completed run."""
     from app import db
     from app.models.work import Task
@@ -253,7 +254,7 @@ def _run_reviewer(run, result_summary: str, base_url: str, api_key: str, model: 
                 {"role": "user", "content": review_prompt},
             ],
             [],
-            max_retries=2,
+            max_retries=2, extra=extra,
         )
         # "NOT APPROVED"/"REJECTED" must not read as approved (substring trap).
         up = (resp_text or "").upper()
@@ -521,7 +522,7 @@ def _execute_run(run, agent, task, session_id: str | None = None):
         _step_start = _time.time()
 
         response_text, tool_calls, tokens_used = retry_with_recovery(
-            base_url, api_key, model, messages, tool_defs
+            base_url, api_key, model, messages, tool_defs, extra=active_provider,
         )
         total_tokens += tokens_used
         run.tokens_used = total_tokens
@@ -563,7 +564,7 @@ def _execute_run(run, agent, task, session_id: str | None = None):
             )
             db.session.add(trace)
             db.session.commit()
-            _run_reviewer(run, run.result_summary, base_url, api_key, model)
+            _run_reviewer(run, run.result_summary, base_url, api_key, model, extra=active_provider)
             return
 
         for tc in tool_calls:

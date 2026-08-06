@@ -420,6 +420,7 @@ def _call_llm_sync(
     tool_defs: list,
     session_id: str | None = None,
     run_id: str | None = None,
+    extra: dict | None = None,
 ) -> tuple[str, list, int]:
     """Make a synchronous LLM call via the appropriate provider adapter.
 
@@ -431,9 +432,12 @@ def _call_llm_sync(
     point every LLM call in the app passes through, so it's the one place
     that can capture usage/cost without threading session_id/run_id through
     every caller's business logic.
+
+    `extra` carries provider-specific fields that don't fit base_url/api_key/
+    model — currently just Gemini's project_id/location for Vertex mode.
     """
     from app.services.llm_adapters import get_adapter
-    adapter = get_adapter(base_url, api_key, model)
+    adapter = get_adapter(base_url, api_key, model, extra=extra)
     start = time.time()
     try:
         result = adapter.complete(messages, tool_defs)
@@ -455,6 +459,7 @@ def retry_with_recovery(
     max_retries: int = 3,
     session_id: str | None = None,
     run_id: str | None = None,
+    extra: dict | None = None,
 ) -> tuple[str, list, int]:
     """Retry an LLM call with recovery strategies.
 
@@ -465,7 +470,9 @@ def retry_with_recovery(
     4. All else fails → raise error
 
     `session_id`/`run_id` are optional — only used to attribute LLMLog rows,
-    never required for the call itself.
+    never required for the call itself. `extra` is provider-specific config
+    (currently just Gemini's project_id/location) passed straight through to
+    get_adapter().
 
     Returns: (response_text, tool_calls, tokens)
     Raises: RuntimeError on unrecoverable failure
@@ -477,7 +484,7 @@ def retry_with_recovery(
         attempts += 1
         try:
             return _call_llm_sync(base_url, api_key, model, messages, tool_defs,
-                                  session_id=session_id, run_id=run_id)
+                                  session_id=session_id, run_id=run_id, extra=extra)
         except RecoveryError as e:
             log.warning("LLM call failed (attempt %d/%d): %s — strategy: %s",
                         attempts, max_retries, e, e.strategy)

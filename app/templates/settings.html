@@ -61,6 +61,24 @@
                     class="px-3 py-1.5 rounded text-xs font-medium border transition-colors bg-bg-raised border-border-subtle text-text-muted hover:border-accent/40 hover:text-accent">
               Custom endpoint
             </button>
+            <button type="button" data-type="gemini"
+                    class="px-3 py-1.5 rounded text-xs font-medium border transition-colors bg-bg-raised border-border-subtle text-text-muted hover:border-accent/40 hover:text-accent">
+              Gemini
+            </button>
+          </div>
+        </div>
+
+        <!-- Gemini: Vertex AI project/region (AI Studio doesn't need these) -->
+        <div id="prov-gemini-row" class="hidden space-y-3">
+          <div>
+            <label class="text-xs text-text-muted block mb-1.5">GCP Project ID <span class="text-text-muted/50">(Vertex AI only)</span></label>
+            <input id="prov-project-id" type="text" placeholder="my-gcp-project"
+                   class="w-full px-3 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent font-mono" />
+          </div>
+          <div>
+            <label class="text-xs text-text-muted block mb-1.5">Location / Region</label>
+            <input id="prov-location" type="text" placeholder="us-central1"
+                   class="w-full px-3 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent font-mono" />
           </div>
         </div>
 
@@ -75,12 +93,12 @@
           </p>
         </div>
 
-        <!-- Custom: full URL -->
+        <!-- Custom / Gemini: full URL -->
         <div id="prov-url-row" class="hidden">
           <label class="text-xs text-text-muted block mb-1.5">Base URL</label>
           <input id="prov-base-url" type="text" placeholder="http://10.2.2.9:8080"
                  class="w-full px-3 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent font-mono" />
-          <p class="text-[10px] text-text-muted mt-1">e.g. <code class="text-accent/60">http://10.2.2.9:8080</code> for a local OpenAI-compatible server</p>
+          <p class="text-[10px] text-text-muted mt-1" id="prov-url-hint">e.g. <code class="text-accent/60">http://10.2.2.9:8080</code> for a local OpenAI-compatible server</p>
         </div>
 
         <div id="prov-key-row">
@@ -90,6 +108,16 @@
                    class="flex-1 px-3 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent font-mono" />
             <button type="button" id="prov-toggle-key" class="px-3 py-2 rounded border border-border-subtle text-xs text-text-muted hover:text-accent hover:border-accent/40 transition-colors">Show</button>
           </div>
+        </div>
+
+        <!-- Gemini: service-account JSON (Vertex AI) or a plain key (AI Studio) —
+             a textarea because a pasted service-account key is a multi-line
+             JSON blob, unlike every other provider's short API key string. -->
+        <div id="prov-gemini-key-row" class="hidden">
+          <label class="text-xs text-text-muted block mb-1.5">Service Account JSON <span class="text-text-muted/50">(or a plain API key for AI Studio)</span></label>
+          <textarea id="prov-sa-json" rows="4" placeholder='{"type": "service_account", "project_id": "...", ...}  — or paste an AI Studio API key instead'
+                    class="w-full px-3 py-2 text-sm rounded border border-border-visible bg-bg-raised text-text-primary placeholder-text-muted focus:outline-none focus:border-accent font-mono"></textarea>
+          <p class="text-[10px] text-text-muted mt-1">Encrypted at rest the same way every other provider's key is. Paste the whole key file downloaded from the GCP console for Vertex AI, or just an API key for the simpler AI Studio path.</p>
         </div>
 
         <div>
@@ -445,12 +473,18 @@ function selectProvType(type) {
     btn.classList.toggle('text-text-muted', !isActive);
   });
 
-  const baseInput = document.getElementById('prov-base-url');
   const modelInput = document.getElementById('prov-model');
   const keyRow = document.getElementById('prov-key-row');
 
   const domainRow = document.getElementById('prov-domain-row');
   const urlRow = document.getElementById('prov-url-row');
+  const geminiRow = document.getElementById('prov-gemini-row');
+  const geminiKeyRow = document.getElementById('prov-gemini-key-row');
+  const urlHint = document.getElementById('prov-url-hint');
+
+  geminiRow.classList.add('hidden');
+  geminiKeyRow.classList.add('hidden');
+  keyRow.classList.remove('hidden');
 
   switch (type) {
     case 'genai':
@@ -465,10 +499,20 @@ function selectProvType(type) {
     case 'custom':
       domainRow.classList.add('hidden');
       urlRow.classList.remove('hidden');
+      urlHint.innerHTML = 'e.g. <code class="text-accent/60">http://10.2.2.9:8080</code> for a local OpenAI-compatible server';
       modelInput.placeholder = 'model-name';
       keyRow.style.display = '';
       keyRow.querySelector('label').innerHTML = 'API Key <span class="text-text-muted/50">(optional)</span>';
       keyRow.querySelector('input').placeholder = '(optional for local models)';
+      break;
+    case 'gemini':
+      domainRow.classList.add('hidden');
+      urlRow.classList.remove('hidden');
+      urlHint.innerHTML = 'Vertex AI: <code class="text-accent/60">https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}</code> · AI Studio: <code class="text-accent/60">https://generativelanguage.googleapis.com</code>';
+      geminiRow.classList.remove('hidden');
+      keyRow.classList.add('hidden');
+      geminiKeyRow.classList.remove('hidden');
+      modelInput.placeholder = 'gemini-2.5-pro';
       break;
   }
 }
@@ -491,6 +535,15 @@ function _resolveBaseUrl() {
     return domain ? `https://api.${domain}/v1` : '';
   }
   return document.getElementById('prov-base-url').value.trim();
+}
+
+// Gemini's key lives in a separate textarea (service-account JSON is
+// multi-line, unlike every other provider's short key string).
+function _resolveApiKey() {
+  if (currentType === 'gemini') {
+    return document.getElementById('prov-sa-json').value.trim();
+  }
+  return document.getElementById('prov-api-key').value;
 }
 
 document.querySelectorAll('#prov-type-buttons button').forEach(btn => {
@@ -518,7 +571,7 @@ function renderProviders() {
 
   providers.forEach(p => {
     const isActive = p.id === activeProviderId;
-    const typeLabel = p.type === 'genai' ? 'GenAI' : 'Custom';
+    const typeLabel = p.type === 'genai' ? 'GenAI' : (p.type === 'gemini' ? 'Gemini' : 'Custom');
     const typeColor = isActive ? 'text-accent' : 'text-text-muted';
 
     const hasKey = p.api_key && p.api_key.length > 0;
@@ -585,6 +638,9 @@ function openAddForm() {
   document.getElementById('prov-domain').value = '';
   document.getElementById('prov-base-url').value = '';
   document.getElementById('prov-api-key').value = '';
+  document.getElementById('prov-sa-json').value = '';
+  document.getElementById('prov-project-id').value = '';
+  document.getElementById('prov-location').value = '';
   document.getElementById('prov-model').value = '';
   selectProvType('genai');
   document.getElementById('add-provider-form').classList.remove('hidden');
@@ -614,6 +670,12 @@ function openEditForm(providerId) {
   // Leave API key blank — backend preserves existing key if this field is empty
   document.getElementById('prov-api-key').value = '';
   document.getElementById('prov-api-key').placeholder = p.api_key ? '(key set — leave blank to keep)' : 'sk-...';
+  document.getElementById('prov-sa-json').value = '';
+  document.getElementById('prov-sa-json').placeholder = p.api_key
+    ? '(key set — leave blank to keep)'
+    : '{"type": "service_account", "project_id": "...", ...}  — or paste an AI Studio API key instead';
+  document.getElementById('prov-project-id').value = p.project_id || '';
+  document.getElementById('prov-location').value = p.location || '';
   document.getElementById('prov-model').value = p.model || '';
   selectProvType(type);
   document.getElementById('add-provider-form').classList.remove('hidden');
@@ -629,7 +691,7 @@ function closeForm() {
 async function saveProvider() {
   const name = document.getElementById('prov-name').value.trim();
   const baseUrl = _resolveBaseUrl();
-  const apiKey = document.getElementById('prov-api-key').value;
+  const apiKey = _resolveApiKey();
   const model = document.getElementById('prov-model').value.trim();
 
   if (!name || !baseUrl || !model) {
@@ -638,6 +700,10 @@ async function saveProvider() {
   }
 
   const payload = { name, type: currentType, base_url: baseUrl, api_key: apiKey, model };
+  if (currentType === 'gemini') {
+    payload.project_id = document.getElementById('prov-project-id').value.trim();
+    payload.location = document.getElementById('prov-location').value.trim();
+  }
 
   try {
     let res;
@@ -722,7 +788,7 @@ async function testProvider() {
 
   const baseUrl = _resolveBaseUrl();
   const model = document.getElementById('prov-model').value.trim();
-  const apiKey = document.getElementById('prov-api-key').value;  // blank = use stored key
+  const apiKey = _resolveApiKey();  // blank = use stored key
 
   if (!baseUrl || !model) {
     showTestResult('error', 'Set Domain/URL and Model first', true);
@@ -740,6 +806,8 @@ async function testProvider() {
         model,
         api_key: apiKey,            // form value (empty = fall back to stored)
         provider_id: editingProviderId || '',  // so backend can look up stored key
+        project_id: currentType === 'gemini' ? document.getElementById('prov-project-id').value.trim() : '',
+        location: currentType === 'gemini' ? document.getElementById('prov-location').value.trim() : '',
       }),
     });
 

@@ -209,7 +209,7 @@ def run_extraction() -> int:
                 {"role": "user", "content": prompt},
             ],
             [],
-            max_retries=2,
+            max_retries=2, extra=provider,
         )
     except Exception as e:
         log.warning("Dream: extraction LLM call failed: %s", e)
