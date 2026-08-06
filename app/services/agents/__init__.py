@@ -6,8 +6,12 @@ Autonomous tool loop with:
   - step idempotency checkpointing (SHA-256)
   - remediation loop detection (same tool 3x in a row → fail)
   - post-completion reviewer agent
-  - role-aware tool scoping
   - partial plan approval (per-step block/allow)
+
+Tool access comes from AgentRuntime.tools() (the agent's own allowed_tools)
+— identical whether the agent is running here or in a chat room. It must
+never depend on which surface is calling it or how a task happens to be
+worded.
 
 Usage:
     from app.services.agents import run_agent, approve_step, approve_plan, cancel_run
@@ -30,20 +34,6 @@ log = logging.getLogger("orions-belt.agents")
 
 TIER_WARN = 2
 TIER_HARD_STOP = 3
-
-_ROLE_KEYWORDS = {
-    "deployment": ["deploy", "release", "rollout", "provision", "infra"],
-    "investigation": ["log", "search", "query", "fetch", "read", "inspect", "debug"],
-    "knowledge": ["note", "wiki", "doc", "knowledge", "write", "summarize"],
-    "coordination": ["task", "plan", "assign", "notify", "message", "schedule"],
-}
-
-_ROLE_TOOL_SETS = {
-    "deployment": {"shell", "run_command", "write_file", "deploy", "provision"},
-    "investigation": {"read_file", "search_files", "query_db", "fetch_url", "list_directory"},
-    "knowledge": {"read_file", "write_file", "search_files", "create_note"},
-    "coordination": {"create_task", "update_task", "send_message", "schedule"},
-}
 
 
 def _now():
@@ -203,26 +193,6 @@ def _is_remediation_loop(run_id: str, tool_name: str, tool_args: dict | None = N
             return raw or "{}"
 
     return all(s.tool_name == tool_name and _norm(s.tool_input) == target for s in recent)
-
-
-# ── Role-based tool scoping ───────────────────────────────────────────────────
-
-def _infer_role(task_title: str, task_description: str) -> str | None:
-    text = f"{task_title} {task_description or ''}".lower()
-    for role, keywords in _ROLE_KEYWORDS.items():
-        if any(kw in text for kw in keywords):
-            return role
-    return None
-
-
-def _filter_tools_by_role(tools: list, role: str | None) -> list:
-    if not role or role == "auto":
-        return tools
-    allowed = _ROLE_TOOL_SETS.get(role)
-    if not allowed:
-        return tools
-    filtered = [t for t in tools if any(a in t.name.lower() for a in allowed)]
-    return filtered or tools  # fall back to all tools if filter would yield empty
 
 
 # ── Reviewer agent ────────────────────────────────────────────────────────────
@@ -447,45 +417,31 @@ def _execute_run(run, agent, task, session_id: str | None = None):
     from app import db
     from app.models.agent import AgentStep
     from app.models.logs import AgentTrace
-    from app.models.mcp_tool import MCPTool
-    from app.models.settings import Setting
+    from app.services.agents.runtime import AgentRuntime, resolve_active_provider
     from app.services.llm import build_tool_definitions, inject_knowledge_context, retry_with_recovery
     from app.services.mcp.tools import execute_tool
     from config import Config
 
-    llm_providers_raw = Setting.get("llm.providers")
-    llm_active_id = Setting.get("llm.active_provider")
-    llm_providers = (
-        json.loads(llm_providers_raw) if isinstance(llm_providers_raw, str)
-        else (llm_providers_raw or [])
-    )
-    active_provider = None
-    if llm_active_id:
-        active_provider = next((p for p in llm_providers if p.get("id") == llm_active_id), None)
-    if not active_provider and llm_providers:
-        active_provider = llm_providers[0]
+    # resolve_active_provider() is the same call chat rooms use — it already
+    # decrypts api_key and falls back to a sane default provider (matching
+    # Config.LLM_BASE_URL/LLM_API_KEY/LLM_MODEL exactly) when none is
+    # configured. Hand-rolling this separately used to leave api_key
+    # ENCRYPTED in the dict handed to AgentRuntime below (harmless while
+    # only .tools() reads it, but a real footgun for any future caller that
+    # also uses it for an actual LLM call).
+    active_provider = resolve_active_provider()
+    base_url = active_provider.get("base_url") or Config.LLM_BASE_URL
+    api_key = active_provider.get("api_key") or Config.LLM_API_KEY
+    model = agent.llm_model_override or active_provider.get("model") or Config.LLM_MODEL
 
-    base_url = (active_provider or {}).get("base_url", Config.LLM_BASE_URL)
-    raw_key = (active_provider or {}).get("api_key", Config.LLM_API_KEY)
-    _plain_prefixes = ("sk-", "sk-proj-", "ghp_", "glpat-", "xoxb-", "xoxp-", "AIza", "EA")
-    if raw_key and not any(raw_key.startswith(p) for p in _plain_prefixes):
-        try:
-            from app.services.crypto import decrypt_data
-            raw_key = decrypt_data(raw_key) or raw_key
-        except Exception:
-            pass
-    api_key = raw_key
-    model = agent.llm_model_override or (active_provider or {}).get("model", Config.LLM_MODEL)
-
-    allowed_tools = json.loads(agent.allowed_tools or "[]")
-    if allowed_tools:
-        tools_q = MCPTool.query.filter(MCPTool.name.in_(allowed_tools), MCPTool.enabled == True)
-    else:
-        tools_q = MCPTool.query.filter_by(enabled=True)
-    tools = tools_q.all()
-
-    effective_role = agent.role_scope or _infer_role(task.title, task.description or "")
-    tools = _filter_tools_by_role(tools, effective_role)
+    # Tool access is purely a function of the agent's own allowed_tools —
+    # identical to what it gets in a chat room, via the same AgentRuntime
+    # method, regardless of what task it's running or how that task is
+    # worded. This used to also narrow tools by a role inferred from the
+    # task's title/description (_infer_role, removed) — the same agent
+    # could silently lose tool access depending on task wording alone,
+    # which is exactly the inconsistency this now avoids.
+    tools = AgentRuntime(agent, provider=active_provider).tools()
     tool_defs = build_tool_definitions(tools)
     tool_tier_map = {t.name: t.tier for t in tools}
 
@@ -574,7 +530,7 @@ def _execute_run(run, agent, task, session_id: str | None = None):
             if tool_name not in tool_tier_map:
                 # An unrecognized name (hallucinated, or one this agent was
                 # never granted) must never default to tier 0 — that would
-                # skip both the role/allowlist filter above and the Tier-3
+                # skip both the allowlist filter above and the Tier-3
                 # approval pause below, letting a destructive call through
                 # unchecked. Refuse it outright instead.
                 messages.append({

@@ -48,6 +48,41 @@ class TestAgentRuntimeTools:
                 MCPTool.query.filter(MCPTool.id.in_(["t1", "t2"])).delete(synchronize_session=False)
                 db.session.commit()
 
+    def test_no_allowlist_grants_all_enabled_tools(self, app):
+        """Unset (None/empty-string) allowed_tools is the normal "no
+        restriction" case — distinct from malformed JSON below, which must
+        NOT be treated the same way."""
+        with app.app_context():
+            db.session.add(MCPTool(id="t3", name="read_file", tier=0, enabled=True, source="builtin"))
+            db.session.commit()
+            try:
+                rt = AgentRuntime(_agent(allowed=None),
+                                  provider={"base_url": "x", "api_key": "y", "model": "m"})
+                assert "read_file" in {t.name for t in rt.tools()}
+            finally:
+                MCPTool.query.filter_by(id="t3").delete()
+                db.session.commit()
+
+    def test_malformed_allowlist_json_denies_all_tools_not_grants_all(self, app):
+        """Regression: malformed allowed_tools JSON used to be swallowed
+        into an empty list, which — same as a genuinely unset allowlist —
+        meant NO filtering at all, silently granting every enabled tool
+        including Tier 3 destructive ones. A corrupted config must fail
+        closed (deny everything), never fail open."""
+        with app.app_context():
+            db.session.add_all([
+                MCPTool(id="t4", name="read_file", tier=0, enabled=True, source="builtin"),
+                MCPTool(id="t5", name="delete_file", tier=3, enabled=True, source="builtin"),
+            ])
+            db.session.commit()
+            try:
+                rt = AgentRuntime(_agent(allowed="{not valid json"),
+                                  provider={"base_url": "x", "api_key": "y", "model": "m"})
+                assert rt.tools() == []
+            finally:
+                MCPTool.query.filter(MCPTool.id.in_(["t4", "t5"])).delete(synchronize_session=False)
+                db.session.commit()
+
 
 class TestUnknownToolNameRefused:
     def test_hallucinated_tool_name_is_refused_not_defaulted_to_tier_0(self, app, monkeypatch):
