@@ -191,7 +191,7 @@ def run_extraction() -> int:
         return 0
 
     from app.services.agents.runtime import resolve_active_provider
-    from app.services.llm import retry_with_recovery
+    from app.services.llm import provider_extra, retry_with_recovery
 
     provider = resolve_active_provider()
     if not provider or not provider.get("base_url") or not provider.get("model"):
@@ -209,7 +209,7 @@ def run_extraction() -> int:
                 {"role": "user", "content": prompt},
             ],
             [],
-            max_retries=2, extra=provider,
+            max_retries=2, extra=provider_extra(provider),
         )
     except Exception as e:
         log.warning("Dream: extraction LLM call failed: %s", e)

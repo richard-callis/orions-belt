@@ -120,6 +120,63 @@ class TestProviderCrudGeminiFields:
         finally:
             client.delete(f"/api/llm/providers/{provider_id}")
 
+    def test_adding_a_second_provider_does_not_plaintext_the_first(self, client, app):
+        """Regression (found by independent review, verified real): add_llm_
+        provider called _get_providers() — which DECRYPTS every existing
+        provider's key so it can be returned to callers — then wrote that
+        whole list straight back with only the NEW provider's key
+        re-encrypted. Adding any second provider silently rewrote every
+        other provider's key, including a Gemini service-account private
+        key, to disk in plaintext."""
+        first = client.post("/api/llm/providers", json={
+            "name": "Enterprise Gemini", "type": "gemini",
+            "base_url": "https://us-central1-aiplatform.googleapis.com/...",
+            "api_key": FAKE_SA_JSON, "model": "gemini-2.5-pro",
+            "project_id": "my-proj", "location": "us-central1",
+        }).get_json()["provider"]["id"]
+        try:
+            second = client.post("/api/llm/providers", json={
+                "name": "Also OpenAI", "type": "genai",
+                "base_url": "https://api.openai.com/v1", "api_key": "sk-" + "a" * 40,
+                "model": "gpt-4o",
+            }).get_json()["provider"]["id"]
+            try:
+                with app.app_context():
+                    from app.models.settings import Setting
+                    raw = Setting.get("llm.providers")
+                    stored_first = next(p for p in raw if p["id"] == first)
+                    assert stored_first["api_key"].startswith("gAAAAA")
+                    assert not stored_first["api_key"].strip().startswith("{")
+            finally:
+                client.delete(f"/api/llm/providers/{second}")
+        finally:
+            client.delete(f"/api/llm/providers/{first}")
+
+    def test_deleting_a_provider_does_not_plaintext_the_survivor(self, client, app):
+        """Same class of bug as above — delete_llm_provider also wrote the
+        decrypted list straight back, minus the deleted entry."""
+        keep = client.post("/api/llm/providers", json={
+            "name": "Enterprise Gemini", "type": "gemini",
+            "base_url": "https://us-central1-aiplatform.googleapis.com/...",
+            "api_key": FAKE_SA_JSON, "model": "gemini-2.5-pro",
+            "project_id": "my-proj", "location": "us-central1",
+        }).get_json()["provider"]["id"]
+        doomed = client.post("/api/llm/providers", json={
+            "name": "Temp", "type": "genai",
+            "base_url": "https://api.openai.com/v1", "api_key": "sk-" + "b" * 40,
+            "model": "gpt-4o",
+        }).get_json()["provider"]["id"]
+        try:
+            client.delete(f"/api/llm/providers/{doomed}")
+            with app.app_context():
+                from app.models.settings import Setting
+                raw = Setting.get("llm.providers")
+                stored = next(p for p in raw if p["id"] == keep)
+                assert stored["api_key"].startswith("gAAAAA")
+                assert not stored["api_key"].strip().startswith("{")
+        finally:
+            client.delete(f"/api/llm/providers/{keep}")
+
     def test_update_provider_can_change_project_id_and_location(self, client):
         resp = client.post("/api/llm/providers", json={
             "name": "Enterprise Gemini 3", "type": "gemini",

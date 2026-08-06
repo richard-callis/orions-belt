@@ -450,7 +450,7 @@ def _execute_run(run, agent, task, session_id: str | None = None):
     from app.models.logs import AgentTrace
     from app.models.mcp_tool import MCPTool
     from app.models.settings import Setting
-    from app.services.llm import build_tool_definitions, inject_knowledge_context, retry_with_recovery
+    from app.services.llm import build_tool_definitions, inject_knowledge_context, provider_extra, retry_with_recovery
     from app.services.mcp.tools import execute_tool
     from config import Config
 
@@ -522,7 +522,7 @@ def _execute_run(run, agent, task, session_id: str | None = None):
         _step_start = _time.time()
 
         response_text, tool_calls, tokens_used = retry_with_recovery(
-            base_url, api_key, model, messages, tool_defs, extra=active_provider,
+            base_url, api_key, model, messages, tool_defs, extra=provider_extra(active_provider or {}),
         )
         total_tokens += tokens_used
         run.tokens_used = total_tokens
@@ -564,7 +564,7 @@ def _execute_run(run, agent, task, session_id: str | None = None):
             )
             db.session.add(trace)
             db.session.commit()
-            _run_reviewer(run, run.result_summary, base_url, api_key, model, extra=active_provider)
+            _run_reviewer(run, run.result_summary, base_url, api_key, model, extra=provider_extra(active_provider or {}))
             return
 
         for tc in tool_calls:

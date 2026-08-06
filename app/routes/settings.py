@@ -452,6 +452,12 @@ def add_llm_provider():
         "location": location,
     }
     providers.append(new_provider)
+    # _get_providers() above decrypted every EXISTING provider's key so it
+    # could be returned to callers that need plaintext — writing that list
+    # straight back would persist all of them in plaintext, not just the
+    # new one. Re-encrypt the whole list before it touches disk; this is
+    # the same call update_llm_provider already makes for the same reason.
+    _reencrypt_plaintext_keys(providers)
     Setting.set("llm.providers", providers, value_type="json")
     log.info("Provider added: name=%r id=%s key_set=%s providers_count=%d",
              name, new_provider["id"], bool(api_key), len(providers))
@@ -509,6 +515,10 @@ def delete_llm_provider(provider_id):
         new_active = providers[0]["id"] if providers else None
         Setting.set("llm.active_provider", new_active)
 
+    # Same reasoning as add_llm_provider: _get_providers() decrypted every
+    # remaining provider's key — must re-encrypt before persisting the
+    # filtered list, or every survivor's key gets written back in plaintext.
+    _reencrypt_plaintext_keys(providers)
     Setting.set("llm.providers", providers, value_type="json")
     return jsonify({"success": True})
 

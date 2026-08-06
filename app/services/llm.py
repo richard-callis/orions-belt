@@ -24,6 +24,19 @@ def _now():
     return datetime.now(timezone.utc)
 
 
+def provider_extra(provider: dict) -> dict:
+    """Narrow a decrypted provider dict down to just the non-secret fields
+    get_adapter's `extra` param actually needs (currently Gemini's
+    project_id/location). Callers that have the full provider dict handy
+    (it already carries a decrypted credential — for Vertex, the whole
+    service-account JSON including the private key) should pass this
+    narrowed copy to retry_with_recovery rather than the dict itself, so a
+    future adapter or a debug/logging change that dumps `extra` doesn't
+    widen the blast radius of that credential for no reason — nothing
+    downstream of `extra` needs more than these two fields today."""
+    return {"project_id": provider.get("project_id"), "location": provider.get("location")}
+
+
 # ── Context window helpers ────────────────────────────────────────────────────
 
 # Approximate tokens per character (used for threshold estimation)
