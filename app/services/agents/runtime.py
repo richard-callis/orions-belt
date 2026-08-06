@@ -49,13 +49,25 @@ class AgentRuntime:
 
     def tools(self) -> list:
         """The MCP tools this agent may use: its allowed_tools, or all enabled
-        tools when it has no explicit allowlist."""
+        tools when it has no explicit allowlist.
+
+        Malformed allowed_tools JSON fails CLOSED (denies every tool), not
+        open — the two look identical if you only check `if allowed:`
+        (empty list either way), but a corrupted allowlist must never be
+        treated the same as "no allowlist configured" and silently grant
+        every tool in the system, including Tier 3 destructive ones.
+        """
         from app.models.mcp_tool import MCPTool
-        try:
-            allowed = json.loads(self.agent.allowed_tools or "[]")
-        except Exception:
-            allowed = []
+        raw = self.agent.allowed_tools
         q = MCPTool.query.filter_by(enabled=True)
+        if not raw:
+            return q.all()
+        try:
+            allowed = json.loads(raw)
+        except Exception:
+            log.warning("agent=%s has malformed allowed_tools JSON — denying all "
+                        "tools rather than granting every tool in the system", self.agent.id)
+            return []
         if allowed:
             q = q.filter(MCPTool.name.in_(allowed))
         return q.all()

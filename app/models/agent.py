@@ -35,7 +35,15 @@ class Agent(db.Model):
     daily_token_budget = db.Column(db.Integer, nullable=True)
     monthly_token_budget = db.Column(db.Integer, nullable=True)
 
-    # Role-based tool scoping: auto|deployment|investigation|knowledge|coordination
+    # Reserved: auto|deployment|investigation|knowledge|coordination.
+    # Settable via the agent API and returned by to_dict() for backward
+    # compatibility, but not currently read anywhere — tool access is
+    # allowed_tools alone (see AgentRuntime.tools()). It used to also
+    # narrow tools by a role inferred from a TASK's own title/description
+    # text, which meant the same agent could get different tool access
+    # depending on what task it ran or how that task was worded; that
+    # inference was removed rather than kept and applied consistently,
+    # since task content should never gate what an agent can do.
     role_scope = db.Column(db.String(32), nullable=True)
 
     status = db.Column(db.String(32), default="idle")  # idle|running|error

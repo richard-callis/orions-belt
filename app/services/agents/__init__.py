@@ -417,35 +417,22 @@ def _execute_run(run, agent, task, session_id: str | None = None):
     from app import db
     from app.models.agent import AgentStep
     from app.models.logs import AgentTrace
-    from app.models.settings import Setting
-    from app.services.agents.runtime import AgentRuntime
+    from app.services.agents.runtime import AgentRuntime, resolve_active_provider
     from app.services.llm import build_tool_definitions, inject_knowledge_context, retry_with_recovery
     from app.services.mcp.tools import execute_tool
     from config import Config
 
-    llm_providers_raw = Setting.get("llm.providers")
-    llm_active_id = Setting.get("llm.active_provider")
-    llm_providers = (
-        json.loads(llm_providers_raw) if isinstance(llm_providers_raw, str)
-        else (llm_providers_raw or [])
-    )
-    active_provider = None
-    if llm_active_id:
-        active_provider = next((p for p in llm_providers if p.get("id") == llm_active_id), None)
-    if not active_provider and llm_providers:
-        active_provider = llm_providers[0]
-
-    base_url = (active_provider or {}).get("base_url", Config.LLM_BASE_URL)
-    raw_key = (active_provider or {}).get("api_key", Config.LLM_API_KEY)
-    _plain_prefixes = ("sk-", "sk-proj-", "ghp_", "glpat-", "xoxb-", "xoxp-", "AIza", "EA")
-    if raw_key and not any(raw_key.startswith(p) for p in _plain_prefixes):
-        try:
-            from app.services.crypto import decrypt_data
-            raw_key = decrypt_data(raw_key) or raw_key
-        except Exception:
-            pass
-    api_key = raw_key
-    model = agent.llm_model_override or (active_provider or {}).get("model", Config.LLM_MODEL)
+    # resolve_active_provider() is the same call chat rooms use — it already
+    # decrypts api_key and falls back to a sane default provider (matching
+    # Config.LLM_BASE_URL/LLM_API_KEY/LLM_MODEL exactly) when none is
+    # configured. Hand-rolling this separately used to leave api_key
+    # ENCRYPTED in the dict handed to AgentRuntime below (harmless while
+    # only .tools() reads it, but a real footgun for any future caller that
+    # also uses it for an actual LLM call).
+    active_provider = resolve_active_provider()
+    base_url = active_provider.get("base_url") or Config.LLM_BASE_URL
+    api_key = active_provider.get("api_key") or Config.LLM_API_KEY
+    model = agent.llm_model_override or active_provider.get("model") or Config.LLM_MODEL
 
     # Tool access is purely a function of the agent's own allowed_tools —
     # identical to what it gets in a chat room, via the same AgentRuntime
@@ -454,7 +441,7 @@ def _execute_run(run, agent, task, session_id: str | None = None):
     # task's title/description (_infer_role, removed) — the same agent
     # could silently lose tool access depending on task wording alone,
     # which is exactly the inconsistency this now avoids.
-    tools = AgentRuntime(agent, provider=active_provider or {}).tools()
+    tools = AgentRuntime(agent, provider=active_provider).tools()
     tool_defs = build_tool_definitions(tools)
     tool_tier_map = {t.name: t.tier for t in tools}
 
@@ -543,7 +530,7 @@ def _execute_run(run, agent, task, session_id: str | None = None):
             if tool_name not in tool_tier_map:
                 # An unrecognized name (hallucinated, or one this agent was
                 # never granted) must never default to tier 0 — that would
-                # skip both the role/allowlist filter above and the Tier-3
+                # skip both the allowlist filter above and the Tier-3
                 # approval pause below, letting a destructive call through
                 # unchecked. Refuse it outright instead.
                 messages.append({

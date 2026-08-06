@@ -111,12 +111,23 @@ class TestExecuteRunToolAccessMatchesAgentRuntime:
             # the removed filtering, create_word_document would have been
             # silently dropped even though the agent is explicitly allowed
             # to use it.
+            #
+            # get-or-create rather than a bare add(): MCPTool.name is
+            # unique, and both of these names are commonly seeded elsewhere
+            # (e.g. _seed_builtin_tools-style fixtures) into the shared
+            # session-scoped test DB — adding unconditionally would collide
+            # depending on test collection/run order.
+            created_tool_ids = []
+            for name in ("read_file", "create_word_document"):
+                if not MCPTool.query.filter_by(name=name).first():
+                    tool_id = str(uuid.uuid4())
+                    db.session.add(MCPTool(id=tool_id, name=name, tier=0, enabled=True, source="builtin"))
+                    created_tool_ids.append(tool_id)
+
             agent = Agent(id=str(uuid.uuid4()), name="a",
                           allowed_tools='["read_file", "create_word_document"]',
                           status="idle", max_iterations=1)
             db.session.add(agent)
-            db.session.add(MCPTool(id="t-gate2", name="read_file", tier=0, enabled=True, source="builtin"))
-            db.session.add(MCPTool(id="t-gate3", name="create_word_document", tier=0, enabled=True, source="builtin"))
             db.session.commit()
 
             p = Project(id=str(uuid.uuid4()), name="P")
@@ -129,11 +140,15 @@ class TestExecuteRunToolAccessMatchesAgentRuntime:
             db.session.commit()
             try:
                 run_agent(agent.id, task.id)
-                assert set(captured_tool_names) == {"read_file", "create_word_document"}
+                # Genuinely checks parity with AgentRuntime, not just a
+                # hardcoded expectation that happens to match today.
+                from app.services.agents.runtime import AgentRuntime
+                expected = {t.name for t in AgentRuntime(agent).tools()}
+                assert set(captured_tool_names) == expected == {"read_file", "create_word_document"}
             finally:
                 AgentRun.query.filter_by(agent_id=agent.id).delete()
-                MCPTool.query.filter_by(id="t-gate2").delete()
-                MCPTool.query.filter_by(id="t-gate3").delete()
+                for tool_id in created_tool_ids:
+                    MCPTool.query.filter_by(id=tool_id).delete()
                 Task.query.filter_by(id=task.id).delete()
                 Feature.query.filter_by(id=f.id).delete()
                 Epic.query.filter_by(id=e.id).delete()
