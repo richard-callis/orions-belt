@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, jsonify, render_template, request, make_response
 from sqlalchemy import or_
+from sqlalchemy.orm import defer
 
 from app import db
 from app.models.logs import AuditLog, PIILog, AgentLog, LLMLog
@@ -19,6 +20,16 @@ def _since(range_str):
     if hours is None:
         return None
     return datetime.now(timezone.utc) - timedelta(hours=hours)
+
+
+def _clamp_limit(raw, max_limit, min_limit=1):
+    """Parse a `limit` query param to an int clamped to [min_limit,
+    max_limit]. A plain `min(int(raw), max_limit)` only guards the upper
+    bound — SQLite treats a negative LIMIT as "no limit at all", so a
+    request like `?limit=-1` would pass the max_limit check and return
+    every row in the table instead of being capped."""
+    value = int(raw)  # raises ValueError on bad input — callers catch it
+    return max(min_limit, min(value, max_limit))
 
 
 def _audit_query(q, since, limit):
@@ -86,7 +97,18 @@ def _agent_shape(row):
 
 
 def _llm_query(q, since, limit):
-    query = LLMLog.query
+    # request_json/response_json can each be up to _MAX_TRAFFIC_CAPTURE_CHARS
+    # (200k) of text — deferring them here means the list view's query
+    # doesn't pull two potentially-huge TEXT blobs off disk for every row
+    # just to render a table. The list only needs to know WHETHER a capture
+    # exists (has_capture, computed in SQL below), not its contents — the
+    # full values are loaded separately, one row at a time, by
+    # _llm_detail_shape. Returns (LLMLog, has_capture) tuples.
+    has_capture = or_(LLMLog.request_json.isnot(None), LLMLog.response_json.isnot(None))
+    query = (
+        db.session.query(LLMLog, has_capture.label("has_capture"))
+        .options(defer(LLMLog.request_json), defer(LLMLog.response_json))
+    )
     if since:
         query = query.filter(LLMLog.created_at >= since)
     if q:
@@ -96,7 +118,11 @@ def _llm_query(q, since, limit):
     return query.order_by(LLMLog.created_at.desc()).limit(limit).all()
 
 
-def _llm_shape(row):
+def _llm_shape(row, has_capture=None):
+    """`row` may be a plain LLMLog (has_capture computed from the loaded
+    columns — used by _llm_detail_shape, which always fully loads a single
+    row) or paired with a SQL-computed has_capture from _llm_query above
+    (used by the list view, which defers the columns themselves)."""
     return {
         "id": row.id,
         "time": row.created_at.isoformat() if row.created_at else None,
@@ -109,10 +135,12 @@ def _llm_shape(row):
         "success": row.success,
         "error": row.error or "",
         # Captured only when "LLM Debug Logging" was on for this call — lets
-        # the UI show a "view traffic" affordance without a separate request
-        # per row, without shipping the (potentially large) payloads
-        # themselves in the list view.
-        "has_traffic_capture": bool(row.request_json or row.response_json),
+        # the UI show a "view traffic" affordance without shipping the
+        # (potentially large) payloads themselves in the list view.
+        "has_traffic_capture": (
+            bool(has_capture) if has_capture is not None
+            else bool(row.request_json or row.response_json)
+        ),
     }
 
 
@@ -131,7 +159,7 @@ def _audit_stats(since):
 
 def _fetch_entries(stream, q, range_str, limit):
     since = _since(range_str)
-    limit = min(int(limit), 500)
+    limit = _clamp_limit(limit, max_limit=500)
     if stream == "audit":
         rows = _audit_query(q, since, limit)
         entries = [_audit_shape(r) for r in rows]
@@ -146,7 +174,7 @@ def _fetch_entries(stream, q, range_str, limit):
         stats = {"total": len(entries), "auto": 0, "approved": 0, "rejected": 0, "blocked": 0}
     elif stream == "llm":
         rows = _llm_query(q, since, limit)
-        entries = [_llm_shape(r) for r in rows]
+        entries = [_llm_shape(r, has_capture=hc) for r, hc in rows]
         stats = {"total": len(entries), "auto": 0, "approved": 0, "rejected": 0, "blocked": 0}
     else:
         return None, None
@@ -165,7 +193,7 @@ def api_logs():
     q = request.args.get("q", "").strip()
     range_str = request.args.get("range", "24h")
     try:
-        limit = min(int(request.args.get("limit", 100)), 1000)
+        limit = _clamp_limit(request.args.get("limit", 100), max_limit=1000)
     except (ValueError, TypeError):
         return jsonify({"error": "limit must be an integer"}), 400
 
@@ -182,7 +210,7 @@ def api_logs_export():
     q = request.args.get("q", "").strip()
     range_str = request.args.get("range", "24h")
     try:
-        limit = min(int(request.args.get("limit", 500)), 5000)
+        limit = _clamp_limit(request.args.get("limit", 500), max_limit=5000)
     except (ValueError, TypeError):
         return jsonify({"error": "limit must be an integer"}), 400
 
@@ -261,7 +289,7 @@ def api_logs_llm_export():
     q = request.args.get("q", "").strip()
     range_str = request.args.get("range", "24h")
     try:
-        limit = min(int(request.args.get("limit", 500)), 5000)
+        limit = _clamp_limit(request.args.get("limit", 500), max_limit=5000)
     except (ValueError, TypeError):
         return jsonify({"error": "limit must be an integer"}), 400
 

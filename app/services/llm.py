@@ -411,7 +411,12 @@ def _to_jsonable(obj):
     try:
         return json.loads(json.dumps(obj, default=str))
     except Exception:
-        return str(obj)
+        # A bare str(obj) here would look like a legitimate captured value
+        # (e.g. a plain string field) with no indication it's actually a
+        # conversion failure — wrap it so a human reading the capture can
+        # tell the difference between "the API returned this string" and
+        # "we couldn't serialize this object".
+        return {"_capture_unconverted": repr(obj)[:2000]}
 
 
 # Cap on persisted request/response JSON — generous enough for real
@@ -423,18 +428,34 @@ _MAX_TRAFFIC_CAPTURE_CHARS = 200_000
 def _capture_traffic_json(adapter) -> tuple[str | None, str | None]:
     """Redacted, size-capped JSON strings for adapter.last_request/
     last_response, or (None, None) if either is absent. Only called when
-    debug.llm is enabled — see _log_llm_call."""
-    from app.services.redact import redact_text
+    debug.llm is enabled — see _log_llm_call.
+
+    Both redaction layers apply, same as AuditLog: redact_deep walks the
+    structure BEFORE serialization so a field literally named "api_key" or
+    "authorization" is masked outright no matter how deeply it's nested in
+    the provider payload (redact_text alone, pattern-matching the final
+    string, would only catch values that happen to look like a known secret
+    shape — a plain opaque token under a sensitive field name wouldn't
+    match any pattern). redact_text still runs afterward on the full text
+    to catch secrets embedded in ordinary string values (e.g. an echoed
+    header) that field-name masking wouldn't touch.
+    """
+    from app.services.redact import redact_deep, redact_text
 
     def _dump(attr):
         raw = getattr(adapter, attr, None)
         if raw is None:
             return None
         try:
-            text = json.dumps(_to_jsonable(raw), indent=2, default=str)
+            text = json.dumps(redact_deep(_to_jsonable(raw)), indent=2, default=str)
         except Exception:
             return None
-        return redact_text(text)[:_MAX_TRAFFIC_CAPTURE_CHARS]
+        text = redact_text(text)
+        if len(text) > _MAX_TRAFFIC_CAPTURE_CHARS:
+            omitted = len(text) - _MAX_TRAFFIC_CAPTURE_CHARS
+            text = (text[:_MAX_TRAFFIC_CAPTURE_CHARS] +
+                    f"\n... [TRUNCATED: {omitted} more characters omitted]")
+        return text
 
     return _dump("last_request"), _dump("last_response")
 
@@ -453,7 +474,16 @@ def _log_llm_call(adapter, model: str, session_id: str | None, run_id: str | Non
         cost, savings = _estimate_llm_cost_and_savings(model, input_tokens, output_tokens) if success else (None, None)
 
         request_json = response_json = None
-        if Setting.get("debug.llm", False):
+        # `is True`, not truthy — Setting.get returns the RAW STRING when a
+        # key was last written with value_type="string" (POST /api/settings
+        # writes every key that way, unconditionally; only PUT honors
+        # _BOOL_KEYS). "false" is a non-empty string, and bool("false") is
+        # True — so a naive truthy check turns capture ON while the
+        # Settings UI toggle (which reads `d.data?.value === true`) still
+        # renders OFF. That divergence is the worst failure mode a privacy
+        # gate can have: verified empirically that Setting.set("debug.llm",
+        # "false", value_type="string") left this branch active.
+        if Setting.get("debug.llm", False) is True:
             request_json, response_json = _capture_traffic_json(adapter)
 
         db.session.add(LLMLog(

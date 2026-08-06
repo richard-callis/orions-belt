@@ -863,9 +863,14 @@ def _stream_openai_impl(base_url, api_key, model, system_prompt, history,
             url, model, masked_key, len(messages),
         )
 
-        # Full debug logging — enabled via Settings → LLM → Debug Logging toggle
+        # Full debug logging — enabled via Settings → LLM → Debug Logging toggle.
+        # `is True`, not bool(...): Setting.get returns the raw string "false"
+        # when the key was last written via POST /api/settings (which stores
+        # every key as value_type="string" unconditionally), and bool("false")
+        # is True — a naive truthy check turns verbose logging on while the
+        # Settings UI toggle still renders off.
         from app.models.settings import Setting as _Setting
-        _debug_llm = bool(_Setting.get("debug.llm", False))
+        _debug_llm = _Setting.get("debug.llm", False) is True
         if _debug_llm:
             debug_body = {k: v for k, v in body.items() if k != "stream_options"}
             # Mask auth in logged copy

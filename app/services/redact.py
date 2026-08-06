@@ -55,7 +55,11 @@ _SECRET_PATTERNS = [
     ("bearer_token", re.compile(r"\bBearer\s+[A-Za-z0-9\-_.=]{10,}", re.IGNORECASE)),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b")),
     ("github_token", re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}\b")),
-    ("openai_key", re.compile(r"\bsk-[A-Za-z0-9]{20,}\b")),
+    # Allows hyphens/underscores within the key body (not just alnum) so the
+    # newer project-scoped format (sk-proj-...) matches too — the old
+    # alnum-only pattern stopped at the first hyphen after "sk-" and missed
+    # it entirely.
+    ("openai_key", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b")),
     ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
     ("aws_access_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
     ("fernet_token", re.compile(r"\bgAAAAA[A-Za-z0-9_=-]{20,}\b")),
@@ -97,3 +101,34 @@ def redact_args(args: dict) -> dict:
     if not isinstance(args, dict):
         return args
     return {k: redact_value(k, v) for k, v in args.items()}
+
+
+def redact_deep(obj):
+    """Recursively redact a JSON-shaped structure (dicts/lists/strings) at
+    every nesting level — both layers combined, unlike redact_args above.
+
+    Built for the LLM traffic-capture feature: a captured request/response
+    body is arbitrarily nested (message content, tool call args, provider-
+    specific wrapper fields), so a shallow top-level-only pass like
+    redact_args would miss a "api_key" or "authorization" field sitting
+    inside a nested dict — exactly the shape a provider payload has. Dict
+    keys are checked against the sensitive-field-name list at every level;
+    string values (including ones under non-sensitive keys) are still
+    pattern-scanned by redact_text so a secret embedded in ordinary text
+    (e.g. an echoed header, a pasted token) gets caught too.
+    """
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if _normalize_field_name(str(k)) in _SENSITIVE_FIELD_NAMES:
+                out[k] = _REDACTED
+            else:
+                out[k] = redact_deep(v)
+        return out
+    if isinstance(obj, list):
+        return [redact_deep(v) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(redact_deep(v) for v in obj)
+    if isinstance(obj, str):
+        return redact_text(obj)
+    return obj

@@ -162,8 +162,10 @@ class TestCallLlmSyncLogging:
         fake_adapter = SimpleNamespace(last_usage=None, complete=broken_complete)
         monkeypatch.setattr("app.services.llm_adapters.get_adapter", lambda *a, **k: fake_adapter)
         with app.app_context():
+            before = LLMLog.query.filter_by(success=False).count()
             with pytest.raises(RuntimeError, match="provider down"):
                 llm_mod._call_llm_sync("http://x", "key", "m", [], [])
+            assert LLMLog.query.filter_by(success=False).count() == before + 1
             row = LLMLog.query.filter_by(success=False).order_by(LLMLog.created_at.desc()).first()
             assert row is not None
             assert "provider down" in row.error
@@ -205,6 +207,23 @@ class TestToJsonable:
                 return "broken-repr"
         assert llm_mod._to_jsonable(Broken()) == "broken-repr"
 
+    def test_object_that_cannot_even_be_stringified_returns_sentinel_not_a_bare_string(self):
+        # json.dumps(obj, default=str) itself calls str(obj) as a last
+        # resort — when even THAT raises, the final except branch used to
+        # return str(obj) again (which would raise a second time, or if it
+        # didn't, would look identical to a legitimate plain-string value
+        # with no indication anything went wrong). A sentinel dict makes a
+        # conversion failure visibly distinct from real captured data.
+        class Unstringifiable:
+            def __repr__(self):
+                return "<Unstringifiable repr>"
+            def __str__(self):
+                raise RuntimeError("cannot stringify")
+        out = llm_mod._to_jsonable(Unstringifiable())
+        assert isinstance(out, dict)
+        assert "_capture_unconverted" in out
+        assert "Unstringifiable" in out["_capture_unconverted"]
+
 
 class TestCaptureTrafficJson:
     def test_returns_none_none_when_adapter_has_neither(self, app):
@@ -233,11 +252,35 @@ class TestCaptureTrafficJson:
             assert fake_key not in req
             assert "[REDACTED:openai_key]" in req
 
+    def test_redacts_nested_field_name_a_pattern_scan_alone_would_miss(self, app):
+        # redact_text (pattern-based) only catches values that LOOK like a
+        # known secret shape. An opaque token under a sensitive field name
+        # nested inside the payload (e.g. a Vertex service-account blob
+        # embedded in the request) wouldn't match any pattern — only the
+        # field-name-aware redact_deep layer catches it.
+        with app.app_context():
+            adapter = SimpleNamespace(
+                last_request={"extra": {"service_account": {"private_key": "opaque-not-pattern-shaped"}}},
+                last_response=None,
+            )
+            req, _ = llm_mod._capture_traffic_json(adapter)
+            assert "opaque-not-pattern-shaped" not in req
+            assert '"private_key": "[REDACTED]"' in req
+
     def test_caps_length_of_very_large_payloads(self, app):
         with app.app_context():
             adapter = SimpleNamespace(last_request={"blob": "x" * 500_000}, last_response=None)
             req, _ = llm_mod._capture_traffic_json(adapter)
-            assert len(req) == llm_mod._MAX_TRAFFIC_CAPTURE_CHARS
+            assert req.startswith("x" * 100) is False  # sanity: not raw, still JSON-wrapped
+            body, _, marker = req.partition("\n... [TRUNCATED:")
+            assert len(body) == llm_mod._MAX_TRAFFIC_CAPTURE_CHARS
+            assert marker.strip().endswith("more characters omitted]")
+
+    def test_short_payload_has_no_truncation_marker(self, app):
+        with app.app_context():
+            adapter = SimpleNamespace(last_request={"blob": "short"}, last_response=None)
+            req, _ = llm_mod._capture_traffic_json(adapter)
+            assert "TRUNCATED" not in req
 
 
 class TestLogLlmCallCapturesTrafficWhenDebugEnabled:
@@ -249,7 +292,9 @@ class TestLogLlmCallCapturesTrafficWhenDebugEnabled:
                 last_usage={"input": 1, "output": 1},
                 last_request={"model": "m"}, last_response={"ok": True},
             )
+            before = LLMLog.query.count()
             llm_mod._log_llm_call(adapter, "m", None, None, 1, success=True)
+            assert LLMLog.query.count() == before + 1
             row = LLMLog.query.order_by(LLMLog.created_at.desc()).first()
             try:
                 assert row.request_json is None
@@ -269,7 +314,9 @@ class TestLogLlmCallCapturesTrafficWhenDebugEnabled:
                     last_request={"messages": [{"role": "user", "content": f"key: {fake_key}"}]},
                     last_response={"choices": [{"message": {"content": "ok"}}]},
                 )
+                before = LLMLog.query.count()
                 llm_mod._log_llm_call(adapter, "m", None, None, 1, success=True)
+                assert LLMLog.query.count() == before + 1
                 row = LLMLog.query.order_by(LLMLog.created_at.desc()).first()
                 try:
                     assert row.request_json is not None
@@ -283,16 +330,80 @@ class TestLogLlmCallCapturesTrafficWhenDebugEnabled:
                 Setting.set("debug.llm", False, value_type="bool")
                 db.session.commit()
 
+    def test_string_false_from_bulk_settings_endpoint_does_not_enable_capture(self, app):
+        # POST /api/settings (the bulk endpoint) always writes value_type=
+        # "string" regardless of the setting's semantic type — only PUT
+        # /api/settings/<key> respects _BOOL_KEYS. Setting.get then returns
+        # the raw string "false" for this row, and bool("false") is True in
+        # Python — a naive truthy check on Setting.get's return value turns
+        # capture ON even though the Settings UI toggle (which compares
+        # against the JSON boolean `true`) renders OFF. This is the exact
+        # persisted shape the bulk endpoint produces.
+        with app.app_context():
+            Setting.set("debug.llm", "false", value_type="string")
+            db.session.commit()
+            try:
+                adapter = SimpleNamespace(
+                    last_usage={"input": 1, "output": 1},
+                    last_request={"model": "m"}, last_response={"ok": True},
+                )
+                before = LLMLog.query.count()
+                llm_mod._log_llm_call(adapter, "m", None, None, 1, success=True)
+                assert LLMLog.query.count() == before + 1
+                row = LLMLog.query.order_by(LLMLog.created_at.desc()).first()
+                try:
+                    assert row.request_json is None
+                    assert row.response_json is None
+                finally:
+                    LLMLog.query.filter_by(id=row.id).delete()
+                    db.session.commit()
+            finally:
+                Setting.set("debug.llm", False, value_type="bool")
+                db.session.commit()
+
     def test_debug_on_but_adapter_has_no_capture_leaves_columns_null(self, app):
         with app.app_context():
             Setting.set("debug.llm", True, value_type="bool")
             db.session.commit()
             try:
                 adapter = SimpleNamespace(last_usage={"input": 1, "output": 1})
+                before = LLMLog.query.count()
                 llm_mod._log_llm_call(adapter, "m", None, None, 1, success=True)
+                assert LLMLog.query.count() == before + 1
                 row = LLMLog.query.order_by(LLMLog.created_at.desc()).first()
                 try:
                     assert row.request_json is None
+                    assert row.response_json is None
+                finally:
+                    LLMLog.query.filter_by(id=row.id).delete()
+                    db.session.commit()
+            finally:
+                Setting.set("debug.llm", False, value_type="bool")
+                db.session.commit()
+
+    def test_request_captured_even_when_the_call_failed(self, app):
+        # Adapters set last_request BEFORE making the API call, specifically
+        # so a failed call still has its outgoing request captured for
+        # debugging (last_response stays unset since no response ever came
+        # back) — this is the scenario the traffic-capture feature exists
+        # for: figuring out why a call failed in the first place.
+        with app.app_context():
+            Setting.set("debug.llm", True, value_type="bool")
+            db.session.commit()
+            try:
+                adapter = SimpleNamespace(
+                    last_usage=None,
+                    last_request={"model": "m", "messages": [{"role": "user", "content": "hi"}]},
+                )
+                before = LLMLog.query.filter_by(success=False, error="boom").count()
+                llm_mod._log_llm_call(adapter, "m", None, None, 1, success=False, error="boom")
+                assert LLMLog.query.filter_by(success=False, error="boom").count() == before + 1
+                row = LLMLog.query.filter_by(success=False, error="boom").order_by(
+                    LLMLog.created_at.desc()).first()
+                assert row is not None
+                try:
+                    assert row.request_json is not None
+                    assert '"model": "m"' in row.request_json
                     assert row.response_json is None
                 finally:
                     LLMLog.query.filter_by(id=row.id).delete()
