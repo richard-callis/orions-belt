@@ -72,3 +72,71 @@ class TestExecuteRunUnknownToolNameRefused:
                 Feature.query.filter_by(id=task.feature_id).delete()
                 db.session.delete(agent)
                 db.session.commit()
+
+
+class TestExecuteRunToolAccessMatchesAgentRuntime:
+    """Regression test: _execute_run used to additionally narrow an agent's
+    tools by a role INFERRED FROM THE TASK'S OWN TITLE/DESCRIPTION
+    (_infer_role + _filter_tools_by_role, now removed) — so the exact same
+    agent, with the exact same allowed_tools, could lose access to tools
+    depending purely on how a task happened to be worded, and got a
+    different tool set in a Task run than it would in a chat room (which
+    never applied this filtering at all). Tool access must be a function of
+    the agent alone, everywhere it runs — see AgentRuntime.tools()."""
+
+    def test_task_wording_does_not_narrow_agents_allowed_tools(self, app, monkeypatch):
+        import app.services.llm as llm_mod
+        import app.services.mcp.tools as mcp_tools_mod
+
+        captured_tool_names = []
+
+        def fake_build_tool_definitions(tools):
+            captured_tool_names.extend(t.name for t in tools)
+            return []
+
+        def fake_retry(*a, **k):
+            return "done, no tools needed", [], 1
+
+        async def fake_execute_tool(name, args, **kwargs):
+            return "unused"
+
+        monkeypatch.setattr(llm_mod, "retry_with_recovery", fake_retry)
+        monkeypatch.setattr(llm_mod, "build_tool_definitions", fake_build_tool_definitions)
+        monkeypatch.setattr(mcp_tools_mod, "execute_tool", fake_execute_tool)
+
+        with app.app_context():
+            # create_word_document isn't in any of the old _ROLE_TOOL_SETS
+            # buckets, and the task below is worded to trigger the old
+            # "investigation" role (keywords: log, search, inspect) — under
+            # the removed filtering, create_word_document would have been
+            # silently dropped even though the agent is explicitly allowed
+            # to use it.
+            agent = Agent(id=str(uuid.uuid4()), name="a",
+                          allowed_tools='["read_file", "create_word_document"]',
+                          status="idle", max_iterations=1)
+            db.session.add(agent)
+            db.session.add(MCPTool(id="t-gate2", name="read_file", tier=0, enabled=True, source="builtin"))
+            db.session.add(MCPTool(id="t-gate3", name="create_word_document", tier=0, enabled=True, source="builtin"))
+            db.session.commit()
+
+            p = Project(id=str(uuid.uuid4()), name="P")
+            e = Epic(id=str(uuid.uuid4()), project_id=p.id, title="E")
+            f = Feature(id=str(uuid.uuid4()), epic_id=e.id, title="F")
+            task = Task(id=str(uuid.uuid4()), feature_id=f.id,
+                       title="Search and inspect the logs",
+                       description="Debug the issue by reading log output")
+            db.session.add_all([p, e, f, task])
+            db.session.commit()
+            try:
+                run_agent(agent.id, task.id)
+                assert set(captured_tool_names) == {"read_file", "create_word_document"}
+            finally:
+                AgentRun.query.filter_by(agent_id=agent.id).delete()
+                MCPTool.query.filter_by(id="t-gate2").delete()
+                MCPTool.query.filter_by(id="t-gate3").delete()
+                Task.query.filter_by(id=task.id).delete()
+                Feature.query.filter_by(id=f.id).delete()
+                Epic.query.filter_by(id=e.id).delete()
+                Project.query.filter_by(id=p.id).delete()
+                db.session.delete(agent)
+                db.session.commit()

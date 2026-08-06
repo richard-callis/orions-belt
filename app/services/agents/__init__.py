@@ -6,8 +6,12 @@ Autonomous tool loop with:
   - step idempotency checkpointing (SHA-256)
   - remediation loop detection (same tool 3x in a row → fail)
   - post-completion reviewer agent
-  - role-aware tool scoping
   - partial plan approval (per-step block/allow)
+
+Tool access comes from AgentRuntime.tools() (the agent's own allowed_tools)
+— identical whether the agent is running here or in a chat room. It must
+never depend on which surface is calling it or how a task happens to be
+worded.
 
 Usage:
     from app.services.agents import run_agent, approve_step, approve_plan, cancel_run
@@ -30,20 +34,6 @@ log = logging.getLogger("orions-belt.agents")
 
 TIER_WARN = 2
 TIER_HARD_STOP = 3
-
-_ROLE_KEYWORDS = {
-    "deployment": ["deploy", "release", "rollout", "provision", "infra"],
-    "investigation": ["log", "search", "query", "fetch", "read", "inspect", "debug"],
-    "knowledge": ["note", "wiki", "doc", "knowledge", "write", "summarize"],
-    "coordination": ["task", "plan", "assign", "notify", "message", "schedule"],
-}
-
-_ROLE_TOOL_SETS = {
-    "deployment": {"shell", "run_command", "write_file", "deploy", "provision"},
-    "investigation": {"read_file", "search_files", "query_db", "fetch_url", "list_directory"},
-    "knowledge": {"read_file", "write_file", "search_files", "create_note"},
-    "coordination": {"create_task", "update_task", "send_message", "schedule"},
-}
 
 
 def _now():
@@ -203,26 +193,6 @@ def _is_remediation_loop(run_id: str, tool_name: str, tool_args: dict | None = N
             return raw or "{}"
 
     return all(s.tool_name == tool_name and _norm(s.tool_input) == target for s in recent)
-
-
-# ── Role-based tool scoping ───────────────────────────────────────────────────
-
-def _infer_role(task_title: str, task_description: str) -> str | None:
-    text = f"{task_title} {task_description or ''}".lower()
-    for role, keywords in _ROLE_KEYWORDS.items():
-        if any(kw in text for kw in keywords):
-            return role
-    return None
-
-
-def _filter_tools_by_role(tools: list, role: str | None) -> list:
-    if not role or role == "auto":
-        return tools
-    allowed = _ROLE_TOOL_SETS.get(role)
-    if not allowed:
-        return tools
-    filtered = [t for t in tools if any(a in t.name.lower() for a in allowed)]
-    return filtered or tools  # fall back to all tools if filter would yield empty
 
 
 # ── Reviewer agent ────────────────────────────────────────────────────────────
@@ -447,8 +417,8 @@ def _execute_run(run, agent, task, session_id: str | None = None):
     from app import db
     from app.models.agent import AgentStep
     from app.models.logs import AgentTrace
-    from app.models.mcp_tool import MCPTool
     from app.models.settings import Setting
+    from app.services.agents.runtime import AgentRuntime
     from app.services.llm import build_tool_definitions, inject_knowledge_context, retry_with_recovery
     from app.services.mcp.tools import execute_tool
     from config import Config
@@ -477,15 +447,14 @@ def _execute_run(run, agent, task, session_id: str | None = None):
     api_key = raw_key
     model = agent.llm_model_override or (active_provider or {}).get("model", Config.LLM_MODEL)
 
-    allowed_tools = json.loads(agent.allowed_tools or "[]")
-    if allowed_tools:
-        tools_q = MCPTool.query.filter(MCPTool.name.in_(allowed_tools), MCPTool.enabled == True)
-    else:
-        tools_q = MCPTool.query.filter_by(enabled=True)
-    tools = tools_q.all()
-
-    effective_role = agent.role_scope or _infer_role(task.title, task.description or "")
-    tools = _filter_tools_by_role(tools, effective_role)
+    # Tool access is purely a function of the agent's own allowed_tools —
+    # identical to what it gets in a chat room, via the same AgentRuntime
+    # method, regardless of what task it's running or how that task is
+    # worded. This used to also narrow tools by a role inferred from the
+    # task's title/description (_infer_role, removed) — the same agent
+    # could silently lose tool access depending on task wording alone,
+    # which is exactly the inconsistency this now avoids.
+    tools = AgentRuntime(agent, provider=active_provider or {}).tools()
     tool_defs = build_tool_definitions(tools)
     tool_tier_map = {t.name: t.tier for t in tools}
 
