@@ -9,9 +9,14 @@ OpenAI/Ollama/OpenRouter (which proxy those models over the OpenAI protocol).
 Detection order:
 1. url contains :11434 or ollama       → OllamaAdapter
 2. url contains anthropic              → AnthropicAdapter
-3. url set (any other endpoint)        → OpenAIAdapter (generic compat)
-4. url empty + model claude/fable      → AnthropicAdapter (native default)
-5. url empty otherwise                 → OpenAIAdapter
+3. url contains aiplatform.googleapis.com
+   or generativelanguage.googleapis.com → GeminiAdapter (native SDK, not the
+                                          OpenAI-compat shim — see
+                                          gemini_adapter.py's module docstring
+                                          for why)
+4. url set (any other endpoint)        → OpenAIAdapter (generic compat)
+5. url empty + model claude/fable      → AnthropicAdapter (native default)
+6. url empty otherwise                 → OpenAIAdapter
 """
 from __future__ import annotations
 import logging
@@ -21,8 +26,12 @@ from app.services.llm_adapters.base import LLMAdapter
 log = logging.getLogger("orions-belt.adapters.dispatcher")
 
 
-def get_adapter(base_url: str, api_key: str, model: str) -> LLMAdapter:
-    """Return the appropriate adapter for the given provider config."""
+def get_adapter(base_url: str, api_key: str, model: str, extra: dict | None = None) -> LLMAdapter:
+    """Return the appropriate adapter for the given provider config.
+
+    `extra` carries provider-specific fields that don't fit base_url/api_key/
+    model — currently just Gemini's project_id/location for Vertex mode.
+    """
     url = (base_url or "").strip().lower()
     model_lower = (model or "").lower()
 
@@ -37,14 +46,19 @@ def get_adapter(base_url: str, api_key: str, model: str) -> LLMAdapter:
         from app.services.llm_adapters.anthropic_adapter import AnthropicAdapter
         return AnthropicAdapter(base_url, api_key, model)
 
-    # 3: any other explicit endpoint speaks the OpenAI protocol, even if the
+    if "aiplatform.googleapis.com" in url or "generativelanguage.googleapis.com" in url:
+        log.debug("adapter=gemini model=%s", model)
+        from app.services.llm_adapters.gemini_adapter import GeminiAdapter
+        return GeminiAdapter(base_url, api_key, model, extra=extra)
+
+    # 4: any other explicit endpoint speaks the OpenAI protocol, even if the
     # model is named claude/fable (a compat gateway proxies it).
     if url:
         log.debug("adapter=openai (explicit url) model=%s", model)
         from app.services.llm_adapters.openai_adapter import OpenAIAdapter
         return OpenAIAdapter(base_url, api_key, model)
 
-    # 4-5: no URL configured — fall back to the model-name heuristic.
+    # 5-6: no URL configured — fall back to the model-name heuristic.
     if model_lower.startswith("claude") or model_lower.startswith("fable"):
         log.debug("adapter=anthropic (model heuristic) model=%s", model)
         from app.services.llm_adapters.anthropic_adapter import AnthropicAdapter

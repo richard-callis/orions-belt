@@ -127,7 +127,7 @@ class AgentRuntime:
         only the final text.
         """
         from app.services.agents import _check_token_budget, _compute_checkpoint_hash, _record_token_usage
-        from app.services.llm import build_tool_definitions, retry_with_recovery
+        from app.services.llm import build_tool_definitions, provider_extra, retry_with_recovery
 
         tools = self.tools()
         tool_defs = build_tool_definitions(tools)
@@ -150,7 +150,7 @@ class AgentRuntime:
 
                 text, tool_calls, tok = retry_with_recovery(
                     self.base_url, self.api_key, self.model, convo, tool_defs, max_retries=2,
-                    session_id=session_id, run_id=run_id,
+                    session_id=session_id, run_id=run_id, extra=provider_extra(self.provider),
                 )
                 total_tokens += tok or 0
                 final_text = (text or "").strip()

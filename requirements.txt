@@ -11,6 +11,8 @@ alembic>=1.13.0
 openai>=1.0.0          # OpenAI-compatible client (OpenAI, Azure, llama-server, any endpoint)
 anthropic>=0.40.0      # Anthropic SDK — native tool use, streaming, prompt caching
 ollama>=0.4.0          # Ollama Python client — native /api/chat endpoint
+google-genai>=2.0.0    # Gemini — Vertex AI (service-account) and AI Studio (API key)
+google-auth>=2.56.0    # service-account credentials for Vertex AI mode
 
 # PII / PHI detection — all pure Python, no compiler needed
 presidio-analyzer>=2.2.0

@@ -41,6 +41,7 @@ jobs:
             regex \
             openai \
             anthropic \
+            google-genai \
             pytest \
             pytest-cov
 
