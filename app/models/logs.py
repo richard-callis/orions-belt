@@ -108,6 +108,14 @@ class LLMLog(db.Model):
     success = db.Column(db.Boolean, default=True)
     error = db.Column(db.Text, nullable=True)
 
+    # Raw wire-level request/response, captured only when the "LLM Debug
+    # Logging" setting is on (see app/services/llm.py::_log_llm_call) —
+    # secret-redacted before persisting, same as everything else written to
+    # this queryable, indefinitely-persisted table. Null whenever debug
+    # logging was off for this call, which is the common case.
+    request_json = db.Column(db.Text, nullable=True)
+    response_json = db.Column(db.Text, nullable=True)
+
 
 class AgentTrace(db.Model):
     """Granular per-step trace for agent runs — for observability and debugging."""

@@ -1,9 +1,11 @@
 import csv
 import io
+import json
 from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, jsonify, render_template, request, make_response
 from sqlalchemy import or_
+from sqlalchemy.orm import defer
 
 from app import db
 from app.models.logs import AuditLog, PIILog, AgentLog, LLMLog
@@ -18,6 +20,16 @@ def _since(range_str):
     if hours is None:
         return None
     return datetime.now(timezone.utc) - timedelta(hours=hours)
+
+
+def _clamp_limit(raw, max_limit, min_limit=1):
+    """Parse a `limit` query param to an int clamped to [min_limit,
+    max_limit]. A plain `min(int(raw), max_limit)` only guards the upper
+    bound — SQLite treats a negative LIMIT as "no limit at all", so a
+    request like `?limit=-1` would pass the max_limit check and return
+    every row in the table instead of being capped."""
+    value = int(raw)  # raises ValueError on bad input — callers catch it
+    return max(min_limit, min(value, max_limit))
 
 
 def _audit_query(q, since, limit):
@@ -85,7 +97,18 @@ def _agent_shape(row):
 
 
 def _llm_query(q, since, limit):
-    query = LLMLog.query
+    # request_json/response_json can each be up to _MAX_TRAFFIC_CAPTURE_CHARS
+    # (200k) of text — deferring them here means the list view's query
+    # doesn't pull two potentially-huge TEXT blobs off disk for every row
+    # just to render a table. The list only needs to know WHETHER a capture
+    # exists (has_capture, computed in SQL below), not its contents — the
+    # full values are loaded separately, one row at a time, by
+    # _llm_detail_shape. Returns (LLMLog, has_capture) tuples.
+    has_capture = or_(LLMLog.request_json.isnot(None), LLMLog.response_json.isnot(None))
+    query = (
+        db.session.query(LLMLog, has_capture.label("has_capture"))
+        .options(defer(LLMLog.request_json), defer(LLMLog.response_json))
+    )
     if since:
         query = query.filter(LLMLog.created_at >= since)
     if q:
@@ -95,7 +118,11 @@ def _llm_query(q, since, limit):
     return query.order_by(LLMLog.created_at.desc()).limit(limit).all()
 
 
-def _llm_shape(row):
+def _llm_shape(row, has_capture=None):
+    """`row` may be a plain LLMLog (has_capture computed from the loaded
+    columns — used by _llm_detail_shape, which always fully loads a single
+    row) or paired with a SQL-computed has_capture from _llm_query above
+    (used by the list view, which defers the columns themselves)."""
     return {
         "id": row.id,
         "time": row.created_at.isoformat() if row.created_at else None,
@@ -107,6 +134,13 @@ def _llm_shape(row):
         "estimated_cost_usd": row.estimated_cost_usd,
         "success": row.success,
         "error": row.error or "",
+        # Captured only when "LLM Debug Logging" was on for this call — lets
+        # the UI show a "view traffic" affordance without shipping the
+        # (potentially large) payloads themselves in the list view.
+        "has_traffic_capture": (
+            bool(has_capture) if has_capture is not None
+            else bool(row.request_json or row.response_json)
+        ),
     }
 
 
@@ -125,7 +159,7 @@ def _audit_stats(since):
 
 def _fetch_entries(stream, q, range_str, limit):
     since = _since(range_str)
-    limit = min(int(limit), 500)
+    limit = _clamp_limit(limit, max_limit=500)
     if stream == "audit":
         rows = _audit_query(q, since, limit)
         entries = [_audit_shape(r) for r in rows]
@@ -140,7 +174,7 @@ def _fetch_entries(stream, q, range_str, limit):
         stats = {"total": len(entries), "auto": 0, "approved": 0, "rejected": 0, "blocked": 0}
     elif stream == "llm":
         rows = _llm_query(q, since, limit)
-        entries = [_llm_shape(r) for r in rows]
+        entries = [_llm_shape(r, has_capture=hc) for r, hc in rows]
         stats = {"total": len(entries), "auto": 0, "approved": 0, "rejected": 0, "blocked": 0}
     else:
         return None, None
@@ -159,7 +193,7 @@ def api_logs():
     q = request.args.get("q", "").strip()
     range_str = request.args.get("range", "24h")
     try:
-        limit = min(int(request.args.get("limit", 100)), 1000)
+        limit = _clamp_limit(request.args.get("limit", 100), max_limit=1000)
     except (ValueError, TypeError):
         return jsonify({"error": "limit must be an integer"}), 400
 
@@ -176,7 +210,7 @@ def api_logs_export():
     q = request.args.get("q", "").strip()
     range_str = request.args.get("range", "24h")
     try:
-        limit = min(int(request.args.get("limit", 500)), 5000)
+        limit = _clamp_limit(request.args.get("limit", 500), max_limit=5000)
     except (ValueError, TypeError):
         return jsonify({"error": "limit must be an integer"}), 400
 
@@ -197,6 +231,84 @@ def api_logs_export():
     resp = make_response(buf.getvalue())
     resp.headers["Content-Type"] = "text/csv"
     resp.headers["Content-Disposition"] = f"attachment; filename={filename}"
+    return resp
+
+
+def _llm_detail_shape(row):
+    """Full LLM log row including parsed (not re-encoded) request/response
+    JSON — separate from _llm_shape, which the list view uses and
+    deliberately omits these potentially-large payloads."""
+
+    def _parse(raw):
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except (ValueError, TypeError):
+            return raw  # not valid JSON (shouldn't happen) — return as text rather than drop it
+
+    d = _llm_shape(row)
+    d["request_json"] = _parse(row.request_json)
+    d["response_json"] = _parse(row.response_json)
+    return d
+
+
+@bp.route("/api/logs/llm/<log_id>")
+def api_logs_llm_detail(log_id):
+    """Full detail for one LLM call, including captured request/response
+    JSON if "LLM Debug Logging" was on when it was made."""
+    row = LLMLog.query.get(log_id)
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(_llm_detail_shape(row))
+
+
+@bp.route("/api/logs/llm/<log_id>/download")
+def api_logs_llm_download(log_id):
+    """Download one LLM call's captured request/response as a JSON file."""
+    row = LLMLog.query.get(log_id)
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    if not (row.request_json or row.response_json):
+        return jsonify({"error": "No traffic captured for this call — enable "
+                                  "\"LLM Debug Logging\" in Settings before it runs again"}), 404
+
+    body = json.dumps(_llm_detail_shape(row), indent=2)
+    resp = make_response(body)
+    resp.headers["Content-Type"] = "application/json"
+    resp.headers["Content-Disposition"] = f"attachment; filename=llm_call_{log_id}.json"
+    return resp
+
+
+@bp.route("/api/logs/llm/export")
+def api_logs_llm_export():
+    """Bulk-download captured LLM request/response JSON for the current
+    filter — the CSV export above can't usefully hold nested JSON payloads,
+    so this is a separate JSON-array download covering only rows that
+    actually have a capture (debug logging must have been on when they ran)."""
+    q = request.args.get("q", "").strip()
+    range_str = request.args.get("range", "24h")
+    try:
+        limit = _clamp_limit(request.args.get("limit", 500), max_limit=5000)
+    except (ValueError, TypeError):
+        return jsonify({"error": "limit must be an integer"}), 400
+
+    since = _since(range_str)
+    query = LLMLog.query.filter(
+        or_(LLMLog.request_json.isnot(None), LLMLog.response_json.isnot(None))
+    )
+    if since:
+        query = query.filter(LLMLog.created_at >= since)
+    if q:
+        query = query.filter(or_(LLMLog.model.ilike(f"%{q}%"), LLMLog.provider.ilike(f"%{q}%")))
+    rows = query.order_by(LLMLog.created_at.desc()).limit(limit).all()
+
+    body = json.dumps([_llm_detail_shape(r) for r in rows], indent=2)
+
+    date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+    resp = make_response(body)
+    resp.headers["Content-Type"] = "application/json"
+    resp.headers["Content-Disposition"] = f"attachment; filename=llm_traffic_{date_str}.json"
     return resp
 
 

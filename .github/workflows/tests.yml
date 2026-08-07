@@ -39,6 +39,8 @@ jobs:
             reportlab \
             pypdf \
             regex \
+            openai \
+            anthropic \
             google-genai \
             pytest \
             pytest-cov

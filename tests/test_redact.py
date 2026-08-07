@@ -4,7 +4,7 @@ logging (the busiest logging chokepoint in the app, hit by every tool call).
 """
 from app import db
 from app.models.logs import AuditLog
-from app.services.redact import redact_args, redact_text, redact_value
+from app.services.redact import redact_args, redact_deep, redact_text, redact_value
 
 
 class TestRedactText:
@@ -38,6 +38,15 @@ class TestRedactText:
 
     def test_redacts_openai_key(self):
         fake_key = "sk-" + "abcdefghijklmnopqrstuvwxyz123456"
+        out = redact_text(f"key: {fake_key}")
+        assert fake_key not in out
+        assert "[REDACTED:openai_key]" in out
+
+    def test_redacts_project_scoped_openai_key(self):
+        # The newer sk-proj-... format has a hyphen right after "sk-" — the
+        # original alnum-only pattern stopped matching at that hyphen and
+        # missed the whole key.
+        fake_key = "sk-proj-" + "abcdefghijklmnopqrstuvwxyz123456"
         out = redact_text(f"key: {fake_key}")
         assert fake_key not in out
         assert "[REDACTED:openai_key]" in out
@@ -115,6 +124,57 @@ class TestRedactArgs:
     def test_non_dict_input_passed_through(self):
         assert redact_args(None) is None
         assert redact_args("not a dict") == "not a dict"
+
+
+class TestRedactDeep:
+    """redact_deep is the recursive counterpart to redact_args — used for
+    LLM traffic capture, where the captured request/response body is
+    arbitrarily nested (message content, tool-call args, provider-specific
+    wrapper fields), unlike execute_tool's flat args dicts."""
+
+    def test_masks_sensitive_key_nested_several_levels_deep(self):
+        obj = {"headers": {"config": {"api_key": "not-a-recognized-shape"}}}
+        out = redact_deep(obj)
+        assert out["headers"]["config"]["api_key"] == "[REDACTED]"
+
+    def test_a_sensitive_key_at_an_intermediate_level_masks_the_whole_subtree(self):
+        # "auth" itself matches a sensitive field name — the whole nested
+        # object under it is masked outright, not recursed into (masking an
+        # entire credentials blob is strictly safer than trying to pick
+        # apart which of its children are "actually" secret).
+        obj = {"headers": {"auth": {"user": "alice", "api_key": "x"}}}
+        out = redact_deep(obj)
+        assert out["headers"]["auth"] == "[REDACTED]"
+
+    def test_masks_sensitive_key_inside_a_list_of_dicts(self):
+        obj = {"messages": [{"role": "user", "content": "hi"},
+                             {"role": "system", "authorization": "whatever"}]}
+        out = redact_deep(obj)
+        assert out["messages"][1]["authorization"] == "[REDACTED]"
+        assert out["messages"][0]["content"] == "hi"
+
+    def test_pattern_scans_string_values_at_every_level_not_just_top(self):
+        fake_key = "sk-" + "abcdefghijklmnopqrstuvwxyz123456"
+        obj = {"choices": [{"message": {"content": f"here is my key: {fake_key}"}}]}
+        out = redact_deep(obj)
+        assert fake_key not in out["choices"][0]["message"]["content"]
+        assert "[REDACTED:openai_key]" in out["choices"][0]["message"]["content"]
+
+    def test_a_shallow_pass_would_have_missed_this_but_redact_deep_does_not(self):
+        # The exact shape that motivated redact_deep: redact_args (shallow,
+        # top-level keys only) would leave this untouched because "api_key"
+        # isn't a top-level key — it's nested under a non-sensitive-named
+        # wrapper key ("service_account", not itself in the sensitive list).
+        obj = {"provider": "vertex", "service_account": {"api_key": "hunter2"}}
+        assert redact_args(obj)["service_account"]["api_key"] == "hunter2"  # shallow misses it
+        assert redact_deep(obj)["service_account"]["api_key"] == "[REDACTED]"  # deep catches it
+
+    def test_non_sensitive_scalars_pass_through_unchanged(self):
+        obj = {"tokens": 42, "success": True, "error": None}
+        assert redact_deep(obj) == obj
+
+    def test_tuple_input_preserved_as_tuple(self):
+        assert redact_deep(("a", "b")) == ("a", "b")
 
 
 class TestLogAuditRedactsPersistedRows:
